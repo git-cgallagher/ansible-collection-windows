@@ -7,3 +7,5 @@ tests/output/
 .cache/
 __pycache__/
 .DS_Store
+# Agent and session git worktrees live here; never commit them.
+.claude/worktrees/

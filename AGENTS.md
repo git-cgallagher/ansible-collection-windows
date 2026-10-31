@@ -105,10 +105,11 @@ lab to the scripts — and record the surprise below as a gotcha.
   gate's ignore list, like `tests/`.
 - Release flow mirrors `ansible-collection-isc`: every merge that changes
   shipped files must bump `galaxy.yml` + add a `CHANGELOG.md` entry
-  (CI-enforced). `release.yml` is **workflow_dispatch-only** until
-  `GALAXY_API_KEY` exists in a main-only `galaxy` environment (issue #3);
-  the lab validation it also waited for passed on 2026-10-28. Then restore
-  the `workflow_run` trigger.
+  (CI-enforced). After the merge's green `ansible-test` run on main,
+  `release.yml` publishes that version to Galaxy and tags `v<version>` with
+  a GitHub release; it also runs weekly as a self-heal and on demand.
+  `GALAXY_API_KEY` lives in the main-only `galaxy` environment. **Merge one
+  PR at a time** and let its release run finish first (see Gotchas).
 
 ## Commands
 
@@ -182,6 +183,12 @@ ansible-galaxy collection build --force
   diff, not the pushed commit.** Once a PR touches `roles/**` or
   `molecule/**`, every push to it re-runs the 14-minute lab, docs-only
   pushes included (PR #1's last docs commit did). Batch the doc edits.
+- **Merge one PR at a time and wait for its release run.** `release.yml`
+  tags the merge commit it was triggered for. If another PR merges first,
+  `GITHUB_TOKEN` can't tag the older commit (its workflows differ from
+  main's), so `gh release create` fails with HTTP 403 "Resource not
+  accessible by integration": Galaxy still gets the version, but the GitHub
+  release is lost. Learned on ansible-collection-isc 1.3.1 (2026-10-28).
 - **Molecule's base config is implicit.** `.config/molecule/config.yml` at
   the repository root is merged under every scenario's `molecule.yml`
   because `--base-config` defaults to it (Molecule logs "Found config

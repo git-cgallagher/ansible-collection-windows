@@ -4,18 +4,19 @@ name: release
 #   - publishes galaxy.yml's version if Galaxy doesn't have it yet
 #   - creates the v<version> tag + GitHub release if they are missing
 #
-# ⚠️ Manual-only until GALAXY_API_KEY is set in the main-only 'galaxy'
-# environment (issue #3). The lab validation it also waited for passed on
-# 2026-10-28. Once the key exists, restore the isc-style triggers:
-#
-#   workflow_run:
-#     workflows: [ansible-test]
-#     types: [completed]
-#     branches: [main]
-#   schedule:
-#     - cron: '0 14 * * 2'
+# Runs after every green ansible-test run on main (a merge), weekly as a
+# self-heal, and on demand. GALAXY_API_KEY lives in the main-only 'galaxy'
+# environment. Merge one PR at a time and let this finish first: once
+# another PR has merged, GITHUB_TOKEN can't tag the older commit (AGENTS.md).
 
 on:
+  workflow_run:
+    workflows: [ansible-test]
+    types: [completed]
+    branches: [main]
+  # Weekly self-heal: publishes a version an earlier run missed.
+  schedule:
+    - cron: '0 14 * * 2'
   workflow_dispatch:
 
 permissions:
