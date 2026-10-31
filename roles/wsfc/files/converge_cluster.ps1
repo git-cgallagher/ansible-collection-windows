@@ -43,6 +43,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# The script runs non-interactively, where any confirmation prompt fails the
+# run ("PowerShell is in NonInteractive mode", seen from New-Cluster in the
+# lab). Never prompt; every change is already gated by -ReportOnly.
+$ConfirmPreference = 'None'
 
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
 if ($inAnsible -and $Ansible.CheckMode) { $ReportOnly = $true }
@@ -190,8 +194,8 @@ function Invoke-Main {
             $warnings.Add('Static addresses are ignored: an administrative access point of None has no IP address')
         }
         Invoke-Change "create cluster $Name with nodes $($Nodes -join ', ') (access point $AdministrativeAccessPoint)" {
+            $null = New-Cluster @newParams -Confirm:$false
             $script:created = $true
-            $null = New-Cluster @newParams
         }
         if ($ReportOnly) {
             if ($networks.Count -or $disks.Count -or $properties.PSObject.Properties.Name -or
@@ -208,7 +212,7 @@ function Invoke-Main {
             Invoke-Validation -TestNodes $Nodes
             foreach ($node in $missing) {
                 Invoke-Change "add node $node to cluster $Name" {
-                    $null = Add-ClusterNode -Cluster $via -Name $node -NoStorage
+                    $null = Add-ClusterNode -Cluster $via -Name $node -NoStorage -Confirm:$false
                 }
             }
         }
@@ -304,7 +308,7 @@ function Invoke-Main {
                 }
                 if ($csv) {
                     Invoke-Change "add disk $diskName to Cluster Shared Volumes" {
-                        $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName
+                        $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName -Confirm:$false
                     }
                 }
                 continue
@@ -343,9 +347,9 @@ function Invoke-Main {
                 }
             }
             Invoke-Change "add disk $($disk.Number) to cluster $Name as $diskName$(if ($csv) { ' (CSV)' })" {
-                $resource = $available | Add-ClusterDisk
+                $resource = $available | Add-ClusterDisk -Confirm:$false
                 $resource.Name = $diskName
-                if ($csv) { $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName }
+                if ($csv) { $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName -Confirm:$false }
             }
         }
     }
@@ -361,7 +365,7 @@ function Invoke-Main {
             'node_majority' {
                 if ($null -ne $witness) {
                     Invoke-Change "remove the $witnessType witness (node majority)" {
-                        $null = Set-ClusterQuorum -Cluster $conn -NoWitness
+                        $null = Set-ClusterQuorum -Cluster $conn -NoWitness -Confirm:$false
                     }
                 }
             }
@@ -370,7 +374,7 @@ function Invoke-Main {
                 if (-not $witnessDisk) { throw 'A disk_witness quorum needs disk (a cluster disk resource name)' }
                 if ($witnessType -ne 'Physical Disk' -or $witness.Name -ne $witnessDisk) {
                     Invoke-Change "set the quorum witness to disk $witnessDisk" {
-                        $null = Set-ClusterQuorum -Cluster $conn -DiskWitness $witnessDisk
+                        $null = Set-ClusterQuorum -Cluster $conn -DiskWitness $witnessDisk -Confirm:$false
                     }
                 }
             }
@@ -383,7 +387,7 @@ function Invoke-Main {
                 }
                 if ($currentPath -ne $sharePath) {
                     Invoke-Change "set the quorum witness to file share $sharePath" {
-                        $null = Set-ClusterQuorum -Cluster $conn -FileShareWitness $sharePath
+                        $null = Set-ClusterQuorum -Cluster $conn -FileShareWitness $sharePath -Confirm:$false
                     }
                 }
             }
@@ -404,7 +408,7 @@ function Invoke-Main {
                     Invoke-Change "set the quorum witness to Azure storage account $account" {
                         $witnessParams = @{ Cluster = $conn; CloudWitness = $true; AccountName = $account; AccessKey = $accessKey }
                         if ($endpoint) { $witnessParams.Endpoint = $endpoint }
-                        $null = Set-ClusterQuorum @witnessParams
+                        $null = Set-ClusterQuorum @witnessParams -Confirm:$false
                     }
                 }
             }
@@ -420,7 +424,8 @@ try {
 }
 catch {
     $failed = $true
-    $errorText = $_.Exception.Message
+    $errorText = '{0} (at line {1}: {2})' -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber,
+    $_.InvocationInfo.Line.Trim()
     if (-not $inAnsible) { throw }
 }
 
