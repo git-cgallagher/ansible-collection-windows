@@ -137,9 +137,10 @@ else {
 
 $module.Diff.before = $before
 $module.Diff.after = $after
-$module.Result.changed = $changed
 $module.Result.mime_type = $mimeType
 
+# changed stays false until the change has gone through (or would have, in
+# check mode), so a refusal or a failed write doesn't report a change.
 if (-not $changed) {
     $module.ExitJson()
 }
@@ -213,6 +214,7 @@ try {
 
             if (-not $module.CheckMode) {
                 $writer.CommitChanges()
+                $module.Result.changed = $true
             }
         }
     }
@@ -230,6 +232,7 @@ if ($refusal) {
     $module.FailJson($refusal)
 }
 if ($module.CheckMode) {
+    $module.Result.changed = $true
     $module.ExitJson()
 }
 

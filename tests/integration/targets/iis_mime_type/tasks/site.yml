@@ -105,6 +105,7 @@
   failed_when: >-
     'Refusing to change .ansibleweb' not in (iis_mime_type_refused_check.msg | default(''))
     or 'config_file=web.config' not in (iis_mime_type_refused_check.msg | default(''))
+    or iis_mime_type_refused_check.changed | default(false)
 
 - name: Change .ansibleweb through applicationHost.config
   git_cgallagher.windows.iis_mime_type:
@@ -114,6 +115,7 @@
   register: iis_mime_type_refused
   failed_when: >-
     'Refusing to change .ansibleweb' not in (iis_mime_type_refused.msg | default(''))
+    or iis_mime_type_refused.changed | default(false)
 
 - name: Read .ansibleweb on the test website after the refusals
   ansible.windows.win_powershell:
