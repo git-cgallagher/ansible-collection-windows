@@ -11,7 +11,7 @@
   tasks:
     - name: Check one role
       ansible.builtin.include_tasks: check_role.yml
-      loop: [gpo_backup, gpo_import, wsfc_cluster]
+      loop: [gpo_backup, gpo_import, wsfc]
       loop_control:
         loop_var: spec_role
 
@@ -22,7 +22,7 @@
     spec_roles_dir: "{{ playbook_dir }}/../../roles"
     spec_backup: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_backup/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
     spec_import: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_import/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
-    spec_cluster: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc_cluster/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+    spec_cluster: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
   tasks:
     # --- valid input passes ---------------------------------------------------------
     - name: Accept a minimal gpo_backup call
@@ -46,35 +46,35 @@
           gpo_import_force: false
           gpo_import_gpos: [SEC - Server Baseline]
 
-    - name: Accept a minimal wsfc_cluster call
+    - name: Accept a minimal wsfc call
       ansible.builtin.validate_argument_spec:
         argument_spec: "{{ spec_cluster }}"
         provided_arguments:
-          wsfc_cluster_name: SQLCLU01
+          wsfc_name: SQLCLU01
 
-    - name: Accept a full wsfc_cluster call
+    - name: Accept a full wsfc call
       ansible.builtin.validate_argument_spec:
         argument_spec: "{{ spec_cluster }}"
         provided_arguments:
-          wsfc_cluster_name: SQLCLU01
-          wsfc_cluster_nodes: [sql01, sql02]
-          wsfc_cluster_manage_node: sql01.example.com
-          wsfc_cluster_administrative_access_point: Dns
-          wsfc_cluster_static_addresses: [10.10.10.50, 10.20.10.50]
-          wsfc_cluster_ignore_networks: [10.10.30.0/24]
-          wsfc_cluster_extra_features: [FS-FileServer]
-          wsfc_cluster_allow_reboot: true
-          wsfc_cluster_validate: true
-          wsfc_cluster_validate_ignore: [Storage]
-          wsfc_cluster_quorum: {type: cloud_witness, account_name: examplewitness, access_key: example-not-secret}
-          wsfc_cluster_networks:
+          wsfc_name: SQLCLU01
+          wsfc_nodes: [sql01, sql02]
+          wsfc_manage_node: sql01.example.com
+          wsfc_administrative_access_point: Dns
+          wsfc_static_addresses: [10.10.10.50, 10.20.10.50]
+          wsfc_ignore_networks: [10.10.30.0/24]
+          wsfc_extra_features: [FS-FileServer]
+          wsfc_allow_reboot: true
+          wsfc_validate: true
+          wsfc_validate_ignore: [Storage]
+          wsfc_quorum: {type: cloud_witness, account_name: examplewitness, access_key: example-not-secret}
+          wsfc_networks:
             - {subnet: 10.10.10.0/24, name: Client, role: cluster_and_client, metric: 1000}
-          wsfc_cluster_properties: {SameSubnetThreshold: 20}
-          wsfc_cluster_disks:
+          wsfc_properties: {SameSubnetThreshold: 20}
+          wsfc_disks:
             - {name: SQL Data, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9B01, initialize: true, file_system: ReFS}
-          wsfc_cluster_report_only: true
-          wsfc_cluster_become_user: EXAMPLE\svc-cluster-build
-          wsfc_cluster_become_password: example-not-secret
+          wsfc_report_only: true
+          wsfc_become_user: EXAMPLE\svc-cluster-build
+          wsfc_become_password: example-not-secret
 
     # --- invalid input is rejected by the roles themselves --------------------------
     # include_role runs the role's implicit "Validating arguments" task first; a
@@ -157,58 +157,58 @@
               - ansible_failed_result.msg | default('') is search('must be non-empty')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
-    - name: Reject an unknown wsfc_cluster access point
+    - name: Reject an unknown wsfc access point
       block:
-        - name: Include wsfc_cluster with access point Workgroup
+        - name: Include wsfc with access point Workgroup
           ansible.builtin.include_role:
-            name: git_cgallagher.windows.wsfc_cluster
+            name: git_cgallagher.windows.wsfc
           vars:
-            wsfc_cluster_name: SQLCLU01
-            wsfc_cluster_administrative_access_point: Workgroup
+            wsfc_name: SQLCLU01
+            wsfc_administrative_access_point: Workgroup
 
         - name: Fail because validation accepted it
           ansible.builtin.fail:
-            msg: wsfc_cluster accepted access point Workgroup
+            msg: wsfc accepted access point Workgroup
       rescue:
         - name: Check the argument spec rejected it
           ansible.builtin.assert:
-            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_cluster_administrative_access_point')
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_administrative_access_point')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
-    - name: Reject an unknown wsfc_cluster quorum type
+    - name: Reject an unknown wsfc quorum type
       block:
-        - name: Include wsfc_cluster with quorum type majority
+        - name: Include wsfc with quorum type majority
           ansible.builtin.include_role:
-            name: git_cgallagher.windows.wsfc_cluster
+            name: git_cgallagher.windows.wsfc
           vars:
-            wsfc_cluster_name: SQLCLU01
-            wsfc_cluster_quorum:
+            wsfc_name: SQLCLU01
+            wsfc_quorum:
               type: majority
 
         - name: Fail because validation accepted it
           ansible.builtin.fail:
-            msg: wsfc_cluster accepted quorum type majority
+            msg: wsfc accepted quorum type majority
       rescue:
         - name: Check the argument spec rejected it
           ansible.builtin.assert:
-            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_cluster_quorum')
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_quorum')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
     # The spec leaves the quorum's type optional (see its comment); the role's
     # first task requires it.
-    - name: Reject a wsfc_cluster quorum without a type
+    - name: Reject a wsfc quorum without a type
       block:
-        - name: Include wsfc_cluster with a typeless quorum
+        - name: Include wsfc with a typeless quorum
           ansible.builtin.include_role:
-            name: git_cgallagher.windows.wsfc_cluster
+            name: git_cgallagher.windows.wsfc
           vars:
-            wsfc_cluster_name: SQLCLU01
-            wsfc_cluster_quorum:
+            wsfc_name: SQLCLU01
+            wsfc_quorum:
               path: '\\fs01.example.com\witness$'
 
         - name: Fail because the role accepted it
           ansible.builtin.fail:
-            msg: wsfc_cluster accepted a quorum without a type
+            msg: wsfc accepted a quorum without a type
       rescue:
         - name: Check the role's own check rejected it
           ansible.builtin.assert:
@@ -217,19 +217,19 @@
               - ansible_failed_result.msg | default('') is search('needs a type')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
-    - name: Reject a wsfc_cluster disk without a unique_id
+    - name: Reject a wsfc disk without a unique_id
       block:
-        - name: Include wsfc_cluster with a disk that has no unique_id
+        - name: Include wsfc with a disk that has no unique_id
           ansible.builtin.include_role:
-            name: git_cgallagher.windows.wsfc_cluster
+            name: git_cgallagher.windows.wsfc
           vars:
-            wsfc_cluster_name: SQLCLU01
-            wsfc_cluster_disks:
+            wsfc_name: SQLCLU01
+            wsfc_disks:
               - name: SQL Data
 
         - name: Fail because validation accepted it
           ansible.builtin.fail:
-            msg: wsfc_cluster accepted a disk without a unique_id
+            msg: wsfc accepted a disk without a unique_id
       rescue:
         - name: Check the argument spec rejected it
           ansible.builtin.assert:
@@ -237,17 +237,17 @@
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
     # A spec can't limit a string's length; the role's first task does.
-    - name: Reject a wsfc_cluster name longer than 15 characters
+    - name: Reject a wsfc name longer than 15 characters
       block:
-        - name: Include wsfc_cluster with a 16-character name
+        - name: Include wsfc with a 16-character name
           ansible.builtin.include_role:
-            name: git_cgallagher.windows.wsfc_cluster
+            name: git_cgallagher.windows.wsfc
           vars:
-            wsfc_cluster_name: SQLCLUSTER-PROD1
+            wsfc_name: SQLCLUSTER-PROD1
 
         - name: Fail because the role accepted it
           ansible.builtin.fail:
-            msg: wsfc_cluster ran with a 16-character name
+            msg: wsfc ran with a 16-character name
       rescue:
         - name: Check the role's own check rejected it
           ansible.builtin.assert:

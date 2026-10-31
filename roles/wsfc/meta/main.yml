@@ -1,6 +1,6 @@
 ---
 galaxy_info:
-  role_name: wsfc_cluster
+  role_name: wsfc
   author: Chris Gallagher
   description: Build and converge a Windows Server Failover Cluster for file servers, SQL Server FCIs and availability groups
   license: MIT

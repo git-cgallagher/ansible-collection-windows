@@ -2,30 +2,30 @@
 # Create a one-node workgroup cluster and converge its network, properties
 # and quorum. Molecule's idempotence step re-runs this and fails on any
 # "changed".
-- name: Build the cluster with wsfc_cluster
+- name: Build the cluster with wsfc
   hosts: all
   gather_facts: false
   tasks:
-    - name: Run wsfc_cluster
+    - name: Run wsfc
       ansible.builtin.include_role:
-        name: git_cgallagher.windows.wsfc_cluster
+        name: git_cgallagher.windows.wsfc
       vars:
-        wsfc_cluster_name: "{{ lab_cluster.name }}"
+        wsfc_name: "{{ lab_cluster.name }}"
         # No DNS server and no domain: a cluster without a network name.
-        wsfc_cluster_administrative_access_point: None
-        wsfc_cluster_allow_reboot: true
+        wsfc_administrative_access_point: None
+        wsfc_allow_reboot: true
         # No shared disks in the lab, as for an availability group.
-        wsfc_cluster_validate_ignore: [Storage]
-        wsfc_cluster_networks:
+        wsfc_validate_ignore: [Storage]
+        wsfc_networks:
           - subnet: "{{ lab_cluster.subnet }}"
             name: "{{ lab_cluster.network_name }}"
             role: cluster
             metric: "{{ lab_cluster.metric }}"
-        wsfc_cluster_properties:
+        wsfc_properties:
           SameSubnetThreshold: "{{ lab_cluster.same_subnet_threshold }}"
           CrossSubnetThreshold: "{{ lab_cluster.cross_subnet_threshold }}"
-        wsfc_cluster_quorum:
+        wsfc_quorum:
           type: node_majority
         # New-Cluster reaches the node again from inside the WinRM session.
-        wsfc_cluster_become_user: "{{ ansible_user }}"
-        wsfc_cluster_become_password: "{{ ansible_password }}"
+        wsfc_become_user: "{{ ansible_user }}"
+        wsfc_become_password: "{{ ansible_password }}"

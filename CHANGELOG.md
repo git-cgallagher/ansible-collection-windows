@@ -4,14 +4,14 @@
 
 A second area: failover clusters.
 
-- New role `wsfc_cluster`: installs Failover Clustering on every node, then
+- New role `wsfc`: installs Failover Clustering on every node, then
   from one managing node validates the nodes (`Test-Cluster`), creates the
   cluster or adds the nodes it is missing, and converges cluster network
   names, roles and metrics, common properties, named shared disks (with an
   optional first-time format of RAW disks and Cluster Shared Volumes) and the
   quorum witness (none, disk, file share or Azure cloud witness). It never
   removes nodes, disks or networks, refuses to reboot a node unless
-  `wsfc_cluster_allow_reboot` is set, and supports check mode and a
+  `wsfc_allow_reboot` is set, and supports check mode and a
   report-only plan. Its README says what file servers, SQL Server FCIs and
   availability groups each need from it.
 - Its Molecule scenario builds a one-node workgroup cluster on a real Windows

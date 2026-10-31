@@ -5,21 +5,21 @@
   # The role's variables, shared by the plan and the fix below.
   vars:
     lab_role_vars: &lab_role_vars
-      wsfc_cluster_name: "{{ lab_cluster.name }}"
-      wsfc_cluster_administrative_access_point: None
-      wsfc_cluster_validate_ignore: [Storage]
-      wsfc_cluster_networks:
+      wsfc_name: "{{ lab_cluster.name }}"
+      wsfc_administrative_access_point: None
+      wsfc_validate_ignore: [Storage]
+      wsfc_networks:
         - subnet: "{{ lab_cluster.subnet }}"
           name: "{{ lab_cluster.network_name }}"
           role: cluster
           metric: "{{ lab_cluster.metric }}"
-      wsfc_cluster_properties:
+      wsfc_properties:
         SameSubnetThreshold: "{{ lab_cluster.same_subnet_threshold }}"
         CrossSubnetThreshold: "{{ lab_cluster.cross_subnet_threshold }}"
-      wsfc_cluster_quorum:
+      wsfc_quorum:
         type: node_majority
-      wsfc_cluster_become_user: "{{ ansible_user }}"
-      wsfc_cluster_become_password: "{{ ansible_password }}"
+      wsfc_become_user: "{{ ansible_user }}"
+      wsfc_become_password: "{{ ansible_password }}"
   tasks:
     # 1. What converge built, read straight from the cluster.
     - name: Read the cluster
@@ -63,20 +63,20 @@
       vars:
         ansible_become_password: "{{ ansible_password }}"
 
-    - name: Plan with wsfc_cluster in report-only mode
+    - name: Plan with wsfc in report-only mode
       ansible.builtin.include_role:
-        name: git_cgallagher.windows.wsfc_cluster
+        name: git_cgallagher.windows.wsfc
       vars:
         <<: *lab_role_vars
-        wsfc_cluster_report_only: true
+        wsfc_report_only: true
 
     - name: Check the plan has exactly the property fix
       ansible.builtin.assert:
         that:
-          - wsfc_cluster_run.result.report_only
-          - wsfc_cluster_run.result.actions | length == 1
-          - wsfc_cluster_run.result.actions[0] is search('SameSubnetThreshold')
-        fail_msg: "Plan: {{ wsfc_cluster_run.result }}"
+          - wsfc_run.result.report_only
+          - wsfc_run.result.actions | length == 1
+          - wsfc_run.result.actions[0] is search('SameSubnetThreshold')
+        fail_msg: "Plan: {{ wsfc_run.result }}"
 
     - name: Read the cluster after the plan
       ansible.windows.win_powershell:
@@ -94,20 +94,20 @@
         fail_msg: "Cluster state: {{ lab_after_plan.result | to_nice_json }}"
 
     # 3. A real run puts it back, and only that.
-    - name: Converge again with wsfc_cluster
+    - name: Converge again with wsfc
       ansible.builtin.include_role:
-        name: git_cgallagher.windows.wsfc_cluster
+        name: git_cgallagher.windows.wsfc
       vars:
         <<: *lab_role_vars
 
     - name: Check the drift was fixed
       ansible.builtin.assert:
         that:
-          - wsfc_cluster_run is changed
-          - not wsfc_cluster_run.result.report_only
-          - not wsfc_cluster_run.result.created
-          - wsfc_cluster_run.result.actions | length == 1
-        fail_msg: "Run: {{ wsfc_cluster_run.result }}"
+          - wsfc_run is changed
+          - not wsfc_run.result.report_only
+          - not wsfc_run.result.created
+          - wsfc_run.result.actions | length == 1
+        fail_msg: "Run: {{ wsfc_run.result }}"
 
     - name: Read the cluster after the fix
       ansible.windows.win_powershell:

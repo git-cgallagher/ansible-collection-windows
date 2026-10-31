@@ -5,7 +5,7 @@ name: domain-lab
 # boots a VM under QEMU/KVM on its runner, promotes it to the first DC of a new
 # forest and runs that role's scenario against it. The lab the scenarios share
 # is tests/domain_lab/ plus the Molecule base config, .config/molecule/config.yml.
-# About 14 min, the roles in parallel. wsfc_cluster's VM stays a workgroup
+# About 14 min, the roles in parallel. wsfc's VM stays a workgroup
 # server (a one-node cluster), never a DC.
 #
 # Not a required check: it is path-filtered (a required check that doesn't run
@@ -60,7 +60,7 @@ jobs:
       # One role's failure must not cancel the other roles' 14-minute runs.
       fail-fast: false
       matrix:
-        role: [gpo_backup, gpo_import, wsfc_cluster]
+        role: [gpo_backup, gpo_import, wsfc]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

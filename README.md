@@ -6,12 +6,12 @@ Each area's roles carry its prefix.
 | Area | Roles | What they do |
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
-| [Failover clustering](#failover-clustering) | `wsfc_cluster` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups |
+| [Failover clustering](#failover-clustering) | `wsfc` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
 > Windows Server 2022 VM in CI, each by its own Molecule scenario
 > (`roles/<role>/molecule/default`): the GPO roles against a domain
-> controller, within one domain, and `wsfc_cluster` by building a one-node
+> controller, within one domain, and `wsfc` by building a one-node
 > workgroup cluster. Multi-node clusters aren't lab-tested yet
 > ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
 > and neither is importing GPOs into a *different* domain
@@ -251,12 +251,12 @@ Known gaps, each tracked as a repository issue:
 
 ## Failover clustering
 
-`wsfc_cluster` builds a Windows Server Failover Cluster from the hosts in a
+`wsfc` builds a Windows Server Failover Cluster from the hosts in a
 play and keeps it the way its variables describe: it installs the feature on
 every node, validates them, creates the cluster (or adds missing nodes) and
 converges network names and roles, common properties, named shared disks and
 the quorum witness. It stops at the cluster: SQL Server setup, file shares and
-availability groups come after it. The [role README](roles/wsfc_cluster/README.md)
+availability groups come after it. The [role README](roles/wsfc/README.md)
 covers credentials (the double hop), what file servers, SQL Server FCIs and
 availability groups each need from it, and what isn't lab-tested yet;
 [examples/cluster.yml](examples/cluster.yml) has a playbook for each.
@@ -266,14 +266,14 @@ availability groups each need from it, and what isn't lab-tested yet;
   hosts: agclu01_nodes
   gather_facts: false
   roles:
-    - role: git_cgallagher.windows.wsfc_cluster
+    - role: git_cgallagher.windows.wsfc
       vars:
-        wsfc_cluster_name: AGCLU01
-        wsfc_cluster_static_addresses: [10.10.10.60]
-        wsfc_cluster_validate_ignore: [Storage]
-        wsfc_cluster_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\AGCLU01'}
-        wsfc_cluster_become_user: EXAMPLE\svc-cluster-build
-        wsfc_cluster_become_password: "{{ vault_cluster_build_password }}"
+        wsfc_name: AGCLU01
+        wsfc_static_addresses: [10.10.10.60]
+        wsfc_validate_ignore: [Storage]
+        wsfc_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\AGCLU01'}
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
 ```
 
 ## License

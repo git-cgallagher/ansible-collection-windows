@@ -2,7 +2,7 @@
 # an existing one in line with the role's variables.
 #
 # Runs on one of the cluster's nodes (the managing node) with the
-# FailoverClusters module. Invoked by roles/wsfc_cluster via
+# FailoverClusters module. Invoked by roles/wsfc via
 # ansible.windows.win_powershell; also runnable standalone for debugging.
 #
 # Order of operations:
@@ -213,7 +213,7 @@ function Invoke-Main {
             }
         }
         foreach ($extra in @($members | Where-Object { $wanted -notcontains $_ })) {
-            $warnings.Add("Node $extra is in cluster $Name but not in wsfc_cluster_nodes; it was left in place")
+            $warnings.Add("Node $extra is in cluster $Name but not in wsfc_nodes; it was left in place")
         }
     }
 

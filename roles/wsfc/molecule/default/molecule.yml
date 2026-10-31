@@ -1,5 +1,5 @@
 ---
-# wsfc_cluster's scenario: a one-node workgroup cluster on the shared lab VM
+# wsfc's scenario: a one-node workgroup cluster on the shared lab VM
 # (see README.md). The platform, provisioner, inventory and the shared
 # create/destroy playbooks come from the repository's Molecule base config,
 # .config/molecule/config.yml, which Molecule merges under this file.

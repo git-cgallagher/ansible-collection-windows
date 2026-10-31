@@ -1,56 +1,56 @@
 ---
 # Every variable is documented in meta/argument_specs.yml
-# (`ansible-doc -t role git_cgallagher.windows.wsfc_cluster`). Required, no
-# default: wsfc_cluster_name.
+# (`ansible-doc -t role git_cgallagher.windows.wsfc`). Required, no
+# default: wsfc_name.
 
 # Cluster node computer names; empty = every host in the play.
-wsfc_cluster_nodes: []
+wsfc_nodes: []
 
 # Host (inventory name) that creates and configures the cluster; empty = the
 # first host in the play.
-wsfc_cluster_manage_node: ''
+wsfc_manage_node: ''
 
 # ActiveDirectoryAndDns (domain CNO), Dns (workgroup / multi-domain) or None.
-wsfc_cluster_administrative_access_point: ActiveDirectoryAndDns
+wsfc_administrative_access_point: ActiveDirectoryAndDns
 
 # Cluster IP addresses, one per subnet; empty = DHCP.
-wsfc_cluster_static_addresses: []
+wsfc_static_addresses: []
 
 # Networks (CIDR) New-Cluster must not use for the cluster IP.
-wsfc_cluster_ignore_networks: []
+wsfc_ignore_networks: []
 
 # Features installed next to Failover-Clustering, for example FS-FileServer
 # or Multipath-IO.
-wsfc_cluster_extra_features: []
+wsfc_extra_features: []
 
 # Reboot a node when a feature install needs it; otherwise fail.
-wsfc_cluster_allow_reboot: false
+wsfc_allow_reboot: false
 
 # Run Test-Cluster before creating the cluster or adding nodes.
-wsfc_cluster_validate: true
+wsfc_validate: true
 
 # Test-Cluster categories to skip, for example [Storage].
-wsfc_cluster_validate_ignore: []
+wsfc_validate_ignore: []
 
 # Quorum witness; {} = leave the quorum New-Cluster chose.
-wsfc_cluster_quorum: {}
+wsfc_quorum: {}
 
 # Cluster networks to rename / give a role, matched by subnet.
-wsfc_cluster_networks: []
+wsfc_networks: []
 
 # Cluster common properties, for example SameSubnetThreshold.
-wsfc_cluster_properties: {}
+wsfc_properties: {}
 
 # Shared disks to add as named cluster disks (optionally CSVs).
-wsfc_cluster_disks: []
+wsfc_disks: []
 
 # Report every action without changing anything. --check implies it.
-wsfc_cluster_report_only: false
+wsfc_report_only: false
 
 # Run the cluster script as this account (runas become); empty = the
 # connection user.
-wsfc_cluster_become_user: ''
-wsfc_cluster_become_password: ''
+wsfc_become_user: ''
+wsfc_become_password: ''
 
 # Validation reports, on the managing node.
-wsfc_cluster_report_dir: 'C:\ProgramData\wsfc-iac'
+wsfc_report_dir: 'C:\ProgramData\wsfc-iac'
