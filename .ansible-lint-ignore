@@ -6,3 +6,4 @@
 roles/gpo_backup/molecule/default/verify.yml var-naming[no-role-prefix] skip
 roles/gpo_import/molecule/default/prepare.yml var-naming[no-role-prefix] skip
 roles/gpo_import/molecule/default/verify.yml var-naming[no-role-prefix] skip
+roles/wsfc_cluster/molecule/default/verify.yml var-naming[no-role-prefix] skip

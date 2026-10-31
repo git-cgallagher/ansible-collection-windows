@@ -1,0 +1,244 @@
+---
+argument_specs:
+  main:
+    short_description: Build and converge a Windows Server Failover Cluster
+    description:
+      - Installs Failover Clustering on every host in the play, then, from one managing node, validates the nodes
+        (C(Test-Cluster)), creates the cluster (C(New-Cluster)) or adds the nodes it is missing, and converges its
+        quorum witness, network names and roles, common properties and named shared disks.
+      - Lays the foundation that file servers, SQL Server failover cluster instances and Always On availability groups
+        sit on. It doesn't install SQL Server, create file shares or availability groups; the role README says what
+        each of those workloads needs from it.
+      - Never removes nodes, disks, networks or witnesses that the variables don't list; it reports them as warnings.
+      - Supports check mode; check mode and O(wsfc_cluster_report_only) report every action without changing the
+        cluster.
+      - Run it against every node of the cluster in one play (C(hosts) = the cluster's nodes).
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      wsfc_cluster_name:
+        type: str
+        required: true
+        description:
+          - Cluster name, which is also the cluster network name (the CNO in Active Directory). At most 15 characters.
+      wsfc_cluster_nodes:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Computer names of the cluster's nodes.
+          - Empty means the computer name of every host in the play.
+      wsfc_cluster_manage_node:
+        type: str
+        default: ''
+        description:
+          - Inventory name of the host that runs C(Test-Cluster), C(New-Cluster) and the rest of the cluster
+            configuration. It must be one of the play's hosts.
+          - Empty means the first host in the play.
+      wsfc_cluster_administrative_access_point:
+        type: str
+        default: ActiveDirectoryAndDns
+        choices: [ActiveDirectoryAndDns, Dns, None]
+        description:
+          - How the cluster is reached, passed to C(New-Cluster -AdministrativeAccessPoint).
+          - V(ActiveDirectoryAndDns) creates a computer object (CNO) in Active Directory; the normal choice for
+            domain-joined file servers and SQL Server failover cluster instances.
+          - V(Dns) registers the name in DNS only, for workgroup and multi-domain clusters (availability groups).
+          - V(None) creates no network name or IP address, for availability groups that don't need a cluster name.
+          - Only used when the cluster is created; changing it later is reported, not applied.
+      wsfc_cluster_static_addresses:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Static IP addresses for the cluster name, one per subnet the nodes span (multi-subnet clusters list
+            one per subnet).
+          - Empty means DHCP. Ignored when O(wsfc_cluster_administrative_access_point=None).
+          - Only used when the cluster is created.
+      wsfc_cluster_ignore_networks:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Networks in CIDR form (V(10.10.20.0/24)) that C(New-Cluster) must not use for the cluster's IP address,
+            such as storage or backup networks.
+      wsfc_cluster_extra_features:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Windows features installed on every node next to C(Failover-Clustering) and its management tools, for
+            example V(FS-FileServer) for a clustered file server or V(Multipath-IO) for SAN storage.
+      wsfc_cluster_allow_reboot:
+        type: bool
+        default: false
+        description:
+          - Reboot a node when a feature install needs it. When false the role fails on such a node and says so,
+            so a production node is never rebooted unasked.
+      wsfc_cluster_validate:
+        type: bool
+        default: true
+        description:
+          - Run C(Test-Cluster) on the nodes before creating the cluster or adding nodes to it, and fail when a
+            test fails. The report is kept in O(wsfc_cluster_report_dir) on the managing node.
+          - Validation isn't re-run once every node is in the cluster.
+      wsfc_cluster_validate_ignore:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Test categories C(Test-Cluster) skips, passed to C(-Ignore), for example V(Storage) for a cluster
+            without shared disks (availability groups).
+      wsfc_cluster_quorum:
+        type: dict
+        default: {}
+        description:
+          - The quorum configuration. Empty means leave the quorum that C(New-Cluster) chose (node majority, plus a
+            disk witness when it added a disk).
+          - A cloud witness's account key can't be read back, so it is only sent when the witness is created or
+            its account name or endpoint changes.
+        options:
+          # Not required here: Ansible validates a dict's required suboptions
+          # even when the dict is left at its {} default. tasks/main.yml
+          # requires it whenever the quorum is set.
+          type:
+            type: str
+            choices: [node_majority, disk_witness, file_share_witness, cloud_witness]
+            description:
+              - Required whenever O(wsfc_cluster_quorum) is set.
+              - V(node_majority) uses no witness; V(disk_witness) a cluster disk; V(file_share_witness) an SMB share
+                outside the cluster; V(cloud_witness) an Azure storage account.
+          disk:
+            type: str
+            description:
+              - Cluster disk resource name for V(disk_witness), for example one named in O(wsfc_cluster_disks).
+          path:
+            type: str
+            description:
+              - UNC path of the share for V(file_share_witness), for example V(\\\\fs01.example.com\\witness$).
+          account_name:
+            type: str
+            description:
+              - Azure storage account name for V(cloud_witness).
+          access_key:
+            type: str
+            no_log: true
+            description:
+              - Azure storage account access key for V(cloud_witness). Keep it in a vault.
+          endpoint:
+            type: str
+            description:
+              - Azure service endpoint for V(cloud_witness); empty means the public cloud (C(core.windows.net)).
+      wsfc_cluster_networks:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - Cluster networks to name and give a role, matched by subnet. Networks not listed are left alone.
+        options:
+          subnet:
+            type: str
+            required: true
+            description:
+              - The network in CIDR form, for example V(10.10.10.0/24).
+          name:
+            type: str
+            description:
+              - Cluster network name, for example V(Client) or V(Heartbeat).
+          role:
+            type: str
+            choices: [none, cluster, cluster_and_client]
+            description:
+              - V(none) keeps cluster traffic off the network (iSCSI, backup); V(cluster) carries heartbeats and
+                CSV traffic only; V(cluster_and_client) also carries client access (and the cluster's IP address).
+          metric:
+            type: int
+            description:
+              - Cluster network metric; lower is preferred for cluster traffic. Setting it turns off the automatic
+                metric.
+      wsfc_cluster_properties:
+        type: dict
+        default: {}
+        description:
+          - Cluster common properties to set, by name, for example V(SameSubnetThreshold), V(CrossSubnetThreshold),
+            V(CrossSubnetDelay) for multi-subnet availability groups, or V(ClusterLogSize).
+          - Values are compared as strings with the current value; only differing properties are set.
+      wsfc_cluster_disks:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - Shared disks to add to the cluster as named cluster disk resources, matched by the disk's C(UniqueId)
+            (C(Get-Disk | Select-Object Number, UniqueId) on the managing node), which is the same on every node for
+            a shared LUN.
+          - A disk already in the cluster under O(wsfc_cluster_disks[].name) is left as it is, apart from adding it
+            to Cluster Shared Volumes when O(wsfc_cluster_disks[].csv) asks for that.
+          - SQL Server failover cluster instance setup picks its disks by these resource names.
+        options:
+          name:
+            type: str
+            required: true
+            description:
+              - Cluster disk resource name, for example V(SQL Data).
+          unique_id:
+            type: str
+            required: true
+            description:
+              - The disk's C(UniqueId) as C(Get-Disk) reports it on the managing node.
+          csv:
+            type: bool
+            default: false
+            description:
+              - Add the disk to Cluster Shared Volumes (Scale-Out File Server, Hyper-V). Removing a disk from CSV is
+                reported, not done.
+          initialize:
+            type: bool
+            default: false
+            description:
+              - When the disk is still RAW, initialize it (GPT), create one partition and format it before adding
+                it. A disk that already has a partition table is never touched.
+          file_system:
+            type: str
+            default: NTFS
+            choices: [NTFS, ReFS]
+            description:
+              - File system for O(wsfc_cluster_disks[].initialize).
+          allocation_unit_size:
+            type: int
+            default: 65536
+            description:
+              - Allocation unit size in bytes for O(wsfc_cluster_disks[].initialize); 64 KB is what SQL Server data
+                and log volumes want.
+          label:
+            type: str
+            description:
+              - Volume label for O(wsfc_cluster_disks[].initialize); empty means the disk's resource name.
+      wsfc_cluster_report_only:
+        type: bool
+        default: false
+        description:
+          - Report every action without changing the cluster (a plan). Check mode implies it. Feature installs
+            follow normal check-mode rules.
+      wsfc_cluster_become_user:
+        type: str
+        default: ''
+        description:
+          - Run the cluster script as this account through C(runas) become, for example V(EXAMPLE\\svc-cluster).
+          - C(New-Cluster) and C(Add-ClusterNode) reach the other nodes and Active Directory from the managing node,
+            which a plain WinRM logon can't delegate (the double hop); become gives the script a local logon with
+            credentials. Empty means the connection user, which works when the connection already delegates
+            (CredSSP, Kerberos delegation) or when the cluster has one node.
+          - The account needs local administrator rights on every node and, with
+            O(wsfc_cluster_administrative_access_point=ActiveDirectoryAndDns), rights to create the cluster's
+            computer object (or a prestaged, disabled CNO it has Full Control over).
+      wsfc_cluster_become_password:
+        type: str
+        default: ''
+        no_log: true
+        description:
+          - Password of O(wsfc_cluster_become_user). Keep it in a vault.
+      wsfc_cluster_report_dir:
+        type: str
+        default: 'C:\ProgramData\wsfc-iac'
+        description:
+          - Directory on the managing node for C(Test-Cluster) reports.

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 — 2026-10-31
+
+A second area: failover clusters.
+
+- New role `wsfc_cluster`: installs Failover Clustering on every node, then
+  from one managing node validates the nodes (`Test-Cluster`), creates the
+  cluster or adds the nodes it is missing, and converges cluster network
+  names, roles and metrics, common properties, named shared disks (with an
+  optional first-time format of RAW disks and Cluster Shared Volumes) and the
+  quorum witness (none, disk, file share or Azure cloud witness). It never
+  removes nodes, disks or networks, refuses to reboot a node unless
+  `wsfc_cluster_allow_reboot` is set, and supports check mode and a
+  report-only plan. Its README says what file servers, SQL Server FCIs and
+  availability groups each need from it.
+- Its Molecule scenario builds a one-node workgroup cluster on a real Windows
+  Server 2022 VM in CI. Multi-node clusters, shared disks, witnesses and the
+  domain access points aren't lab-tested yet.
+- `examples/cluster.yml`: a file server cluster, a SQL Server FCI's cluster
+  and a multi-subnet availability group's cluster.
+
 ## 0.2.0 — 2026-10-31
 
 Renamed to `git_cgallagher.windows`, to grow into a collection for Windows

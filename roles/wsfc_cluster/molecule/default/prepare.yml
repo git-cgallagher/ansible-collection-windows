@@ -1,0 +1,48 @@
+---
+# A workgroup server, not a DC: converge creates the cluster from nothing.
+# Re-running prepare on the same VM (molecule prepare --force) removes a
+# cluster a previous converge left.
+- name: Prepare a workgroup node
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the connection
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+          try {
+              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          }
+          catch {
+              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
+          }
+
+    - name: Remove a cluster left by a previous converge
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          if (Get-Module -ListAvailable -Name FailoverClusters) {
+              Import-Module FailoverClusters
+              $cluster = $null
+              try {
+                  $cluster = Get-Cluster -Name $env:COMPUTERNAME -ErrorAction Stop
+              }
+              catch {
+                  $cluster = $null
+              }
+              if ($null -ne $cluster) {
+                  $cluster | Remove-Cluster -Force -CleanupAD:$false
+                  $Ansible.Changed = $true
+              }
+          }
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ ansible_user }}"
+      vars:
+        ansible_become_password: "{{ ansible_password }}"

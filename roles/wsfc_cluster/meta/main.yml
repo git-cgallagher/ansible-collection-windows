@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  role_name: wsfc_cluster
+  author: Chris Gallagher
+  description: Build and converge a Windows Server Failover Cluster for file servers, SQL Server FCIs and availability groups
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+dependencies: []
