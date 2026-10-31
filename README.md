@@ -12,10 +12,11 @@ Each area's roles carry its prefix.
 > Windows Server 2022 VM in CI, each by its own Molecule scenario
 > (`roles/<role>/molecule/default`): the GPO roles against a domain
 > controller, within one domain, and `wsfc_cluster` by building a one-node
-> workgroup cluster. Multi-node clusters aren't lab-tested yet, and neither
-> is importing GPOs into a *different* domain
+> workgroup cluster. Multi-node clusters aren't lab-tested yet
+> ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
+> and neither is importing GPOs into a *different* domain
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),
-> so try that in a lab of your own first. Known gaps are listed under
+> so try those in a lab of your own first. Known gaps are listed under
 > [What this doesn't do (yet)](#what-this-doesnt-do-yet).
 >
 > Until 0.2.0 this collection was `git_cgallagher.gpo`, in the repository

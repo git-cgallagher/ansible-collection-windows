@@ -23,6 +23,27 @@
               $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
           }
 
+    # Microsoft's prerequisites for a workgroup cluster: a primary DNS suffix
+    # on every node, and remote UAC filtering off for a local administrator
+    # that isn't the built-in Administrator (the box's account is vagrant).
+    - name: Set a primary DNS suffix
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+        name: NV Domain
+        data: "{{ lab_cluster.dns_suffix }}"
+        type: string
+      notify: Reboot so the DNS suffix takes effect
+
+    - name: Turn off remote UAC filtering for local administrators
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: LocalAccountTokenFilterPolicy
+        data: 1
+        type: dword
+
+    - name: Reboot now if the DNS suffix changed
+      ansible.builtin.meta: flush_handlers
+
     - name: Remove a cluster left by a previous converge
       ansible.windows.win_powershell:
         script: |
@@ -46,3 +67,8 @@
       become_user: "{{ ansible_user }}"
       vars:
         ansible_become_password: "{{ ansible_password }}"
+
+  handlers:
+    - name: Reboot so the DNS suffix takes effect
+      ansible.windows.win_reboot:
+        reboot_timeout: 900

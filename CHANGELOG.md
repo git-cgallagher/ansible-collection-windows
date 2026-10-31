@@ -16,7 +16,8 @@ A second area: failover clusters.
   availability groups each need from it.
 - Its Molecule scenario builds a one-node workgroup cluster on a real Windows
   Server 2022 VM in CI. Multi-node clusters, shared disks, witnesses and the
-  domain access points aren't lab-tested yet.
+  domain access points aren't lab-tested yet (issue #19, the multi-node
+  lab).
 - `examples/cluster.yml`: a file server cluster, a SQL Server FCI's cluster
   and a multi-subnet availability group's cluster.
 

@@ -70,7 +70,7 @@ Not covered by the lab yet (issue #16 unless noted):
   Users, and Deny entries (the lab's GPOs have none)
 - a member-server management host and a least-privilege account (#15);
   multi-query WMI filters aren't supported (#13)
-- `wsfc_cluster` (multi-node lab issue): adding nodes, the
+- `wsfc_cluster` (#19, the multi-node lab): adding nodes, the
   `ActiveDirectoryAndDns`/`Dns` access points and static addresses, shared
   disks (format, CSV), disk/file share/cloud witnesses, a failing
   `Test-Cluster` (its failure detection matches `ClusterNotApproved` in the

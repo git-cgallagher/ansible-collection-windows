@@ -33,6 +33,32 @@ All variables are documented in
 [meta/argument_specs.yml](meta/argument_specs.yml), which Ansible also uses to
 validate them (`ansible-doc -t role git_cgallagher.windows.wsfc_cluster`).
 
+## Variables
+
+Only `wsfc_cluster_name` is required. The full descriptions, including each
+list item's keys, are in the argument spec.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `wsfc_cluster_name` | *(required)* | Cluster name (at most 15 characters) |
+| `wsfc_cluster_nodes` | `[]` | Node computer names; empty = every host in the play |
+| `wsfc_cluster_manage_node` | `''` | Host that creates and configures the cluster; empty = the first host |
+| `wsfc_cluster_administrative_access_point` | `ActiveDirectoryAndDns` | `ActiveDirectoryAndDns`, `Dns` or `None` (creation only) |
+| `wsfc_cluster_static_addresses` | `[]` | Cluster IP addresses, one per subnet; empty = DHCP (creation only) |
+| `wsfc_cluster_ignore_networks` | `[]` | Networks (CIDR) `New-Cluster` mustn't use for the cluster IP |
+| `wsfc_cluster_extra_features` | `[]` | More features on every node, for example `FS-FileServer`, `Multipath-IO` |
+| `wsfc_cluster_allow_reboot` | `false` | Reboot a node when the feature install needs it, instead of failing |
+| `wsfc_cluster_validate` | `true` | Run `Test-Cluster` before creating the cluster or adding nodes |
+| `wsfc_cluster_validate_ignore` | `[]` | `Test-Cluster` categories to skip, for example `Storage` |
+| `wsfc_cluster_quorum` | `{}` | `type` (`node_majority`, `disk_witness`, `file_share_witness`, `cloud_witness`) plus `disk`, `path`, or `account_name`/`access_key`/`endpoint`; empty = leave it |
+| `wsfc_cluster_networks` | `[]` | `subnet` (CIDR) plus `name`, `role` (`none`, `cluster`, `cluster_and_client`), `metric` |
+| `wsfc_cluster_properties` | `{}` | Cluster common properties, for example `SameSubnetThreshold` |
+| `wsfc_cluster_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label` |
+| `wsfc_cluster_report_only` | `false` | Report every action without changing the cluster (`--check` implies it) |
+| `wsfc_cluster_become_user` | `''` | Run the cluster task as this account (`runas`); see below |
+| `wsfc_cluster_become_password` | `''` | Its password (vault it) |
+| `wsfc_cluster_report_dir` | `C:\ProgramData\wsfc-iac` | `Test-Cluster` reports on the managing node |
+
 ## Credentials: the double hop
 
 `Test-Cluster`, `New-Cluster` and `Add-ClusterNode` reach the other nodes (and
@@ -124,7 +150,7 @@ name, role and metric, common properties, node-majority quorum, an
 idempotent re-run, a report-only plan and a drift fix.
 
 The lab is one VM on QEMU user-mode networking, so these aren't lab-tested
-yet (tracked in the multi-node lab issue): adding nodes, the
+yet ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19), the multi-node lab): adding nodes, the
 `ActiveDirectoryAndDns` and `Dns` access points and static addresses, shared
 disks (formatting, CSV), disk, file share and cloud witnesses, a failing
 `Test-Cluster`, and the double hop. Try them in a lab of your own first.
