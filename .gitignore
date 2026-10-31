@@ -2,6 +2,7 @@ collections/
 .molecule-collections/
 .ansible/
 tests/output/
+tests/integration/inventory.winrm
 *.tar.gz
 *.retry
 .cache/

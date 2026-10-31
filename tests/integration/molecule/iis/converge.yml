@@ -1,0 +1,15 @@
+---
+# Runs each module's integration target as a role. Each depends on setup_iis
+# (meta/main.yml), which prepare.yml has already run, so it changes nothing
+# here. The targets check their own idempotence and clean up after themselves.
+- name: Run the IIS modules' integration targets
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the iis_mime_type target
+      ansible.builtin.include_role:
+        name: iis_mime_type
+
+    - name: Run the iis_mime_type_info target
+      ansible.builtin.include_role:
+        name: iis_mime_type_info

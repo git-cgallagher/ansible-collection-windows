@@ -1,0 +1,231 @@
+---
+# At the server level: add a mapping, find it again under other spellings,
+# change its MIME type and remove it. Each change runs in check mode first
+# (predicts the change, writes nothing), then for real, then again (no change).
+
+# --- add -------------------------------------------------------------------------
+- name: Add .ansibletest at the server level (check mode)
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    mime_type: text/x-ansible-test
+  check_mode: true
+  diff: true
+  register: iis_mime_type_add_check
+
+- name: Read .ansibletest at the server level after the check-mode add
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check check mode predicted the add and wrote nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_add_check is changed
+      - iis_mime_type_add_check.extension == '.ansibletest'
+      - iis_mime_type_add_check.mime_type == 'text/x-ansible-test'
+      - iis_mime_type_add_check.config_path == setup_iis_server_path
+      - iis_mime_type_add_check.diff.before is none
+      - "iis_mime_type_add_check.diff.after == {'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}"
+      - iis_mime_type_read.result.effective == []
+    fail_msg: "{{ iis_mime_type_add_check }} / {{ iis_mime_type_read.result }}"
+
+- name: Add .ansibletest at the server level
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    mime_type: text/x-ansible-test
+  diff: true
+  register: iis_mime_type_add
+
+- name: Read .ansibletest at the server level after the add
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check the mapping is served and stored in applicationHost.config
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_add is changed
+      - iis_mime_type_add.diff.before is none
+      - "iis_mime_type_add.diff.after == {'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}"
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}]"
+      - "iis_mime_type_read.result.application_host == [{'element': 'mimeMap', 'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}]"
+    fail_msg: "{{ iis_mime_type_add }} / {{ iis_mime_type_read.result }}"
+
+- name: Add .ansibletest at the server level again
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    mime_type: text/x-ansible-test
+  register: iis_mime_type_add_again
+
+- name: Check the repeat changed nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_add_again is not changed
+      - iis_mime_type_add_again.mime_type == 'text/x-ansible-test'
+    fail_msg: "{{ iis_mime_type_add_again }}"
+
+# --- other spellings of the same extension -------------------------------------------
+- name: Add .ansibletest again, named without its dot
+  git_cgallagher.windows.iis_mime_type:
+    extension: ansibletest
+    mime_type: text/x-ansible-test
+  register: iis_mime_type_no_dot
+
+- name: Add .ansibletest again, named in upper case
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ANSIBLETEST
+    mime_type: text/x-ansible-test
+  register: iis_mime_type_upper
+
+- name: Read .ansibletest at the server level after the other spellings
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check both found the existing mapping instead of adding another
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_no_dot is not changed
+      - iis_mime_type_no_dot.extension == '.ansibletest'
+      - iis_mime_type_upper is not changed
+      - iis_mime_type_upper.extension == '.ANSIBLETEST'
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}]"
+    fail_msg: "{{ iis_mime_type_no_dot }} / {{ iis_mime_type_upper }} / {{ iis_mime_type_read.result }}"
+
+# --- change the MIME type -------------------------------------------------------------
+- name: Change .ansibletest's MIME type (check mode)
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    mime_type: text/x-ansible-test-2
+  check_mode: true
+  diff: true
+  register: iis_mime_type_change_check
+
+- name: Read .ansibletest at the server level after the check-mode change
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check check mode predicted the change and wrote nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_change_check is changed
+      - iis_mime_type_change_check.mime_type == 'text/x-ansible-test-2'
+      - "iis_mime_type_change_check.diff.before == {'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}"
+      - "iis_mime_type_change_check.diff.after == {'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test-2'}"
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test'}]"
+    fail_msg: "{{ iis_mime_type_change_check }} / {{ iis_mime_type_read.result }}"
+
+- name: Change .ansibletest's MIME type
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    mime_type: text/x-ansible-test-2
+  register: iis_mime_type_change
+
+- name: Read .ansibletest at the server level after the change
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check the new MIME type is served, from one stored entry
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_change is changed
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test-2'}]"
+      - "iis_mime_type_read.result.application_host == [{'element': 'mimeMap', 'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test-2'}]"
+    fail_msg: "{{ iis_mime_type_change }} / {{ iis_mime_type_read.result }}"
+
+- name: Change .ansibletest's MIME type again
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    mime_type: text/x-ansible-test-2
+  register: iis_mime_type_change_again
+
+- name: Check the repeated change changed nothing
+  ansible.builtin.assert:
+    that: iis_mime_type_change_again is not changed
+    fail_msg: "{{ iis_mime_type_change_again }}"
+
+# --- remove -----------------------------------------------------------------------------
+- name: Remove .ansibletest (check mode)
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    state: absent
+  check_mode: true
+  diff: true
+  register: iis_mime_type_remove_check
+
+- name: Read .ansibletest at the server level after the check-mode removal
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check check mode predicted the removal and wrote nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_remove_check is changed
+      - iis_mime_type_remove_check.mime_type is none
+      - "iis_mime_type_remove_check.diff.before == {'extension': '.ansibletest', 'mime_type': 'text/x-ansible-test-2'}"
+      - iis_mime_type_remove_check.diff.after is none
+      - iis_mime_type_read.result.effective | length == 1
+    fail_msg: "{{ iis_mime_type_remove_check }} / {{ iis_mime_type_read.result }}"
+
+- name: Remove .ansibletest
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    state: absent
+  register: iis_mime_type_remove
+
+- name: Read .ansibletest at the server level after the removal
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansibletest
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check the mapping is gone, with nothing left behind in applicationHost.config
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_remove is changed
+      - iis_mime_type_read.result.effective == []
+      - iis_mime_type_read.result.application_host == []
+    fail_msg: "{{ iis_mime_type_remove }} / {{ iis_mime_type_read.result }}"
+
+- name: Remove .ansibletest again
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansibletest
+    state: absent
+  register: iis_mime_type_remove_again
+
+- name: Remove an extension that never had a mapping
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansiblenever
+    state: absent
+  register: iis_mime_type_remove_never
+
+- name: Check neither removal changed anything
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_remove_again is not changed
+      - iis_mime_type_remove_never is not changed
+      - iis_mime_type_remove_never.mime_type is none
+    fail_msg: "{{ iis_mime_type_remove_again }} / {{ iis_mime_type_remove_never }}"

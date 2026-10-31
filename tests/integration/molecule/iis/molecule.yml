@@ -1,0 +1,20 @@
+---
+# Runs the IIS modules' integration targets (tests/integration/targets/) on
+# one Windows Server 2022 VM that is never promoted to a domain controller.
+# Run it from tests/integration with `molecule test -s iis` (README.md).
+#
+# The box and the VM's size, the provisioner, the inventory and the shared
+# create/destroy playbooks come from the repository's Molecule base config,
+# .config/molecule/config.yml, which Molecule merges under this file.
+scenario:
+  name: iis
+  # No idempotence step: the targets add, change and remove mappings on
+  # purpose, and check each module's idempotence themselves.
+  test_sequence: [dependency, destroy, syntax, create, prepare, converge, verify, destroy]
+platforms:
+  # Its own name, so it isn't mistaken for the domain labs' dc01.
+  - name: iis01
+provisioner:
+  env:
+    # The targets are roles; prepare.yml and converge.yml find them here.
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/targets

@@ -1,0 +1,52 @@
+---
+# Installs IIS and creates the test website and application. Idempotent, so
+# every target can depend on it (meta/main.yml) and the Molecule scenario's
+# prepare step can run it first.
+- name: Install IIS, its management tools and the WebAdministration module
+  ansible.windows.win_feature:
+    name:
+      - Web-Server
+      - Web-Scripting-Tools
+    include_management_tools: true
+    state: present
+  register: setup_iis_feature
+
+- name: Reboot when the install asks for it
+  ansible.windows.win_reboot:
+  when: setup_iis_feature.reboot_required
+
+- name: Create the test website's and application's directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ setup_iis_site_dir }}"
+    - "{{ setup_iis_application_dir }}"
+
+- name: Create the test website and its application
+  ansible.windows.win_powershell:
+    script: |
+      param (
+          [string]$Site,
+          [int]$Port,
+          [string]$SiteDir,
+          [string]$Application,
+          [string]$ApplicationDir
+      )
+      $Ansible.Changed = $false
+      Import-Module -Name WebAdministration
+      if (-not (Get-Website | Where-Object { $_.Name -eq $Site })) {
+          $null = New-Website -Name $Site -Port $Port -PhysicalPath $SiteDir
+          $Ansible.Changed = $true
+      }
+      $name = $Application.TrimStart('/')
+      if (-not (Get-WebApplication -Site $Site -Name $name)) {
+          $null = New-WebApplication -Site $Site -Name $name -PhysicalPath $ApplicationDir -ApplicationPool DefaultAppPool
+          $Ansible.Changed = $true
+      }
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Port: "{{ setup_iis_site_port }}"
+      SiteDir: "{{ setup_iis_site_dir }}"
+      Application: "{{ setup_iis_application }}"
+      ApplicationDir: "{{ setup_iis_application_dir }}"

@@ -1,0 +1,205 @@
+---
+# Integration tests for git_cgallagher.windows.iis_mime_type_info. setup_iis
+# (meta/main.yml) has installed IIS and created the test website and
+# application. The website's own mappings are seeded without iis_mime_type:
+# one through WebAdministration into its <location> element, the rest as a
+# web.config file.
+- name: Test iis_mime_type_info, then clean up
+  block:
+    - name: Start the test website from the inherited map
+      ansible.windows.win_powershell:
+        script: "{{ setup_iis_clear_script }}"
+        parameters:
+          Site: "{{ setup_iis_site }}"
+          PhysicalPath:
+            - "{{ setup_iis_site_dir }}"
+            - "{{ setup_iis_application_dir }}"
+
+    # --- the server level ------------------------------------------------------------------
+    - name: Read every mapping at the server level
+      git_cgallagher.windows.iis_mime_type_info:
+      register: iis_mime_type_info_server
+
+    - name: Check IIS's defaults are there, defined at the server level and sorted by extension
+      ansible.builtin.assert:
+        that:
+          - iis_mime_type_info_server is not changed
+          - iis_mime_type_info_server.mime_types | length > 50
+          - "{'extension': '.html', 'mime_type': 'text/html', 'config_path': setup_iis_server_path, 'inherited': false} in iis_mime_type_info_server.mime_types"
+          - "{'extension': '.css', 'mime_type': 'text/css', 'config_path': setup_iis_server_path, 'inherited': false} in iis_mime_type_info_server.mime_types"
+          - iis_mime_type_info_server.mime_types | selectattr('inherited') | list == []
+          - iis_mime_type_info_server.mime_types | map(attribute='config_path') | unique | list == [setup_iis_server_path]
+          - iis_mime_type_info_extensions == iis_mime_type_info_extensions | sort
+        fail_msg: "{{ iis_mime_type_info_server.mime_types[:5] }} ..."
+      vars:
+        iis_mime_type_info_extensions: "{{ iis_mime_type_info_server.mime_types | map(attribute='extension') | map('lower') | list }}"
+
+    # --- filters -------------------------------------------------------------------------------
+    - name: Filter by extension
+      git_cgallagher.windows.iis_mime_type_info:
+        extension: .html
+      register: iis_mime_type_info_html
+
+    - name: Filter by extension, named without its dot and in upper case
+      git_cgallagher.windows.iis_mime_type_info:
+        extension: HTML
+      register: iis_mime_type_info_html_upper
+
+    - name: Filter by MIME type, in upper case
+      git_cgallagher.windows.iis_mime_type_info:
+        mime_type: TEXT/CSS
+      register: iis_mime_type_info_css
+
+    - name: Filter by an extension and its MIME type
+      git_cgallagher.windows.iis_mime_type_info:
+        extension: .html
+        mime_type: text/html
+      register: iis_mime_type_info_both
+
+    - name: Filter by an extension and another extension's MIME type
+      git_cgallagher.windows.iis_mime_type_info:
+        extension: .html
+        mime_type: text/css
+      register: iis_mime_type_info_neither
+
+    - name: Filter by an extension IIS doesn't map
+      git_cgallagher.windows.iis_mime_type_info:
+        extension: .ansiblenothing
+      register: iis_mime_type_info_none
+
+    - name: Check each filter, and that an entry must match both filters
+      ansible.builtin.assert:
+        that:
+          - "iis_mime_type_info_html.mime_types == [{'extension': '.html', 'mime_type': 'text/html', 'config_path': setup_iis_server_path, 'inherited': false}]"
+          - iis_mime_type_info_html_upper.mime_types == iis_mime_type_info_html.mime_types
+          - iis_mime_type_info_css.mime_types | map(attribute='mime_type') | map('lower') | unique | list == ['text/css']
+          - "'.css' in iis_mime_type_info_css.mime_types | map(attribute='extension') | list"
+          - iis_mime_type_info_both.mime_types == iis_mime_type_info_html.mime_types
+          - iis_mime_type_info_neither.mime_types == []
+          - iis_mime_type_info_none.mime_types == []
+        fail_msg: >-
+          {{ iis_mime_type_info_html.mime_types }} / {{ iis_mime_type_info_html_upper.mime_types }} /
+          {{ iis_mime_type_info_css.mime_types }} / {{ iis_mime_type_info_both.mime_types }} /
+          {{ iis_mime_type_info_neither.mime_types }} / {{ iis_mime_type_info_none.mime_types }}
+
+    # --- inherited and local entries -------------------------------------------------------------
+    - name: Seed .ansibleinfo in the test website's <location> element
+      ansible.windows.win_powershell:
+        script: |
+          param ([string]$Site)
+          Import-Module -Name WebAdministration
+          $value = @{ fileExtension = '.ansibleinfo'; mimeType = 'text/x-ansible-info' }
+          Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $Site -Filter 'system.webServer/staticContent' -Name '.' -Value $value
+        parameters:
+          Site: "{{ setup_iis_site }}"
+
+    # .css is overridden; .png is redefined with the MIME type it inherits.
+    - name: Seed the test website's web.config
+      ansible.windows.win_copy:
+        dest: "{{ setup_iis_site_dir }}\\web.config"
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <configuration>
+            <system.webServer>
+              <staticContent>
+                <mimeMap fileExtension=".ansibleinfoweb" mimeType="text/x-ansible-info-web" />
+                <remove fileExtension=".css" />
+                <mimeMap fileExtension=".css" mimeType="text/x-ansible-css" />
+                <remove fileExtension=".png" />
+                <mimeMap fileExtension=".png" mimeType="image/png" />
+              </staticContent>
+            </system.webServer>
+          </configuration>
+
+    - name: Read the test website's mappings
+      git_cgallagher.windows.iis_mime_type_info:
+        site: "{{ setup_iis_site }}"
+      register: iis_mime_type_info_site
+
+    - name: Read the test application's mappings
+      git_cgallagher.windows.iis_mime_type_info:
+        site: "{{ setup_iis_site }}"
+        application: "{{ setup_iis_application }}"
+      register: iis_mime_type_info_app
+
+    # .png is the case only IIS's own record of where an entry is defined can
+    # decide: the website redefines it with the MIME type it would inherit.
+    - name: Check the website's own entries are local, in either file, and the rest inherited
+      ansible.builtin.assert:
+        that:
+          - iis_mime_type_info_site.mime_types | map(attribute='config_path') | unique | list == [setup_iis_site_path]
+          - "{'extension': '.ansibleinfo', 'mime_type': 'text/x-ansible-info', 'config_path': setup_iis_site_path, 'inherited': false}
+            in iis_mime_type_info_site.mime_types"
+          - "{'extension': '.ansibleinfoweb', 'mime_type': 'text/x-ansible-info-web', 'config_path': setup_iis_site_path, 'inherited': false}
+            in iis_mime_type_info_site.mime_types"
+          - "{'extension': '.css', 'mime_type': 'text/x-ansible-css', 'config_path': setup_iis_site_path, 'inherited': false}
+            in iis_mime_type_info_site.mime_types"
+          - "{'extension': '.html', 'mime_type': 'text/html', 'config_path': setup_iis_site_path, 'inherited': true}
+            in iis_mime_type_info_site.mime_types"
+          - "{'extension': '.png', 'mime_type': 'image/png', 'config_path': setup_iis_site_path, 'inherited': false}
+            in iis_mime_type_info_site.mime_types"
+        fail_msg: >-
+          {{ iis_mime_type_info_site.mime_types
+             | selectattr('extension', 'in', ['.ansibleinfo', '.ansibleinfoweb', '.css', '.html', '.png']) | list }}
+
+    - name: Check the application inherits all of them from the website
+      ansible.builtin.assert:
+        that:
+          - iis_mime_type_info_app.mime_types | map(attribute='config_path') | unique | list == [setup_iis_application_path]
+          - "{'extension': '.ansibleinfo', 'mime_type': 'text/x-ansible-info', 'config_path': setup_iis_application_path, 'inherited': true}
+            in iis_mime_type_info_app.mime_types"
+          - "{'extension': '.ansibleinfoweb', 'mime_type': 'text/x-ansible-info-web', 'config_path': setup_iis_application_path, 'inherited': true}
+            in iis_mime_type_info_app.mime_types"
+          - "{'extension': '.css', 'mime_type': 'text/x-ansible-css', 'config_path': setup_iis_application_path, 'inherited': true}
+            in iis_mime_type_info_app.mime_types"
+          - "{'extension': '.png', 'mime_type': 'image/png', 'config_path': setup_iis_application_path, 'inherited': true}
+            in iis_mime_type_info_app.mime_types"
+        fail_msg: >-
+          {{ iis_mime_type_info_app.mime_types
+             | selectattr('extension', 'in', ['.ansibleinfo', '.ansibleinfoweb', '.css', '.png']) | list }}
+
+    - name: Read the test website's mappings in check mode
+      git_cgallagher.windows.iis_mime_type_info:
+        site: "{{ setup_iis_site }}"
+      check_mode: true
+      register: iis_mime_type_info_site_check
+
+    - name: Check check mode returned the same data
+      ansible.builtin.assert:
+        that:
+          - iis_mime_type_info_site_check is not changed
+          - iis_mime_type_info_site_check is not skipped
+          - iis_mime_type_info_site_check.mime_types == iis_mime_type_info_site.mime_types
+        fail_msg: "{{ iis_mime_type_info_site_check }}"
+
+    - name: Name a website that doesn't exist
+      git_cgallagher.windows.iis_mime_type_info:
+        site: Ansible Missing Site
+      register: iis_mime_type_info_missing_site
+      failed_when: >-
+        "IIS has no website named 'Ansible Missing Site'" not in (iis_mime_type_info_missing_site.msg | default(''))
+  always:
+    - name: Put the test website back to inheriting everything
+      ansible.windows.win_powershell:
+        script: "{{ setup_iis_clear_script }}"
+        parameters:
+          Site: "{{ setup_iis_site }}"
+          PhysicalPath:
+            - "{{ setup_iis_site_dir }}"
+            - "{{ setup_iis_application_dir }}"
+
+- name: Read the test website's own entries after the cleanup
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_info_read
+
+- name: Check the website stores nothing of its own
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_info_read.result.application_host == []
+      - iis_mime_type_info_read.result.web_config == []
+    fail_msg: "{{ iis_mime_type_info_read.result }}"

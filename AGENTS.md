@@ -11,7 +11,7 @@ automation, grouped by area. Until 0.2.0 (2026-10-31) it was
 redirects the old URLs and the old name was never on Galaxy, so issues,
 commits and notes that say "gpo" mean this collection.
 
-Its one area so far is **Group Policy as code**: `Backup-GPO`/`Import-GPO`
+Its first area is **Group Policy as code**: `Backup-GPO`/`Import-GPO`
 plus a JSON manifest for links, precedence, filtering, WMI filters and
 status. Problem statement + decisions: `docs/design.md`. Two roles:
 
@@ -22,6 +22,22 @@ status. Problem statement + decisions: `docs/design.md`. Two roles:
 
 A new area joins as roles (or plugins) named with that area's prefix, the
 way `gpo_*` is, each role with its own Molecule scenario.
+
+The **IIS** area (0.4.0) is the collection's first modules:
+
+- `plugins/modules/iis_mime_type` — ensure an extension's MIME type in IIS's
+  static content MIME map (or its absence) at the server, site or
+  application level, deciding against the effective map, inherited entries
+  included. Writes to `<location>` elements in `applicationHost.config`, or
+  with `config_file: web.config` to the level's `web.config`.
+- `plugins/modules/iis_mime_type_info` — read that map at a level, filtered
+  by extension and/or MIME type, with an `inherited` flag per entry.
+
+Modules are tested by ansible-test integration targets rather than a
+scenario each (see Conventions). The behavior was implemented clean-room from
+a behavioral spec of the old `ansible-windows` modules, under this
+collection's MIT license: don't copy code from GPL-licensed IIS modules
+(microsoft.iis, community.windows) into it.
 
 ## ⚠️ Maturity — read before relying on it
 
@@ -46,6 +62,17 @@ parse + PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs`
 workflow. Known gaps found by review are tracked as repo issues and listed
 in the README's "What this doesn't do (yet)".
 
+The IIS modules are lab-tested the same way, by their integration targets:
+the `molecule (iis)` job boots the same box as a plain server (never a DC),
+installs IIS and runs `tests/integration/targets/iis_mime_type` and
+`iis_mime_type_info`: server, site and application levels, both
+`config_file` stores, check and diff mode, overriding and hiding inherited
+mappings, the refusal to override a level's own `web.config`, and the error
+messages. The job first ran on 0.4.0's pull request. Not covered: a section
+locked at a parent level, content directories on UNC paths, and a host with
+IIS but without its management tools (the lab installs them for the
+targets' independent reads).
+
 Not covered by the lab yet (issue #16 unless noted):
 
 - importing into a *different* domain: link targets rebased onto another
@@ -59,8 +86,9 @@ Not covered by the lab yet (issue #16 unless noted):
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
-third-party box download. Promote its two jobs, `molecule (gpo_backup)` and
-`molecule (gpo_import)`, after four consecutive green weekly runs, and
+third-party box download. Promote its jobs, `molecule (gpo_backup)`,
+`molecule (gpo_import)` and `molecule (iis)`, after four consecutive green
+weekly runs each, and
 replace the path filter with a job that always reports and skips the lab
 when nothing relevant changed.
 
@@ -91,14 +119,19 @@ lab to the scripts — and record the surprise below as a gotcha.
   (`tests/argument_specs/`) enforces both. Add or change a variable in the
   spec, defaults, README table and tasks together.
 - **Molecule scenarios live with their role**, in
-  `roles/<role>/molecule/<scenario>/`, never at the collection root. What
-  every scenario shares goes in `.config/molecule/config.yml` (Molecule's
-  base config: box pin, provisioner, inventory, `lab_fixture`, test
-  sequence) or in `tests/domain_lab/` (VM lifecycle, promotion, seeding, the
-  fixture script); a scenario's `molecule.yml` holds only what differs.
+  `roles/<role>/molecule/<scenario>/`, never at the collection root. The one
+  exception is the modules' runner in `tests/integration/molecule/` (see the
+  module bullets below). What every scenario shares goes in
+  `.config/molecule/config.yml` (Molecule's base config: the box pin and VM
+  size as `lab_vm`, provisioner, inventory, `lab_fixture`, test sequence) or
+  in `tests/domain_lab/` (VM lifecycle, promotion, seeding, the fixture
+  script); a scenario's `molecule.yml` holds only what differs.
   The shared platform is a Windows Server 2022 domain controller; a role
   that needs another machine (a member server, no domain) overrides
   `platforms` and `provisioner.playbooks` in its own `molecule.yml`.
+  Molecule replaces the whole `platforms` list, so an override names its VM
+  (`- name: iis01`) and `create.yml` fills in the rest from `lab_vm`; a
+  platform entry can still override any `lab_vm` field.
   Playbooks reach the shared fixture through `lab_tests_dir`, and a
   scenario's own `files/` through `playbook_dir`. `roles/*/molecule` and
   `.config` are in `galaxy.yml`'s `build_ignore` and in the version-bump
@@ -109,6 +142,35 @@ lab to the scripts — and record the surprise below as a gotcha.
   `GALAXY_API_KEY` exists in a main-only `galaxy` environment (issue #3);
   the lab validation it also waited for passed on 2026-10-28. Then restore
   the `workflow_run` trigger.
+- **Modules** live in `plugins/modules/<area>_<name>.ps1`, documented in a
+  YAML sidecar next to each (`<area>_<name>.yml` with `DOCUMENTATION`,
+  `EXAMPLES` and `RETURN`), with shared code in
+  `plugins/module_utils/_<Name>.psm1` (the underscore marks it private to the
+  collection). They use `Ansible.Basic` with the argument spec and `Create`
+  at the top, before anything Windows-only: validate-modules runs the file
+  under pwsh on Linux up to `Create` to read the spec. They support check
+  mode, and stay Windows PowerShell 5.1-compatible and pslint-clean like the
+  roles' scripts. The IIS modules use IIS's native configuration API
+  (`Microsoft.ApplicationHost.AdminManager`/`WritableAdminManager`, what
+  `appcmd.exe` uses), which ships with the `Web-Server` feature itself.
+- **A module's tests are an ansible-test integration target named after
+  it**, in `tests/integration/targets/<module>/`: `aliases` (`windows`),
+  `meta/main.yml` (depends on the area's `setup_<area>` target) and `tasks/`.
+  They're plain role tasks with no ansible-test-only variables, so they run
+  both through `ansible-test windows-integration` against any Windows host
+  and through Molecule in CI. One Molecule scenario per lab platform runs
+  them, from `tests/integration`, whose `../../` depth matches
+  `roles/<role>`, so the base config's relative paths hold: the IIS one is
+  `tests/integration/molecule/iis/`. Its converge includes the targets as
+  roles and drops Molecule's idempotence step, because the targets change
+  things on purpose and check each module's idempotence themselves. The IIS
+  targets check IIS through `setup_iis/files/read_mime_map.ps1` (appcmd.exe
+  and the configuration files' XML), never through the module under test.
+- **Every module needs `validate-modules:missing-gplv3-license` ignores** in
+  `tests/sanity/ignore-2.18.txt` through `ignore-2.23.txt`, for its `.ps1`
+  and its `.yml`: the collection is MIT, and validate-modules demands a GPLv3
+  header in every module and sidecar. Add a new module's two files to every
+  file, and a file per new ansible-core version CI tests.
 
 ## Commands
 
@@ -137,6 +199,23 @@ cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
 cd roles/gpo_backup && molecule list && molecule syntax
+
+# the IIS modules' integration targets, the same way but from tests/integration
+cd tests/integration && molecule test -s iis
+# or against a Windows host of your own that may get IIS, listed under
+# [windows] in tests/integration/inventory.winrm (gitignored: it holds
+# credentials), from an ansible_collections/git_cgallagher/windows checkout
+ansible-test windows-integration iis_mime_type iis_mime_type_info
+
+# sanity as CI runs it (validate-modules, pslint, yamllint, ...), from an
+# ansible_collections/git_cgallagher/windows checkout
+ansible-test sanity --docker default
+
+# pslint without a local pwsh, in ansible-test's own container (it carries
+# PSScriptAnalyzer and the extra PSSA-PSCustomUseLiteralPath rule)
+P=$(python3 -c 'import ansible_test, pathlib; print(pathlib.Path(ansible_test.__file__).parent / "_util/controller/sanity/pslint")')
+docker run --rm -v "$PWD:/work" -v "$P:/pslint:ro" --entrypoint pwsh quay.io/ansible/default-test-container:v2.21-4 \
+  -c 'Invoke-ScriptAnalyzer -Path /work/plugins -Recurse -Settings /pslint/settings.psd1'
 
 # build the tarball
 ansible-galaxy collection build --force
@@ -213,3 +292,21 @@ ansible-galaxy collection build --force
 - GPO backups embed SIDs/domain names. Fine for the *consuming* (usually
   private) repo; never commit real-domain backups to THIS public repo —
   examples use `example.com` placeholders only.
+- **ansible-test's pslint has one more rule than a local
+  `Invoke-ScriptAnalyzer` with its settings file**: `PSSA-PSCustomUseLiteralPath`
+  (`-LiteralPath`, never `-Path`, on cmdlets that take both). A local run
+  without that module misses it; run the container command above, or write
+  `-LiteralPath` throughout.
+- **Don't call `$module.FailJson` inside a `try` block.** It exits by
+  running `exit` from C#. On pwsh 7.6 that passes through the surrounding
+  `try`/`catch` (probed in ansible-test's container), but a `catch` that did
+  catch it would report a second failure. The IIS modules record a refusal
+  inside the block and fail after it, and call `FailJson` in `catch` blocks.
+- **`IsLocallyStored` can't tell a `<location>` entry from a server-level
+  one.** Microsoft.Web.Administration documents it per file, and both live
+  in `applicationHost.config`. `iis_mime_type_info` decides `inherited` from
+  the native API's `deepestPathSet` metadata (the configuration path an
+  element comes from) and a comparison with the parent level's map.
+- **`ansible.windows.win_powershell` serializes results only 2 levels deep
+  by default**; a dict of lists of dicts comes back with the inner dicts as
+  strings. The IIS targets pass `depth: 5` to every read.

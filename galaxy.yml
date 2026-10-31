@@ -1,6 +1,6 @@
 namespace: git_cgallagher
 name: windows
-version: 0.2.0
+version: 0.4.0
 readme: README.md
 authors:
   - Chris Gallagher (@git-cgallagher)
@@ -17,6 +17,7 @@ tags:
   - grouppolicy
   - activedirectory
   - iac
+  - iis
 dependencies:
   ansible.windows: '>=2.0.0'
 repository: https://github.com/git-cgallagher/ansible-collection-windows

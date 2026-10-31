@@ -3,7 +3,9 @@
   hosts: localhost
   gather_facts: false
   vars:
-    lab_platform: "{{ molecule_yml.platforms[0] }}"
+    # The box pin and the VM's size are lab_vm (the base config's group_vars),
+    # overridden by whatever the scenario's platform entry sets.
+    lab_platform: "{{ lab_vm | combine(molecule_yml.platforms[0]) }}"
     lab_box_dir: "{{ lab_dir }}/box-{{ lab_platform.box_sha256[:12] }}"
     lab_box: "{{ lab_box_dir }}/box.img"
     lab_overlay: "{{ lab_dir }}/{{ lab_platform.name }}.qcow2"
@@ -70,7 +72,7 @@
         timeout: 5
         msg: >-
           127.0.0.1:{{ lab_platform.winrm_port }} is already in use — a VM from a
-          previous run? Run `molecule destroy` in that role's directory first.
+          previous run? Run `molecule destroy` for that scenario first.
 
     # --- box image (cached across runs, keyed by checksum) -----------------------
     - name: Fetch and unpack the box

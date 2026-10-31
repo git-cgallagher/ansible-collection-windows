@@ -1,0 +1,42 @@
+---
+# After converge: the targets left nothing behind. No test mapping at the
+# server level, and nothing of its own stored for the test website or its
+# application, in applicationHost.config or in a web.config.
+- name: Check the targets left nothing behind
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - ../../targets/setup_iis/defaults/main.yml
+  vars:
+    lab_read_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../targets/setup_iis/files/read_mime_map.ps1') }}"
+  tasks:
+    - name: Read the server level, the test website and the test application
+      ansible.windows.win_powershell:
+        script: "{{ lab_read_script }}"
+        parameters:
+          Site: "{{ item.site }}"
+          Application: "{{ item.application }}"
+          PhysicalPath: "{{ item.dir }}"
+        depth: 5
+      loop:
+        - {site: '', application: '', dir: ''}
+        - {site: "{{ setup_iis_site }}", application: '', dir: "{{ setup_iis_site_dir }}"}
+        - {site: "{{ setup_iis_site }}", application: "{{ setup_iis_application }}", dir: "{{ setup_iis_application_dir }}"}
+      loop_control:
+        label: "{{ item.site }}{{ item.application }}"
+      register: lab_levels
+
+    - name: Check the server level has no test mapping
+      ansible.builtin.assert:
+        that: lab_levels.results[0].result.effective | selectattr('extension', 'match', '.ansible') | list == []
+        fail_msg: "{{ lab_levels.results[0].result.effective | selectattr('extension', 'match', '.ansible') | list }}"
+
+    - name: Check the test website and application store nothing of their own
+      ansible.builtin.assert:
+        that:
+          - item.result.application_host == []
+          - item.result.web_config == []
+        fail_msg: "{{ item.item.site }}{{ item.item.application }}: {{ item.result }}"
+      loop: "{{ lab_levels.results[1:] }}"
+      loop_control:
+        label: "{{ item.item.site }}{{ item.item.application }}"

@@ -1,0 +1,133 @@
+DOCUMENTATION:
+  module: iis_mime_type
+  short_description: Manage a MIME type mapping in IIS
+  description:
+    - Ensures that a file extension maps to a MIME type in IIS's static content MIME map (C(system.webServer/staticContent)),
+      or that it has no mapping, at the server level, for a website, or for an application or virtual directory under one.
+    - Decides against the effective map at that level, the one IIS serves from, so mappings inherited from parent levels count.
+      A matching inherited mapping is left alone, a different one is overridden at this level, and O(state=absent) hides an
+      inherited mapping with a C(<remove>) element at this level.
+    - Writes each change in one commit and reads the level back afterwards. It fails if IIS doesn't then serve what was asked for.
+  version_added: 0.4.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    extension:
+      description:
+        - The file extension, such as C(.webmanifest). A missing leading dot is added.
+        - Extensions compare case-insensitively, as in IIS, so C(.HTML) finds an existing C(.html) mapping instead of adding another.
+        - Must not be empty or contain whitespace, quotes or path separators. Special keys such as C(.*) are allowed.
+      type: str
+      required: true
+    mime_type:
+      description:
+        - The MIME type for O(extension), as C(type/subtype), for example C(application/manifest+json). It must have exactly one
+          C(/) and no whitespace. Backslashes aren't rewritten.
+        - Compared exactly, so changing only the letter case is a change.
+        - Required when O(state=present). Ignored when O(state=absent).
+      type: str
+    state:
+      description:
+        - V(present) ensures IIS serves O(extension) as O(mime_type) at the level.
+        - V(absent) ensures IIS has no mapping for O(extension) at the level. A mapping defined at the level is deleted. One
+          inherited from a parent level is hidden with a C(<remove>) element at this level and stays at the parent.
+      type: str
+      choices: [absent, present]
+      default: present
+    site:
+      description:
+        - The website to act on, by its exact name. Names compare case-insensitively, without wildcards.
+        - Omit it, and O(application), for the server level.
+      type: str
+    application:
+      description:
+        - The virtual path of an application or virtual directory under O(site), such as C(/app1) or C(/app1/assets). A missing
+          leading C(/) is added.
+        - Omit it for the site level.
+        - Requires O(site).
+      type: str
+    config_file:
+      description:
+        - Where a site- or application-level mapping is stored. Server-level mappings always live in C(applicationHost.config).
+        - V(applicationHost.config) writes the mapping into a C(<location path="site/app">) element in
+          C(%windir%\system32\inetsrv\config\applicationHost.config). Deploying the site's content leaves it alone.
+        - V(web.config) writes it into the C(web.config) file in the level's physical directory, the way IIS Manager does. A
+          content deployment that replaces that C(web.config) wipes the mapping, so choose this only when the mapping should
+          travel with the application's content, and the deployment keeps it.
+        - With V(applicationHost.config), the module refuses to change a mapping that the level's own C(web.config) clears or
+          defines, because IIS reads that file after the C(<location>) element, so it would override the change or collide with
+          it. Change that mapping with V(web.config).
+        - V(web.config) requires O(site).
+      type: str
+      choices: [applicationHost.config, web.config]
+      default: applicationHost.config
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+    diff_mode:
+      support: full
+      details: The diff shows the effective mapping before and after, as O(extension) and O(mime_type), or V(null) when there's none.
+    platform:
+      platforms: windows
+  notes:
+    - Needs IIS (the C(Web-Server) feature) on the managed host. The module uses IIS's native configuration API, the one
+      C(appcmd.exe) uses, rather than the WebAdministration PowerShell module.
+    - There's no state for going back to inheriting a mapping that a level hid or overrode, because the C(<remove>) element stays.
+      Removing the level's own C(system.webServer/staticContent) configuration, for example with B(Revert To Parent) on the
+      level's MIME Types page in IIS Manager, makes it inherit every mapping again.
+    - Locking C(system.webServer/staticContent) at a parent level stops V(web.config) from holding mappings, and the module reports
+      the lock. C(<location>) elements in C(applicationHost.config) can still hold them.
+  seealso:
+    - module: git_cgallagher.windows.iis_mime_type_info
+    - module: microsoft.iis.website
+    - module: microsoft.iis.web_application
+    - name: Adding Static Content MIME Mappings <mimeMap>
+      description: The IIS configuration reference for the MIME map.
+      link: https://learn.microsoft.com/en-us/iis/configuration/system.webserver/staticcontent/mimemap
+
+EXAMPLES: |
+  - name: Serve web app manifests with their MIME type, server-wide
+    git_cgallagher.windows.iis_mime_type:
+      extension: .webmanifest
+      mime_type: application/manifest+json
+
+  - name: Serve .log files as plain text on one website only
+    git_cgallagher.windows.iis_mime_type:
+      site: Default Web Site
+      extension: .log
+      mime_type: text/plain
+
+  - name: Keep an application's mapping in its own web.config
+    git_cgallagher.windows.iis_mime_type:
+      site: Default Web Site
+      application: /shop
+      extension: .woff2
+      mime_type: font/woff2
+      config_file: web.config
+
+  - name: Stop one website serving .json files, which it inherits from the server
+    git_cgallagher.windows.iis_mime_type:
+      site: Default Web Site
+      extension: .json
+      state: absent
+
+RETURN:
+  extension:
+    description: The file extension, with its leading dot.
+    returned: always
+    type: str
+    sample: .webmanifest
+  mime_type:
+    description:
+      - The MIME type IIS serves for O(extension) at the level after the task, or would serve, in check mode.
+      - V(null) after O(state=absent).
+    returned: always
+    type: str
+    sample: application/manifest+json
+  config_path:
+    description: The IIS configuration path of the level the task acted on.
+    returned: always
+    type: str
+    sample: MACHINE/WEBROOT/APPHOST/Default Web Site/shop

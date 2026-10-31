@@ -1,0 +1,93 @@
+---
+# Bad input and missing levels fail with a message that says what's wrong, and
+# write nothing. Each task passes only when the module fails with the expected
+# message.
+- name: Leave out mime_type with state=present
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansiblebad
+  register: iis_mime_type_no_mime
+  failed_when: >-
+    'state is present but all of the following are missing: mime_type' not in (iis_mime_type_no_mime.msg | default(''))
+
+- name: Pass invalid extensions and MIME types
+  git_cgallagher.windows.iis_mime_type:
+    extension: "{{ item.extension }}"
+    mime_type: "{{ item.mime_type }}"
+  loop:
+    - {extension: '', mime_type: text/plain, error: extension must not be empty}
+    - {extension: '.', mime_type: text/plain, error: extension must not be empty}
+    - {extension: '.ansible bad', mime_type: text/plain, error: extension must not contain whitespace}
+    - {extension: ".ansible'bad", mime_type: text/plain, error: extension must not contain quotes or path separators}
+    - {extension: '.ansible"bad', mime_type: text/plain, error: extension must not contain quotes or path separators}
+    - {extension: 'dir/.ansiblebad', mime_type: text/plain, error: extension must not contain quotes or path separators}
+    - {extension: 'dir\.ansiblebad', mime_type: text/plain, error: extension must not contain quotes or path separators}
+    - {extension: .ansiblebad, mime_type: textplain, error: mime_type must look like type/subtype}
+    - {extension: .ansiblebad, mime_type: text/plain/more, error: mime_type must look like type/subtype}
+    - {extension: .ansiblebad, mime_type: 'text/ plain', error: mime_type must look like type/subtype}
+    # Backslashes aren't rewritten to slashes.
+    - {extension: .ansiblebad, mime_type: 'text\plain', error: mime_type must look like type/subtype}
+  loop_control:
+    label: "{{ item.extension }} {{ item.mime_type }}"
+  register: iis_mime_type_invalid
+  failed_when: item.error not in (iis_mime_type_invalid.msg | default(''))
+
+- name: Read .ansiblebad at the server level after the failures
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansiblebad
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check the failures wrote nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_read.result.effective == []
+      - iis_mime_type_read.result.application_host == []
+    fail_msg: "{{ iis_mime_type_read.result }}"
+
+- name: Name a website that doesn't exist
+  git_cgallagher.windows.iis_mime_type:
+    site: Ansible Missing Site
+    extension: .ansiblebad
+    mime_type: text/plain
+  register: iis_mime_type_missing_site
+  failed_when: >-
+    "IIS has no website named 'Ansible Missing Site'" not in (iis_mime_type_missing_site.msg | default(''))
+
+- name: Name the test website with a wildcard, which isn't expanded
+  git_cgallagher.windows.iis_mime_type:
+    site: Ansible IIS*
+    extension: .ansiblebad
+    mime_type: text/plain
+  register: iis_mime_type_wildcard_site
+  failed_when: >-
+    "IIS has no website named 'Ansible IIS*'" not in (iis_mime_type_wildcard_site.msg | default(''))
+
+- name: Name an application the test website doesn't have
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    application: /ansible-missing
+    extension: .ansiblebad
+    mime_type: text/plain
+  register: iis_mime_type_missing_application
+  failed_when: >-
+    "has no application or virtual directory at '/ansible-missing'" not in (iis_mime_type_missing_application.msg | default(''))
+
+- name: Name an application without a website
+  git_cgallagher.windows.iis_mime_type:
+    application: "{{ setup_iis_application }}"
+    extension: .ansiblebad
+    mime_type: text/plain
+  register: iis_mime_type_application_only
+  failed_when: >-
+    "missing parameter(s) required by 'application': site" not in (iis_mime_type_application_only.msg | default(''))
+
+- name: Ask for web.config at the server level
+  git_cgallagher.windows.iis_mime_type:
+    extension: .ansiblebad
+    mime_type: text/plain
+    config_file: web.config
+  register: iis_mime_type_server_web_config
+  failed_when: >-
+    'config_file=web.config needs site' not in (iis_mime_type_server_web_config.msg | default(''))
