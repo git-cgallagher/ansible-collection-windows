@@ -43,9 +43,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-# The script runs non-interactively, where any confirmation prompt fails the
-# run ("PowerShell is in NonInteractive mode", seen from New-Cluster in the
-# lab). Never prompt; every change is already gated by -ReportOnly.
+# The script runs non-interactively, where a prompt fails the run
+# ("PowerShell is in NonInteractive mode", seen from New-Cluster in the lab).
+# The clustering cmdlets have no -Confirm; New-Cluster gets -Force (below).
 $ConfirmPreference = 'None'
 
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
@@ -135,6 +135,25 @@ function Invoke-Validation {
     }
 }
 
+# New-Cluster -Force also wipes stale cluster configuration from the nodes.
+# A node whose cluster database exists but that no cluster answered for may
+# be a member of a cluster that is down: refuse rather than wipe it.
+function Assert-NoClusterDatabase {
+    param([string[]]$TestNodes)
+    foreach ($node in $TestNodes) {
+        if ((Get-ShortName $node) -eq (Get-ShortName $env:COMPUTERNAME)) {
+            $db = Join-Path $env:windir 'Cluster\CLUSDB'
+        }
+        else {
+            $db = "\\$node\ADMIN$\Cluster\CLUSDB"
+        }
+        if (Test-Path -LiteralPath $db) {
+            throw ("Node $node has a cluster database ($db) but no cluster answered through it. It may belong to " +
+                'a cluster that is down. If it is stale, run Clear-ClusterNode on it, then re-run.')
+        }
+    }
+}
+
 function Invoke-Main {
     try {
         Import-Module FailoverClusters
@@ -194,7 +213,8 @@ function Invoke-Main {
             $warnings.Add('Static addresses are ignored: an administrative access point of None has no IP address')
         }
         Invoke-Change "create cluster $Name with nodes $($Nodes -join ', ') (access point $AdministrativeAccessPoint)" {
-            $null = New-Cluster @newParams -Confirm:$false
+            Assert-NoClusterDatabase -TestNodes $Nodes
+            $null = New-Cluster @newParams -Force
             $script:created = $true
         }
         if ($ReportOnly) {
@@ -212,7 +232,7 @@ function Invoke-Main {
             Invoke-Validation -TestNodes $Nodes
             foreach ($node in $missing) {
                 Invoke-Change "add node $node to cluster $Name" {
-                    $null = Add-ClusterNode -Cluster $via -Name $node -NoStorage -Confirm:$false
+                    $null = Add-ClusterNode -Cluster $via -Name $node -NoStorage
                 }
             }
         }
@@ -308,7 +328,7 @@ function Invoke-Main {
                 }
                 if ($csv) {
                     Invoke-Change "add disk $diskName to Cluster Shared Volumes" {
-                        $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName -Confirm:$false
+                        $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName
                     }
                 }
                 continue
@@ -330,7 +350,7 @@ function Invoke-Main {
                         Initialize-Disk -Number $disk.Number -PartitionStyle GPT
                         $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize
                         $null = Format-Volume -Partition $partition -FileSystem $fileSystem -AllocationUnitSize $unitSize `
-                            -NewFileSystemLabel $volumeLabel -Confirm:$false
+                            -NewFileSystemLabel $volumeLabel
                     }
                 }
                 else {
@@ -347,9 +367,9 @@ function Invoke-Main {
                 }
             }
             Invoke-Change "add disk $($disk.Number) to cluster $Name as $diskName$(if ($csv) { ' (CSV)' })" {
-                $resource = $available | Add-ClusterDisk -Confirm:$false
+                $resource = $available | Add-ClusterDisk
                 $resource.Name = $diskName
-                if ($csv) { $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName -Confirm:$false }
+                if ($csv) { $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName }
             }
         }
     }
@@ -365,7 +385,7 @@ function Invoke-Main {
             'node_majority' {
                 if ($null -ne $witness) {
                     Invoke-Change "remove the $witnessType witness (node majority)" {
-                        $null = Set-ClusterQuorum -Cluster $conn -NoWitness -Confirm:$false
+                        $null = Set-ClusterQuorum -Cluster $conn -NoWitness
                     }
                 }
             }
@@ -374,7 +394,7 @@ function Invoke-Main {
                 if (-not $witnessDisk) { throw 'A disk_witness quorum needs disk (a cluster disk resource name)' }
                 if ($witnessType -ne 'Physical Disk' -or $witness.Name -ne $witnessDisk) {
                     Invoke-Change "set the quorum witness to disk $witnessDisk" {
-                        $null = Set-ClusterQuorum -Cluster $conn -DiskWitness $witnessDisk -Confirm:$false
+                        $null = Set-ClusterQuorum -Cluster $conn -DiskWitness $witnessDisk
                     }
                 }
             }
@@ -387,7 +407,7 @@ function Invoke-Main {
                 }
                 if ($currentPath -ne $sharePath) {
                     Invoke-Change "set the quorum witness to file share $sharePath" {
-                        $null = Set-ClusterQuorum -Cluster $conn -FileShareWitness $sharePath -Confirm:$false
+                        $null = Set-ClusterQuorum -Cluster $conn -FileShareWitness $sharePath
                     }
                 }
             }
@@ -408,7 +428,7 @@ function Invoke-Main {
                     Invoke-Change "set the quorum witness to Azure storage account $account" {
                         $witnessParams = @{ Cluster = $conn; CloudWitness = $true; AccountName = $account; AccessKey = $accessKey }
                         if ($endpoint) { $witnessParams.Endpoint = $endpoint }
-                        $null = Set-ClusterQuorum @witnessParams -Confirm:$false
+                        $null = Set-ClusterQuorum @witnessParams
                     }
                 }
             }
@@ -419,6 +439,7 @@ function Invoke-Main {
 
 $failed = $false
 $errorText = ''
+$errorDetail = ''
 try {
     Invoke-Main
 }
@@ -426,6 +447,8 @@ catch {
     $failed = $true
     $errorText = '{0} (at line {1}: {2})' -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber,
     $_.InvocationInfo.Line.Trim()
+    $errorDetail = ($_.Exception.ToString() + "`n" + $_.ScriptStackTrace)
+    if ($errorDetail.Length -gt 4000) { $errorDetail = $errorDetail.Substring(0, 4000) }
     if (-not $inAnsible) { throw }
 }
 
@@ -436,6 +459,8 @@ $result = @{
     actions = @($actions)
     warnings = @($warnings)
     validation_report = $script:validationReport
+    identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    remote_session = $null -ne (Get-Variable -Name PSSenderInfo -ValueOnly -ErrorAction SilentlyContinue)
 }
 if ($inAnsible) {
     # A report-only run that found work reports "changed", like check mode.
@@ -444,6 +469,7 @@ if ($inAnsible) {
     if ($failed) {
         $Ansible.Failed = $true
         $result.error = $errorText
+        $result.error_detail = $errorDetail
     }
 }
 else {
