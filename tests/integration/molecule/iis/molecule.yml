@@ -3,9 +3,9 @@
 # one Windows Server 2022 VM that is never promoted to a domain controller.
 # Run it from tests/integration with `molecule test -s iis` (README.md).
 #
-# The box and the VM's size, the provisioner, the inventory and the shared
-# create/destroy playbooks come from the repository's Molecule base config,
-# .config/molecule/config.yml, which Molecule merges under this file.
+# The driver, the box and the VM's size (its platform_defaults), the
+# provisioner and the inventory come from the repository's Molecule base
+# config, .config/molecule/config.yml, which Molecule merges under this file.
 scenario:
   name: iis
   # No idempotence step: the targets add, change and remove mappings on

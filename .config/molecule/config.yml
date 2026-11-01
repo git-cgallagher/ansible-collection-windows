@@ -5,23 +5,37 @@
 # .config/molecule/config.yml at the repository root), so the box pin and the
 # fixture live here once; a scenario's molecule.yml holds only what differs.
 #
-# Each scenario boots one Windows Server 2022 VM (QEMU/KVM) and runs its tests
-# against it for real; the domain labs promote it to the first DC of a new
-# forest first. Needs a Linux host with /dev/kvm and ~20 GB free in
-# $GPO_LAB_DIR, and Molecule run from the scenario's project directory (the
-# role's, or tests/integration). See tests/domain_lab/README.md.
+# Each scenario boots one Windows Server 2022 VM (QEMU/KVM) with the
+# molecule-git-cgallagher driver and runs its tests against it for real; the
+# domain labs promote it to the first DC of a new forest first. Needs a Linux
+# host with /dev/kvm and ~20 GB free in $MOLECULE_LAB_DIR, and Molecule run
+# from the scenario's project directory (the role's, or tests/integration).
+# See tests/domain_lab/README.md.
 dependency:
   name: galaxy
   options:
     requirements-file: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/domain_lab/requirements.yml
 driver:
-  name: default
+  # Boots, waits for and tears down the VM: git_cgallagher.molecule's
+  # windows_vm kind (github.com/git-cgallagher/ansible-collection-molecule).
+  name: molecule-git-cgallagher
   options:
-    managed: true
+    # Every platform entry starts from these and can override them field by
+    # field, so a scenario that replaces platforms (Molecule replaces the
+    # whole list) names its VM and inherits the box and the VM's size.
+    platform_defaults:
+      kind: windows_vm
+      # jborean93's packer-windoze box: a sysprepped Windows Server 2022
+      # evaluation image built for Ansible WinRM/PSRP testing (microsoft.ad's
+      # own integration tests use it). Pinned by version + SHA-256.
+      box_url: https://vagrantcloud.com/jborean93/boxes/WindowsServer2022/versions/1.2.0/providers/libvirt/amd64/vagrant.box
+      box_sha256: bc2e6a173390d4457e66ba30d5ffff7dbc87b849532bc0f41f4c1246f4e53bd4
+      box_user: vagrant
+      box_password: vagrant
+      memory_mb: 4096
+      cpus: 2
+      winrm_port: 5985
 platforms:
-  # The box and the VM's size come from lab_vm below, which a platform entry
-  # can override field by field. A scenario that overrides platforms (Molecule
-  # replaces the whole list) names its VM and inherits the rest.
   - name: dc01
 provisioner:
   name: ansible
@@ -29,11 +43,6 @@ provisioner:
     # .molecule-collections exposes the checkout as git_cgallagher.windows (the
     # workflow and tests/domain_lab/README.md create the symlink).
     ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../.molecule-collections:${MOLECULE_PROJECT_DIRECTORY}/../../collections:~/.ansible/collections
-  # Booting and tearing down the VM is the same for every role; prepare,
-  # converge and verify are each scenario's own.
-  playbooks:
-    create: ../../../../tests/domain_lab/create.yml
-    destroy: ../../../../tests/domain_lab/destroy.yml
   inventory:
     group_vars:
       all:
@@ -41,23 +50,12 @@ provisioner:
         ansible_psrp_protocol: http
         # Nested-virt VMs occasionally drop a connection; retry instead of failing.
         ansible_psrp_reconnection_retries: 3
-        # What tests/domain_lab/create.yml boots, under each platform entry.
-        lab_vm:
-          # jborean93's packer-windoze box: a sysprepped Windows Server 2022
-          # evaluation image built for Ansible WinRM/PSRP testing (microsoft.ad's
-          # own integration tests use it). Pinned by version + SHA-256.
-          box_url: https://vagrantcloud.com/jborean93/boxes/WindowsServer2022/versions/1.2.0/providers/libvirt/amd64/vagrant.box
-          box_sha256: bc2e6a173390d4457e66ba30d5ffff7dbc87b849532bc0f41f4c1246f4e53bd4
-          box_user: vagrant
-          box_password: vagrant
-          memory_mb: 4096
-          cpus: 2
-          winrm_port: 5985
         # The shared lab: its playbooks and files/lab_fixture.ps1.
         lab_tests_dir: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/domain_lab
-        # Box cache, VM disk, pidfile, monitor socket and the exported GPO
-        # repos all live here (CI points it at the runner's large /mnt disk).
-        lab_dir: "{{ lookup('ansible.builtin.env', 'GPO_LAB_DIR') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.cache/gpo-domain-lab', true) }}"
+        # The exported GPO repos go here, next to the driver's box cache and VM
+        # disk (same variable and default; CI points it at the runner's large
+        # /mnt disk).
+        lab_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_LAB_DIR') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.cache/molecule-lab', true) }}"
         lab_domain: gpolab.test
         lab_netbios: GPOLAB
         lab_root_dn: "{{ lab_domain.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"

@@ -2,9 +2,10 @@ name: domain-lab
 
 # End-to-end tests against a real Windows Server 2022 domain controller. Each
 # role has its own Molecule scenario (roles/<role>/molecule/default); each job
-# boots a VM under QEMU/KVM on its runner, promotes it to the first DC of a new
-# forest and runs that role's scenario against it. The lab the scenarios share
-# is tests/domain_lab/ plus the Molecule base config, .config/molecule/config.yml.
+# boots a VM under QEMU/KVM on its runner (the molecule-git-cgallagher driver),
+# promotes it to the first DC of a new forest and runs that role's scenario
+# against it. The lab the scenarios share is tests/domain_lab/ plus the
+# Molecule base config, .config/molecule/config.yml.
 # About 14 min, the roles in parallel. wsfc's VM stays a workgroup
 # server (a one-node cluster), never a DC.
 #
@@ -52,8 +53,9 @@ env:
   # until the play ends; a stalled step is then visible in the live log.
   PYTHONUNBUFFERED: '1'
   # The runner's temp disk: the box (~6 GB, plus ~6 GB while unpacking) and
-  # the VM disk don't fit on the ~14 GB root filesystem.
-  GPO_LAB_DIR: /mnt/gpo-lab
+  # the VM disk don't fit on the ~14 GB root filesystem. The driver keeps them
+  # here, and the GPO scenarios their exports (lab_dir).
+  MOLECULE_LAB_DIR: /mnt/gpo-lab
 
 # The IIS modules (plugins/modules/iis_*) are tested the same way by one more
 # job: the Molecule scenario tests/integration/molecule/iis boots the same box
@@ -80,38 +82,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+      # Python, ansible-core, Molecule, the molecule-git-cgallagher driver and
+      # its collection git_cgallagher.molecule (both from the action's pinned
+      # commit; the collection brings ansible.windows and microsoft.ad), the
+      # checkout as git_cgallagher.windows in .molecule-collections, KVM, QEMU,
+      # pypsrp and the lab directory.
+      # Normally a few minutes; a stuck apt hung a run until the 120-minute job
+      # limit (2026-11-01), so fail fast and re-run instead. The limit is on
+      # this step because a composite action's own steps can't set one.
+      - name: Set up Molecule, the driver, KVM and QEMU
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@b2601b3f376da3e03f99c18ebc79d9d7a37e9c7f  # v0.2.0
+        timeout-minutes: 15
         with:
-          python-version: '3.13'
-
-      # Normally under a minute; a stuck apt hung a run here until the 120-minute
-      # job limit (2026-11-01), so fail fast and re-run instead.
-      - name: Enable KVM and install QEMU
-        timeout-minutes: 10
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
-          ls -l /dev/kvm
-
-      - name: Prepare the lab directory on the temp disk
-        run: |
-          sudo mkdir -p "$GPO_LAB_DIR"
-          sudo chown "$USER" "$GPO_LAB_DIR"
-          df -h "$GPO_LAB_DIR" /
-
-      - name: Install Ansible, Molecule and the test collections
-        run: |
-          pip install ansible-core molecule pypsrp
-          ansible-galaxy collection install -r tests/domain_lab/requirements.yml
-
-      - name: Expose the checkout as git_cgallagher.windows
-        run: |
-          mkdir -p .molecule-collections/ansible_collections/git_cgallagher
-          ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows
+          collection: git_cgallagher.windows
+          requirements: requirements.yml
+          kvm: 'true'
+          lab-dir: ${{ env.MOLECULE_LAB_DIR }}
 
       # From the scenario's project directory (the role's, or
       # tests/integration): that's where Molecule finds the scenario, and how
@@ -126,19 +112,14 @@ jobs:
           SCENARIO: ${{ matrix.scenario }}
         run: molecule test -s "$SCENARIO" --destroy=never
 
-      # nc needs -N (close on stdin EOF) and a timeout: the QEMU monitor keeps
-      # the socket open, so plain `nc -U` never exits (hung a run for 30 min).
+      # Writes <vm>-screen.ppm into the lab directory; never fails the job.
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
-        env:
-          LAB_VM: ${{ matrix.vm }}
-        run: |
-          sock="$GPO_LAB_DIR/$LAB_VM-monitor.sock"
-          if [ -S "$sock" ]; then
-            { printf 'screendump %s/screen.ppm\n' "$GPO_LAB_DIR"; sleep 3; } | timeout 20 nc -N -U "$sock" || true
-          fi
-          ls -la "$GPO_LAB_DIR" || true
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@b2601b3f376da3e03f99c18ebc79d9d7a37e9c7f  # v0.2.0
+        with:
+          lab-dir: ${{ env.MOLECULE_LAB_DIR }}
+          platforms: ${{ matrix.vm }}
 
       - name: Upload diagnostics
         if: failure()
@@ -146,8 +127,8 @@ jobs:
         with:
           name: domain-lab-diagnostics-${{ matrix.name }}
           path: |
-            ${{ env.GPO_LAB_DIR }}/screen.ppm
-            ${{ env.GPO_LAB_DIR }}/gpo-repo*/
+            ${{ env.MOLECULE_LAB_DIR }}/*-screen.ppm
+            ${{ env.MOLECULE_LAB_DIR }}/gpo-repo*/
           if-no-files-found: ignore
           retention-days: 7
 

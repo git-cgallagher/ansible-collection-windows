@@ -20,11 +20,16 @@ on `ubuntu-latest`, one job per scenario, in parallel (about 14 minutes).
 
 | Path | What it is |
 |---|---|
-| [`.config/molecule/config.yml`](../../.config/molecule/config.yml) | Molecule's base config: the pinned box and the VM's size (`lab_vm`), the provisioner, the inventory, the fixture's names (`lab_fixture`) and the test sequence. Molecule merges it under every scenario's `molecule.yml`, because `--base-config` defaults to that file at the repository root. |
-| [`create.yml`](create.yml), [`destroy.yml`](destroy.yml) | Boot and tear down the VM: `lab_vm`, overridden by whatever the scenario's platform entry sets (the IIS scenario sets only its name, `iis01`) |
-| [`promote.yml`](promote.yml) | Promote it to a DC, then wait until AD Web Services, SYSVOL (the domain's DFS path included) and GPMC answer |
+| [`.config/molecule/config.yml`](../../.config/molecule/config.yml) | Molecule's base config: the driver, with the pinned box and the VM's size (`driver.options.platform_defaults`), the provisioner, the inventory, the fixture's names (`lab_fixture`) and the test sequence. Molecule merges it under every scenario's `molecule.yml`, because `--base-config` defaults to that file at the repository root. A scenario's platform entry overrides any `platform_defaults` field (the IIS scenario sets only its name, `iis01`). |
+| [`promote.yml`](promote.yml) | Promote it to a DC (`git_cgallagher.molecule.ad_forest`), then wait until AD Web Services, SYSVOL (the domain's DFS path included) and GPMC answer |
 | [`seed.yml`](seed.yml), [`files/lab_fixture.ps1`](files/lab_fixture.ps1) | Seed the authored state: OUs, groups, a WMI filter and five GPOs with links and filtering, including the [real-world scenarios](../../docs/scenarios.md). `lab_fixture.ps1 -Action Drift` is the out-of-band drift that `gpo_import`'s scenario repairs. |
-| [`requirements.yml`](requirements.yml) | The collections the lab uses: `ansible.windows` and `microsoft.ad` |
+| [`requirements.yml`](requirements.yml) | The collections the lab uses: `ansible.windows` and `microsoft.ad` (for `ad_forest`) |
+
+The VM itself comes from the
+[`molecule-git-cgallagher`](https://github.com/git-cgallagher/ansible-collection-molecule)
+Molecule driver, which started as this lab's own create and destroy
+playbooks: its `windows_vm` kind boots, waits for and tears down the box, and
+the same repository's `ad_forest` role does the promotion.
 
 Each GPO scenario's `prepare.yml` imports `promote.yml` and `seed.yml`, then
 adds its own steps; wsfc's prepares a workgroup node and the IIS scenario's
@@ -38,15 +43,15 @@ against GPMC rather than against themselves.
 1.2.0, libvirt provider, built by
 [packer-windoze](https://github.com/jborean93/packer-windoze) — the same
 image `microsoft.ad`'s own integration tests promote to a DC. Pinned by
-version and SHA-256 in the base config (`lab_vm`); `create.yml` boots it the
-way it was built (`pc` machine, BIOS, virtio disk and NIC, Hyper-V
+version and SHA-256 in the base config; the driver's `windows_vm` kind boots
+it the way it was built (`pc` machine, BIOS, virtio disk and NIC, Hyper-V
 enlightenments).
 
 - It's a sysprepped **evaluation** image. Its first boot rearms the licence
   (`slmgr /rearm`), giving a fresh 180-day window every run despite the
   image's age.
 - First boot also reboots once and recreates the WinRM listeners, so
-  `create.yml` waits for the setup script to delete itself
+  `windows_vm` waits for the setup script to delete itself
   (`C:\temp\setup.ps1`), polling from a fresh process each time, instead of
   trusting the first successful connection.
 - The connection is PSRP with NTLM as `vagrant`/`vagrant` (the box's public
@@ -61,15 +66,21 @@ for the first run (box download + unpack + VM disk), and port 5985 free on
 virtualization.
 
 ```bash
-pip install ansible-core molecule pypsrp
+# The driver and its collection come from one tag (the [windows] extra is pypsrp)
+pip install ansible-core molecule \
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.0"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.0
 ansible-galaxy collection install -r tests/domain_lab/requirements.yml
 mkdir -p .molecule-collections/ansible_collections/git_cgallagher
 ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows
-cd roles/gpo_import    # or roles/gpo_backup
-GPO_LAB_DIR=/path/with/space molecule test
+cd roles/gpo_import    # or roles/gpo_backup, roles/wsfc
+MOLECULE_LAB_DIR=/path/with/space molecule test
 # the IIS modules' targets: from tests/integration instead
-cd ../../tests/integration && GPO_LAB_DIR=/path/with/space molecule test -s iis
+cd ../../tests/integration && MOLECULE_LAB_DIR=/path/with/space molecule test -s iis
 ```
+
+CI pins the same tag by commit in `domain-lab.yml` (the `setup-molecule` and
+`vm-screendump` actions); move both together.
 
 Run Molecule from the role's directory. That's where it finds the role's
 scenario, and how its prerun tells a role inside a collection from a
@@ -79,11 +90,14 @@ instead of checking the role's name the way it would a standalone role's.
 On a Mac, `molecule list` and `molecule syntax` still work from a role's
 directory, and `molecule create` runs up to the `/dev/kvm` check.
 
-`GPO_LAB_DIR` (default `~/.cache/gpo-domain-lab`) holds the cached box image,
-the VM's copy-on-write disk, its pidfile and monitor socket, and the exported
-GPO repos (`gpo-repo`, `gpo-repo-after`). The box image survives
-`molecule destroy`; delete it by hand to reclaim ~6 GB. The scenarios share
-the WinRM port (and the role scenarios the VM name), so run one at a time.
+`MOLECULE_LAB_DIR` (default `~/.cache/molecule-lab`, the driver's) holds the
+cached box image, the VM's copy-on-write disk, its pidfile and monitor socket,
+and the exported GPO repos (`gpo-repo`, `gpo-repo-after`). The box image
+survives `molecule destroy`; delete it by hand to reclaim ~6 GB. A box cached
+by an older checkout in `~/.cache/gpo-domain-lab` (the lab's directory before
+the driver; `GPO_LAB_DIR` is gone) is reused if `MOLECULE_LAB_DIR` points
+there. The scenarios share the WinRM port (and the role scenarios the VM
+name), so run one at a time.
 
 To iterate: `molecule create`, `molecule prepare`, then repeat
 `molecule converge` / `molecule verify`; `molecule destroy` when done.
@@ -91,7 +105,8 @@ To iterate: `molecule create`, `molecule prepare`, then repeat
 ## When it fails in CI
 
 The workflow keeps the VM until diagnostics are collected: a screen dump of
-the VM console (`screen.ppm`) and the exported repos are uploaded as the
+the VM console (`<vm>-screen.ppm`, from the driver repository's
+`vm-screendump` action) and the exported repos are uploaded as the
 `domain-lab-diagnostics-<job>` artifact (`gpo_backup`, `gpo_import`, `wsfc`,
 `iis`). A boot-stage failure (BSOD, stuck OOBE) shows on the screen dump; a
 role failure shows in the Ansible output and the exported manifests.

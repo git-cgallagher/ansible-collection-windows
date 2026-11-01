@@ -105,9 +105,11 @@ Not covered by the lab yet (issue #16 unless noted):
   `ActiveDirectoryAndDns`/`Dns` access points and static addresses, shared
   disks (format, CSV), disk/file share/cloud witnesses, a failing
   `Test-Cluster` (its failure detection matches `ClusterNotApproved` in the
-  warning stream, unconfirmed) and the double hop. The lab VMs sit on
-  separate QEMU user-mode networks and can't reach each other, so this needs
-  a shared network (QEMU socket netdev) and an iSCSI target first.
+  warning stream, unconfirmed) and the double hop. Each lab VM has its own
+  QEMU user-mode network, but the driver's `lab_networks` puts several
+  `windows_vm` platforms on one shared segment (its `windows_cluster`
+  scenario boots two), so what's missing first is an iSCSI target for the
+  shared disks.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
@@ -154,16 +156,18 @@ lab to the scripts — and record the surprise below as a gotcha.
   `roles/<role>/molecule/<scenario>/`, never at the collection root. The one
   exception is the modules' runner in `tests/integration/molecule/` (see the
   module bullets below). What every scenario shares goes in
-  `.config/molecule/config.yml` (Molecule's base config: the box pin and VM
-  size as `lab_vm`, provisioner, inventory, `lab_fixture`, test sequence) or
-  in `tests/domain_lab/` (VM lifecycle, promotion, seeding, the fixture
-  script); a scenario's `molecule.yml` holds only what differs.
-  The shared platform is a Windows Server 2022 domain controller; a role
-  that needs another machine (a member server, no domain) overrides
-  `platforms` and `provisioner.playbooks` in its own `molecule.yml`.
-  Molecule replaces the whole `platforms` list, so an override names its VM
-  (`- name: iis01`) and `create.yml` fills in the rest from `lab_vm`; a
-  platform entry can still override any `lab_vm` field.
+  `.config/molecule/config.yml` (Molecule's base config: the driver, with the
+  box pin and VM size in `driver.options.platform_defaults`, provisioner,
+  inventory, `lab_fixture`, test sequence) or in `tests/domain_lab/`
+  (promotion, seeding, the fixture script); a scenario's `molecule.yml` holds
+  only what differs. The VM's lifecycle is the `molecule-git-cgallagher`
+  driver's (its `windows_vm` kind; see Gotchas). The shared platform is a
+  Windows Server 2022 VM named `dc01`; a scenario that needs another machine
+  (a member server, no domain) overrides `platforms` in its own
+  `molecule.yml`. Molecule replaces the whole `platforms` list, so an
+  override names its VM (`- name: iis01`) and the driver fills in the rest
+  from `platform_defaults`; a platform entry can still override any of those
+  fields.
   Playbooks reach the shared fixture through `lab_tests_dir`, and a
   scenario's own `files/` through `playbook_dir`. `roles/*/molecule` and
   `.config` are in `galaxy.yml`'s `build_ignore` and in the version-bump
@@ -229,7 +233,11 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-doc -t role g
 ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook tests/argument_specs/validate.yml
 
 # a role's Molecule scenario: Linux with /dev/kvm only, one at a time, from
-# the role's directory (setup in tests/domain_lab/README.md)
+# the role's directory (full setup in tests/domain_lab/README.md). The
+# driver and its collection come from one tag of ansible-collection-molecule:
+pip install ansible-core molecule \
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.0"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.0
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
@@ -323,6 +331,24 @@ ansible-galaxy collection build --force
   main's), so `gh release create` fails with HTTP 403 "Resource not
   accessible by integration": Galaxy still gets the version, but the GitHub
   release is lost. Learned on ansible-collection-isc 1.3.1 (2026-10-28).
+- **The VM comes from the `molecule-git-cgallagher` driver**
+  (`git-cgallagher/ansible-collection-molecule`, which started as this lab's
+  `create.yml`/`destroy.yml`; the lab moved onto it on 2026-11-01). The base
+  config's `driver.options.platform_defaults` holds `kind: windows_vm` and
+  the box, and Molecule's inventory is built from each platform entry as
+  written, so `platform_defaults` can't set `name`, `groups` or `children`.
+  A platform key the `windows_vm` kind doesn't know fails the run (check
+  the driver's README). `MOLECULE_LAB_DIR` (default `~/.cache/molecule-lab`)
+  holds the box cache and VM disk, and the scenarios' `lab_dir` reads the
+  same variable, so the GPO exports sit next to them. `domain-lab.yml` pins
+  the driver by commit in two `uses:` lines (`setup-molecule`,
+  `vm-screendump`); bump them together, along with the `@v0.2.0` install
+  lines above and in `tests/domain_lab/README.md`.
+- **A composite action's steps can't set `timeout-minutes`** (the runner's
+  `action_yaml.json` schema has no such key), so the 10-minute guard the
+  KVM/QEMU install step got after a stuck apt hung a run for two hours
+  (2026-11-01) sits on the `setup-molecule` step in `domain-lab.yml`, as 15
+  minutes because that step also installs pip packages and collections.
 - **Molecule's base config is implicit.** `.config/molecule/config.yml` at
   the repository root is merged under every scenario's `molecule.yml`
   because `--base-config` defaults to it (Molecule logs "Found config

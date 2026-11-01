@@ -1,8 +1,8 @@
 ---
 # wsfc's scenario: a one-node workgroup cluster on the shared lab VM
-# (see README.md). The platform, provisioner, inventory and the shared
-# create/destroy playbooks come from the repository's Molecule base config,
-# .config/molecule/config.yml, which Molecule merges under this file.
+# (see README.md). The driver, platform, provisioner and inventory come from
+# the repository's Molecule base config, .config/molecule/config.yml, which
+# Molecule merges under this file.
 #
 # The platform keeps the base config's name, dc01, so the workflow's screen
 # capture finds its monitor socket, but prepare.yml never promotes it: it
