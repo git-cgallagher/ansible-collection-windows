@@ -47,18 +47,22 @@ foreach ($share in $Shares) {
     $unc = "\\$Server\$share"
     $entry = [ordered]@{ share = $share; unc = $unc; ok = $false; error = ''; error_type = '' }
     try {
-        # Not Test-Path: on a share root it raised "Access is denied" under
-        # $ErrorActionPreference = 'Stop' in the lab, though writes worked.
-        # These return false instead of throwing.
-        if (-not [System.IO.Directory]::Exists($unc)) { throw 'the share is not reachable' }
+        # No existence check on the share root: in the lab, querying
+        # \\<name>\<share> itself failed (Test-Path "Access is denied",
+        # Directory.Exists false) while writing files into it worked. The
+        # write is the check; its error says why a share is unreachable.
         $markerFile = Join-Path $unc ".wsfc_fileserver-failover-$Marker.txt"
         switch ($Mode) {
             'mark' {
                 Set-Content -LiteralPath $markerFile -Value $Marker -Encoding ASCII
             }
             'check' {
-                if (-not [System.IO.File]::Exists($markerFile)) { throw 'the marker written before the failover is gone' }
-                $back = (Get-Content -LiteralPath $markerFile -Raw).Trim()
+                try {
+                    $back = (Get-Content -LiteralPath $markerFile -Raw).Trim()
+                }
+                catch [System.Management.Automation.ItemNotFoundException] {
+                    throw 'the marker written before the failover is gone'
+                }
                 Remove-Item -LiteralPath $markerFile -Force
                 if ($back -ne $Marker) { throw "the marker reads '$back', expected '$Marker'" }
                 Test-RoundTrip -Unc $unc
