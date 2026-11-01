@@ -70,7 +70,10 @@ jobs:
         with:
           python-version: '3.13'
 
+      # Normally under a minute; a stuck apt hung a run here until the 120-minute
+      # job limit (2026-11-01), so fail fast and re-run instead.
       - name: Enable KVM and install QEMU
+        timeout-minutes: 10
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
