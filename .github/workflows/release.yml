@@ -49,7 +49,14 @@ jobs:
         with:
           python-version: '3.13'
 
-      - run: pip install "ansible-core>=2.18"
+      # Publishing stays on the runner (the Galaxy key never enters a container), with the
+      # versions of the image ansible-test.yml pins: its constraints.txt.
+      - name: Install ansible-core at the ansible-runtime image's pin
+        run: |
+          image=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
+          [ -n "$image" ] || { echo "::error::RUNTIME_IMAGE not found in ansible-test.yml"; exit 1; }
+          docker run --rm "$image" cat /usr/share/ansible-runtime/constraints.txt > "$RUNNER_TEMP/constraints.txt"
+          pip install -c "$RUNNER_TEMP/constraints.txt" ansible-core
 
       - name: Read the collection version
         id: meta
