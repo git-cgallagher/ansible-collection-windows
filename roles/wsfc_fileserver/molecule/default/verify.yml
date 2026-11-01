@@ -103,14 +103,13 @@
           run_once: true
           register: lab_acl
 
-        - name: Read the client's identity, groups and Kerberos tickets
+        - name: Read the client's identity and groups
           ansible.windows.win_powershell:
             script: |
               $Ansible.Changed = $false
               [ordered]@{
                   identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
                   groups = (whoami /groups /fo csv | ConvertFrom-Csv | ForEach-Object { $_.'Group Name' }) -join '; '
-                  tickets = ((klist) -join ' | ')
                   resolve = (Resolve-DnsName -Name '{{ lab_fileserver.name }}' -ErrorAction SilentlyContinue |
                           ForEach-Object { [string]$_.IPAddress }) -join ', '
               }
@@ -123,12 +122,40 @@
           run_once: true
           register: lab_client
 
+        # One logon session per host: write by short name, FQDN and IP (the
+        # IP forces NTLM), then list that session's SMB connections and
+        # Kerberos tickets. On the owner, also write to the folder locally.
+        - name: Try writes by every name from dc01 and from the owner
+          ansible.windows.win_powershell:
+            script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/write_probe.ps1') }}"
+            parameters:
+              Server: "{{ lab_fileserver.name }}"
+              Domain: "{{ lab_domain }}"
+              Address: "{{ lab_fileserver.address }}"
+              Shares: [Projects]
+              Local: "{{ [lab_fileserver.share_root ~ '\\Projects'] if item != 'dc01' else [] }}"
+          become: true
+          become_method: ansible.builtin.runas
+          become_user: "{{ lab_admin_user }}"
+          vars:
+            ansible_become_password: "{{ lab_admin_password }}"
+            lab_owner_host: >-
+              {{ groups['lab_nodes'] | map('extract', hostvars) |
+                 selectattr('lab_hostname', 'equalto', lab_state.result.fileserver.owner) |
+                 map(attribute='inventory_hostname') | first }}
+          delegate_to: "{{ lab_owner_host if item == 'owner' else item }}"
+          loop: [dc01, owner]
+          run_once: true
+          register: lab_writes
+          ignore_errors: true
+
         - name: Fail with what the check saw
           ansible.builtin.fail:
             msg:
               validation: "{{ wsfc_fileserver_validation.result | default(wsfc_fileserver_validation) }}"
               folders: "{{ lab_acl.output | default([]) }}"
               client: "{{ lab_client.output | default([]) }}"
+              writes: "{{ lab_writes.results | default([]) | map(attribute='output', default=[]) | list }}"
           run_once: true
 
     # 3. Fail over to the other node and back, proving data written before
