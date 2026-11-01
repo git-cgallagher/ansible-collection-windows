@@ -13,7 +13,9 @@ The `wsfc` role's cluster script is now a module.
   `ReportOnly` parameter, the planned actions as the diff, the cloud
   witness's `access_key` masked by the module, and `ansible-doc`
   documentation. Its behaviour is the script's: the same order of
-  operations, actions, warnings and refusals.
+  operations, actions, warnings and refusals. One addition, `drive_letter`
+  on a disk, gives the volume a first-time format creates a drive letter
+  (also `wsfc_disks[].drive_letter` in the role).
 - `wsfc` calls the module. Its variables are unchanged. `wsfc_report_only`
   stays: it runs the cluster task in check mode while the feature install
   runs for real, which `--check` alone can't do. The cluster task no longer

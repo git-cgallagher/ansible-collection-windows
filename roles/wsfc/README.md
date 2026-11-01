@@ -74,7 +74,7 @@ list item's keys, are in the argument spec.
 | `wsfc_quorum` | `{}` | `type` (`node_majority`, `disk_witness`, `file_share_witness`, `cloud_witness`) plus `disk`, `path`, or `account_name`/`access_key`/`endpoint`; empty = leave it |
 | `wsfc_networks` | `[]` | `subnet` (CIDR) plus `name`, `role` (`none`, `cluster`, `cluster_and_client`), `metric` |
 | `wsfc_properties` | `{}` | Cluster common properties, for example `SameSubnetThreshold` |
-| `wsfc_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label` |
+| `wsfc_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label`, `drive_letter` |
 | `wsfc_report_only` | `false` | Run the cluster task in check mode while the feature install runs for real (`--check` implies it) |
 | `wsfc_become_user` | `''` | Run the cluster task as this account (`runas`); see below |
 | `wsfc_become_password` | `''` | Its password (vault it) |

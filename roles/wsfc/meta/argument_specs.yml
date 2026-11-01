@@ -213,6 +213,12 @@ argument_specs:
             type: str
             description:
               - Volume label for O(wsfc_disks[].initialize); empty means the disk's resource name.
+          drive_letter:
+            type: str
+            description:
+              - Drive letter (V(S)) for the volume O(wsfc_disks[].initialize) creates, so file shares and SQL Server
+                paths can name it. The cluster mounts it under that letter on whichever node owns the disk.
+              - Empty leaves the volume without a letter. Only used when the disk is initialized.
       wsfc_report_only:
         type: bool
         default: false

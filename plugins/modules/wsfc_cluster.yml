@@ -189,6 +189,12 @@ DOCUMENTATION:
           description:
             - Volume label for O(disks[].initialize); leave it out for the disk's resource name.
           type: str
+        drive_letter:
+          description:
+            - Drive letter (V(S)) for the volume O(disks[].initialize) creates, so file shares and SQL Server paths can
+              name it. The cluster mounts it under that letter on whichever node owns the disk.
+            - Leave it out for a volume without a letter. Only used when the disk is initialized.
+          type: str
   extends_documentation_fragment:
     - ansible.builtin.action_common_attributes
   attributes:
