@@ -1,0 +1,185 @@
+DOCUMENTATION:
+  module: gpo_import
+  short_description: Converge a domain on a Group Policy export
+  description:
+    - Imports a C(gpo_backup) export (GPO backup folders plus C(gpo-manifest.json)) into a domain and reconciles the topology the
+      manifest describes, from a Windows management host with RSAT in that domain.
+    - Runs C(Import-GPO -CreateIfNeeded) for every GPO in the manifest that is missing from the domain or whose backup content
+      changed since this module last imported it, recorded per domain in a state file under O(state_dir), optionally through a
+      migration table for another domain. Then sets each GPO's status, WMI filter link and security filtering, and makes each
+      manifest container's ordered link list and block-inheritance match. Containers the manifest doesn't list are never touched.
+    - Security filtering never strips a trustee's last permission. A trustee that lost Apply is downgraded to Read (MS16-072).
+      Deny entries are left alone, and a Deny entry in the manifest that the domain lacks is an error.
+    - Refuses an export that contains a Group Policy Preferences C(cpassword) before touching the domain.
+    - C(changed) is true when there was something to do. A converged domain reports no change. In check mode the module plans
+      every action, returns it in RV(actions) and the diff, and writes neither to the domain nor to the state file.
+  version_added: 0.6.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    domain:
+      description:
+        - DNS name of the target domain, for example C(prod.example.com).
+      type: str
+      required: true
+    server:
+      description:
+        - Domain controller to run against.
+        - Omitted, the domain's PDC emulator, which avoids AD-versus-SYSVOL replication races.
+      type: str
+    source_dir:
+      description:
+        - Directory on the management host that holds C(gpos/) and the manifest, as C(gpo_backup) wrote them.
+      type: path
+      required: true
+    manifest_path:
+      description:
+        - Manifest path, relative to O(source_dir).
+      type: path
+      default: gpo-manifest.json
+    migration_table_path:
+      description:
+        - Migration table (C(.migtable)) for importing into a different domain, relative to O(source_dir) or absolute.
+        - Its content is part of each GPO's recorded import key, so editing it re-imports the GPOs on the next run.
+        - Migration tables translate principals and UNC paths in security settings, Restricted Groups and software installation;
+          they do not translate Group Policy Preferences XML.
+      type: path
+    state_dir:
+      description:
+        - Directory for the per-domain state file, C(import-state-<domain>.json), that records the content hash of each GPO's last
+          import. Created when missing.
+      type: path
+      default: C:\ProgramData\gpo-iac
+    remove_unmanaged_links:
+      description:
+        - On containers listed in the manifest, remove links the manifest doesn't list. Off, such links are reported as warnings
+          and left in place.
+        - Leave this off while adopting an existing domain.
+      type: bool
+      default: false
+    create_wmi_filters:
+      description:
+        - Create WMI filters named in the manifest that don't exist in the domain (single-query filters). Off, a missing filter is
+          a warning, and a GPO that needs it is an error.
+      type: bool
+      default: false
+    force:
+      description:
+        - Re-import every selected GPO regardless of the recorded state.
+      type: bool
+      default: false
+    gpo_names:
+      description:
+        - Limit content import and GPO property reconciliation to these GPO display names. Empty means every GPO in the
+          manifest.
+        - Links are still reconciled for every container in the manifest.
+      type: list
+      elements: str
+      default: []
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+      details: Plans every action without touching the domain or the state file. C(changed) says whether there was anything to do.
+    diff_mode:
+      support: full
+      details: The diff is the list of planned (or performed) actions, one per line.
+    platform:
+      platforms: windows
+  notes:
+    - Needs the GroupPolicy and ActiveDirectory PowerShell modules (RSAT) on the management host, and rights to write GPOs,
+      container C(gPLink)/C(gPOptions) and, with O(create_wmi_filters), C(msWMI-Som) objects in the domain.
+    - C(Import-GPO) replaces the whole GPO and bumps its version, so clients reprocess it. That's why imports are keyed on
+      content hashes and recorded in the state file; O(force) skips that.
+    - The role C(git_cgallagher.windows.gpo_import) stages an export from the controller and calls this module.
+  seealso:
+    - name: git_cgallagher.windows.gpo_import role
+      description: Stages an export from the controller and runs this module.
+      link: https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/gpo_import
+    - name: Design notes
+      description: The manifest format and the cross-domain story.
+      link: https://github.com/git-cgallagher/ansible-collection-windows/blob/main/docs/design.md
+
+EXAMPLES: |
+  - name: Converge the domain on the staged export
+    git_cgallagher.windows.gpo_import:
+      domain: prod.example.com
+      source_dir: C:\ProgramData\gpo-iac\import\stage
+      create_wmi_filters: true
+
+  - name: Promote one GPO into another domain through a migration table, re-importing it regardless of state
+    git_cgallagher.windows.gpo_import:
+      domain: prod.example.com
+      source_dir: C:\ProgramData\gpo-iac\import\stage
+      migration_table_path: migtables/prod.migtable
+      gpo_names:
+        - SEC - Server Baseline
+      force: true
+
+  - name: Plan only (the same as running the task in check mode)
+    git_cgallagher.windows.gpo_import:
+      domain: prod.example.com
+      source_dir: C:\ProgramData\gpo-iac\import\stage
+      remove_unmanaged_links: true
+    check_mode: true
+    diff: true
+    register: plan
+
+RETURN:
+  actions:
+    description: Every action performed, or planned in check mode, in order.
+    returned: always
+    type: list
+    elements: str
+    sample:
+      - "import GPO 'SEC - Server Baseline' (backup content or migration table changed)"
+      - "SOM 'OU=Servers,DC=prod,DC=example,DC=com': set link 'SEC - Server Baseline' order 1 (enforced=False, enabled=True)"
+  notices:
+    description:
+      - What the module left alone and wants a human to know about, such as an unmanaged link or a missing WMI filter.
+      - The same text is emitted as task warnings.
+    returned: always
+    type: list
+    elements: str
+    sample:
+      - "SOM 'DC=prod,DC=example,DC=com': unmanaged link 'Legacy Policy' left in place (remove_unmanaged_links not set)"
+  errors:
+    description: What couldn't be converged. Non-empty only when the module failed.
+    returned: always
+    type: list
+    elements: str
+    sample:
+      - "GPO 'SEC - Server Baseline': WMI filter 'Servers' not found in prod.example.com; filter link not set"
+  imported:
+    description: Number of GPOs imported, or planned for import in check mode.
+    returned: always
+    type: int
+    sample: 1
+  gpo_count:
+    description: Number of GPOs considered (every GPO in the manifest, or those in O(gpo_names)).
+    returned: always
+    type: int
+    sample: 5
+  som_count:
+    description: Number of containers whose links were reconciled.
+    returned: always
+    type: int
+    sample: 2
+  server:
+    description: The domain controller the module ran against.
+    returned: always
+    type: str
+    sample: dc01.prod.example.com
+  state_file:
+    description: The per-domain state file on the management host.
+    returned: always
+    type: str
+    sample: C:\ProgramData\gpo-iac\import-state-prod.example.com.json
+  cpassword_files:
+    description: The backup files that carry a Group Policy Preferences C(cpassword), when the module refused the export.
+    returned: on the cpassword refusal
+    type: list
+    elements: str
+    sample:
+      - C:\ProgramData\gpo-iac\import\stage\gpos\SEC - Server Baseline\{GUID}\DomainSysvol\GPO\Machine\Preferences\Groups\Groups.xml

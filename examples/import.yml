@@ -1,6 +1,7 @@
 ---
 # Converge the target domain on the repo. Run with -e gpo_import_report_only=true
-# (or --check) first and read the action list before applying.
+# (or --check, with --diff for the action list) first and read the plan before
+# applying.
 - name: Import GPOs from the repo
   hosts: gpo_mgmt_prod
   gather_facts: false

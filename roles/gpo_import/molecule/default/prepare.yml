@@ -75,6 +75,8 @@
           - lab_policy_drifted.result.lockout_threshold == 0
         fail_msg: "Effective policy after drift: {{ lab_policy_drifted.result }}"
 
+    # gpo_import_report_only puts the module in check mode: it predicts the
+    # changes (changed=true, the actions listed) and writes nothing.
     - name: Plan the import against the drifted domain (report-only)
       ansible.builtin.include_role:
         name: git_cgallagher.windows.gpo_import
@@ -88,12 +90,11 @@
     - name: Check the plan covers the drift
       ansible.builtin.assert:
         that:
-          - not gpo_import_run.changed
-          - gpo_import_run.result.report_only
-          - gpo_import_run.result.actions | select('search', "import GPO '" ~ lab_fixture.gpo_rdp ~ "'") | list | length == 1
-          - gpo_import_run.result.actions | select('search', "create WMI filter") | list | length == 1
-          - gpo_import_run.result.actions | select('search', "remove unmanaged link") | list | length == 1
-        fail_msg: "Unexpected plan: {{ gpo_import_run.result | to_nice_json }}"
+          - gpo_import_run.changed
+          - gpo_import_run.actions | select('search', "import GPO '" ~ lab_fixture.gpo_rdp ~ "'") | list | length == 1
+          - gpo_import_run.actions | select('search', "create WMI filter") | list | length == 1
+          - gpo_import_run.actions | select('search', "remove unmanaged link") | list | length == 1
+        fail_msg: "Unexpected plan: {{ gpo_import_run | to_nice_json }}"
 
     - name: Look for the deleted GPO after the report-only run
       ansible.windows.win_powershell:
@@ -110,8 +111,18 @@
         that: not (lab_rdp_after_plan.output | first)
         fail_msg: report-only mode recreated a GPO
 
-    # GPP cpassword is a decryptable secret; the import must refuse a backup
-    # that contains one, before touching the domain.
+    - name: Look for the module's state file after the report-only run
+      ansible.windows.win_stat:
+        path: "{{ gpo_import_run.state_file }}"
+      register: lab_state_after_plan
+
+    - name: Check report-only wrote no state
+      ansible.builtin.assert:
+        that: not lab_state_after_plan.stat.exists
+        fail_msg: "report-only mode wrote {{ gpo_import_run.state_file }}"
+
+    # GPP cpassword is a decryptable secret; the module must refuse a backup
+    # that contains one, before touching the domain (a documented failure).
     - name: Build a copy of the export with a cpassword planted in it
       delegate_to: localhost
       block:
@@ -144,5 +155,7 @@
       rescue:
         - name: Check it refused because of cpassword
           ansible.builtin.assert:
-            that: ansible_failed_result | to_json is search('Refusing to import')
+            that:
+              - ansible_failed_result.msg | default('') is search('Refusing to import')
+              - ansible_failed_result.cpassword_files | default([]) | length == 1
             fail_msg: "Failed for another reason: {{ ansible_failed_result | to_nice_json }}"

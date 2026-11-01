@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.0 — 2026-11-01
+
+`gpo_import`'s import is a module.
+
+- New module `gpo_import`: converges a domain on a `gpo_backup`/`gpo_export`
+  export, the work that `roles/gpo_import/files/import_gpos.ps1` did through
+  `win_powershell`. Same behaviour (`Import-GPO -CreateIfNeeded` keyed on
+  content hashes, migration tables, status, WMI filter links, security
+  filtering with the MS16-072 downgrade, each container's ordered link list
+  and block-inheritance, the cpassword refusal), now with a typed argument
+  spec, `ansible-doc`, real check mode and diff mode. It reports `changed`
+  only when the domain changed; a converged domain reports no change. In
+  check mode it predicts every action (returned in `actions` and as the
+  diff) and writes neither to the domain nor to its state file. The
+  cpassword refusal is a documented module failure, raised before the domain
+  is touched, with the offending files in `cpassword_files`.
+- The `gpo_import` role calls the module; its variables are unchanged.
+  `gpo_import_report_only` now puts the import task in check mode, so it
+  does exactly what `--check` does, for this role alone inside a play that
+  otherwise applies. The registered result `gpo_import_run` changes shape:
+  the module's return values are top-level (`gpo_import_run.actions`,
+  `.imported`, `.errors`, ...) instead of under `.result`, `report_only` is
+  gone, the structured warnings are `notices` (they are also emitted as task
+  warnings), and a report-only or check-mode run that has work to do now
+  reports `changed: true`, as check mode should.
+- The lab scenario asserts the check-mode contract: the plan predicts the
+  drift with `changed`, recreates nothing and writes no state file, and a
+  converged domain re-planned in check mode reports zero actions and no
+  change.
+
 ## 0.5.0 — 2026-11-01
 
 The GPO export is a module.
