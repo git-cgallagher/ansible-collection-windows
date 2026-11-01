@@ -127,6 +127,16 @@ jobs:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}
 
+      # A VM whose QEMU process vanished leaves no screen to capture; say
+      # whether the kernel killed it for memory, and which QEMUs still run.
+      - name: Show host memory and OOM kills
+        if: failure()
+        timeout-minutes: 2
+        run: |
+          free -m
+          ps -o pid,rss,args -C qemu-system-x86_64 || true
+          sudo dmesg | grep -iE 'out of memory|oom-kill|killed process' | tail -20 || true
+
       - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2

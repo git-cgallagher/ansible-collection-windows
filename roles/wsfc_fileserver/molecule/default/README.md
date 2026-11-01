@@ -41,4 +41,7 @@ commands run as the domain account `vagrant@gpolab.test` through `runas`
 become (the box's `vagrant` account became a Domain Admin when dc01 was
 promoted).
 
-Memory: three VMs at 3 GB each on GitHub's 16 GB runner.
+Memory: three VMs at 2.5 GB each on GitHub's 16 GB runner. At 3 GB each, one
+run lost dc01's QEMU process during its first boot (an out-of-memory kill,
+unconfirmed); the workflow now prints host memory and kernel OOM kills when a
+job fails.

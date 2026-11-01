@@ -15,8 +15,10 @@ scenario:
 driver:
   options:
     platform_defaults:
-      # Three VMs on GitHub's 16 GB runner.
-      memory_mb: 3072
+      # Three VMs on GitHub's 16 GB runner. At 3 GB each, one run lost dc01's
+      # QEMU process during first boot (2026-11-01; an OOM kill, unconfirmed),
+      # so 2.5 GB, which the DC and the nodes run in.
+      memory_mb: 2560
 platforms:
   - name: dc01
     groups: [lab_dc]
