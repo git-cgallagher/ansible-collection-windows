@@ -1,15 +1,16 @@
 # domain lab — the domain controller the roles' Molecule scenarios test against
 
-Each role has its own Molecule scenario next to it, and both run against a
-real domain controller:
+Each role has its own Molecule scenario next to it, and the IIS modules have
+one in `tests/integration`:
 
 | Scenario | What it tests |
 |---|---|
 | [`roles/gpo_backup/molecule/default`](../../roles/gpo_backup/molecule/default/README.md) | The export: the manifest, the backup folders, that an unchanged domain ships nothing and that a changed GPO ships |
 | [`roles/gpo_import/molecule/default`](../../roles/gpo_import/molecule/default/README.md) | The import round trip: out-of-band drift, a report-only plan, the import, the domain read back through GPMC, a re-export, and an import through a migration table |
+| [`roles/wsfc/molecule/default`](../../roles/wsfc/molecule/default/README.md) | A one-node workgroup cluster built by `wsfc` (never promoted) |
 | [`tests/integration/molecule/iis`](../integration/molecule/iis/README.md) | The IIS modules' integration targets, on a plain server with IIS (never promoted) |
 
-Each one boots its own Windows Server 2022 VM under QEMU/KVM; the role
+Each one boots its own Windows Server 2022 VM under QEMU/KVM; the GPO
 scenarios promote it to the first DC of a new forest (`gpolab.test`) and run
 their role against it. CI runs them in
 [`.github/workflows/domain-lab.yml`](../../.github/workflows/domain-lab.yml)
@@ -25,10 +26,11 @@ on `ubuntu-latest`, one job per scenario, in parallel (about 14 minutes).
 | [`seed.yml`](seed.yml), [`files/lab_fixture.ps1`](files/lab_fixture.ps1) | Seed the authored state: OUs, groups, a WMI filter and five GPOs with links and filtering, including the [real-world scenarios](../../docs/scenarios.md). `lab_fixture.ps1 -Action Drift` is the out-of-band drift that `gpo_import`'s scenario repairs. |
 | [`requirements.yml`](requirements.yml) | The collections the lab uses: `ansible.windows` and `microsoft.ad` |
 
-Each role scenario's `prepare.yml` imports `promote.yml` and `seed.yml`, then
-adds its own steps; the IIS scenario's installs IIS instead. The fixture uses GPMC's own APIs wherever one exists (WMI
-filter linking, links, permissions, status), so the roles are checked against
-GPMC rather than against themselves.
+Each GPO scenario's `prepare.yml` imports `promote.yml` and `seed.yml`, then
+adds its own steps; wsfc's prepares a workgroup node and the IIS scenario's
+installs IIS instead. The fixture uses GPMC's own APIs wherever one exists
+(WMI filter linking, links, permissions, status), so the roles are checked
+against GPMC rather than against themselves.
 
 ## The VM image
 
@@ -90,6 +92,6 @@ To iterate: `molecule create`, `molecule prepare`, then repeat
 
 The workflow keeps the VM until diagnostics are collected: a screen dump of
 the VM console (`screen.ppm`) and the exported repos are uploaded as the
-`domain-lab-diagnostics-<job>` artifact (`gpo_backup`, `gpo_import`, `iis`). A boot-stage failure (BSOD, stuck
-OOBE) shows on the screen dump; a role failure shows in the Ansible output and
-the exported manifests.
+`domain-lab-diagnostics-<job>` artifact (`gpo_backup`, `gpo_import`, `wsfc`,
+`iis`). A boot-stage failure (BSOD, stuck OOBE) shows on the screen dump; a
+role failure shows in the Ansible output and the exported manifests.

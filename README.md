@@ -6,14 +6,18 @@ Each area's roles and modules carry its prefix.
 | Area | Roles and modules | What they do |
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
+| [Failover clustering](#failover-clustering) | `wsfc` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
-> Windows Server 2022 domain controller in CI, each by its own Molecule
-> scenario (`roles/<role>/molecule/default`), within one domain. Importing
-> GPOs into a *different* domain isn't lab-tested yet
+> Windows Server 2022 VM in CI, each by its own Molecule scenario
+> (`roles/<role>/molecule/default`): the GPO roles against a domain
+> controller, within one domain, and `wsfc` by building a one-node
+> workgroup cluster. Multi-node clusters aren't lab-tested yet
+> ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
+> and neither is importing GPOs into a *different* domain
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),
-> so try that in a lab of your own first. Known gaps are listed under
+> so try those in a lab of your own first. Known gaps are listed under
 > [What this doesn't do (yet)](#what-this-doesnt-do-yet).
 >
 > Until 0.2.0 this collection was `git_cgallagher.gpo`, in the repository
@@ -261,6 +265,33 @@ Known gaps, each tracked as a repository issue:
 - **Public repositories**: backups contain SIDs, group names, each GPO's
   full ACL, and settings such as firewall and AppLocker rules in plain text.
   Keep the repository that stores your GPOs private.
+
+## Failover clustering
+
+`wsfc` builds a Windows Server Failover Cluster from the hosts in a
+play and keeps it the way its variables describe: it installs the feature on
+every node, validates them, creates the cluster (or adds missing nodes) and
+converges network names and roles, common properties, named shared disks and
+the quorum witness. It stops at the cluster: SQL Server setup, file shares and
+availability groups come after it. The [role README](roles/wsfc/README.md)
+covers credentials (the double hop), what file servers, SQL Server FCIs and
+availability groups each need from it, and what isn't lab-tested yet;
+[examples/cluster.yml](examples/cluster.yml) has a playbook for each.
+
+```yaml
+- name: Build the availability group cluster
+  hosts: agclu01_nodes
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.windows.wsfc
+      vars:
+        wsfc_name: AGCLU01
+        wsfc_static_addresses: [10.10.10.60]
+        wsfc_validate_ignore: [Storage]
+        wsfc_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\AGCLU01'}
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
+```
 
 ## IIS
 

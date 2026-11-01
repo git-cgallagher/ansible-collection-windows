@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 — 2026-10-31
+## 0.4.0 — 2026-11-01
 
 A new area, IIS, with the collection's first modules.
 
@@ -31,6 +31,27 @@ A new area, IIS, with the collection's first modules.
 - README: how to install the collection from Galaxy, and a note sending
   Active Directory site management to `microsoft.ad.site`, with a check for
   domain controllers before deleting a site.
+
+## 0.3.0 — 2026-10-31
+
+A second area: failover clusters.
+
+- New role `wsfc`: installs Failover Clustering on every node, then
+  from one managing node validates the nodes (`Test-Cluster`), creates the
+  cluster or adds the nodes it is missing, and converges cluster network
+  names, roles and metrics, common properties, named shared disks (with an
+  optional first-time format of RAW disks and Cluster Shared Volumes) and the
+  quorum witness (none, disk, file share or Azure cloud witness). It never
+  removes nodes, disks or networks, refuses to reboot a node unless
+  `wsfc_allow_reboot` is set, and supports check mode and a
+  report-only plan. Its README says what file servers, SQL Server FCIs and
+  availability groups each need from it.
+- Its Molecule scenario builds a one-node workgroup cluster on a real Windows
+  Server 2022 VM in CI. Multi-node clusters, shared disks, witnesses and the
+  domain access points aren't lab-tested yet (issue #19, the multi-node
+  lab).
+- `examples/cluster.yml`: a file server cluster, a SQL Server FCI's cluster
+  and a multi-subnet availability group's cluster.
 
 ## 0.2.0 — 2026-10-31
 
