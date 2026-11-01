@@ -1,0 +1,10 @@
+---
+# Collections the integration targets need, over and above the collection's
+# own dependency (ansible.windows). Test dependencies only: not galaxy.yml.
+# ansible-test windows-integration installs them; the Molecule scenario
+# tests/integration/molecule/iis names this file as its dependency step.
+collections:
+  - name: ansible.windows      # win_feature, win_file, win_reboot, win_powershell (the targets' own reads)
+    version: '>=2.0.0'
+  - name: community.windows    # win_iis_website, win_iis_webapplication (setup_iis creates the test site)
+    version: '>=2.0.0'

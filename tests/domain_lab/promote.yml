@@ -8,6 +8,27 @@
 - name: Promote the VM to the first DC of a new forest
   hosts: all
   gather_facts: false
+  vars:
+    ad_forest_domain: "{{ lab_domain }}"
+    ad_forest_netbios: "{{ lab_netbios }}"
+    ad_forest_dsrm_password: "{{ lab_dsrm_password }}"
+    # GPMC + AD PowerShell up front so the post-reboot readiness check can use them.
+    ad_forest_features: [AD-Domain-Services, GPMC, RSAT-AD-PowerShell]
+    # "Available" means ADWS answers (the AD module), SYSVOL is initialised
+    # and shared, and GPMC can enumerate GPOs — not merely "WinRM is up".
+    ad_forest_ready_modules: [ActiveDirectory, GroupPolicy]
+    ad_forest_ready_test: >-
+      $netlogon = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop;
+      if ($netlogon.SysvolReady -ne 1) { exit 1 };
+      if (-not (Get-SmbShare -Name SYSVOL -ErrorAction SilentlyContinue)) { exit 1 };
+      $null = Get-GPO -All -ErrorAction Stop
+    # The share being up isn't enough: Group Policy Preferences (and other
+    # GPMC writes) go through the *domain's* DFS path, which needs the DFS
+    # referral service. Right after promotion that path can still fail with
+    # "The network path was not found" (it failed one CI run 6 s after the
+    # reboot check passed), so wait until \\domain\SYSVOL resolves too.
+    ad_forest_wait_sysvol_path: true
+    ad_forest_admin_groups: [Domain Admins, Group Policy Creator Owners]
   tasks:
     # Waits for the connection, quiets the VM (Windows Update off, Defender
     # real-time scanning off), points DNS at itself, promotes, reboots, then
@@ -16,27 +37,27 @@
     - name: Promote
       ansible.builtin.include_role:
         name: git_cgallagher.molecule.ad_forest
-      vars:
-        ad_forest_domain: "{{ lab_domain }}"
-        ad_forest_netbios: "{{ lab_netbios }}"
-        ad_forest_dsrm_password: "{{ lab_dsrm_password }}"
-        # GPMC + AD PowerShell up front so the post-reboot readiness check can use them.
-        ad_forest_features: [AD-Domain-Services, GPMC, RSAT-AD-PowerShell]
-        # "Available" means ADWS answers (the AD module), SYSVOL is initialised
-        # and shared, and GPMC can enumerate GPOs — not merely "WinRM is up".
-        ad_forest_ready_modules: [ActiveDirectory, GroupPolicy]
-        ad_forest_ready_test: >-
-          $netlogon = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop;
-          if ($netlogon.SysvolReady -ne 1) { exit 1 };
-          if (-not (Get-SmbShare -Name SYSVOL -ErrorAction SilentlyContinue)) { exit 1 };
-          $null = Get-GPO -All -ErrorAction Stop
-        # The share being up isn't enough: Group Policy Preferences (and other
-        # GPMC writes) go through the *domain's* DFS path, which needs the DFS
-        # referral service. Right after promotion that path can still fail with
-        # "The network path was not found" (it failed one CI run 6 s after the
-        # reboot check passed), so wait until \\domain\SYSVOL resolves too.
-        ad_forest_wait_sysvol_path: true
-        ad_forest_admin_groups: [Domain Admins, Group Policy Creator Owners]
+
+    # The bootstrap is idempotent: a second run on the promoted DC changes
+    # nothing. Molecule's idempotence step covers converge only, so the check
+    # lives here, on the role's registered results (the forest, the SYSVOL
+    # wait and the group membership); the DNS client and feature tasks aren't
+    # registered, so their `changed` shows only in the log.
+    - name: Promote again (nothing to do)
+      ansible.builtin.include_role:
+        name: git_cgallagher.molecule.ad_forest
+
+    - name: Check the second run changed nothing
+      ansible.builtin.assert:
+        that:
+          - not ad_forest_result.changed
+          - not (ad_forest_result.reboot_required | default(false))
+          - not ad_forest_sysvol_path.changed
+          - not ad_forest_groups.changed
+        fail_msg: >-
+          The second promotion run reported changes:
+          forest {{ ad_forest_result.changed }}, SYSVOL path {{ ad_forest_sysvol_path.changed }},
+          groups {{ ad_forest_groups.changed }}
 
     - name: Show the domain
       ansible.windows.win_powershell:

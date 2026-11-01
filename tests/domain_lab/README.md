@@ -21,9 +21,9 @@ on `ubuntu-latest`, one job per scenario, in parallel (about 14 minutes).
 | Path | What it is |
 |---|---|
 | [`.config/molecule/config.yml`](../../.config/molecule/config.yml) | Molecule's base config: the driver, with the pinned box and the VM's size (`driver.options.platform_defaults`), the provisioner, the inventory, the fixture's names (`lab_fixture`) and the test sequence. Molecule merges it under every scenario's `molecule.yml`, because `--base-config` defaults to that file at the repository root. A scenario's platform entry overrides any `platform_defaults` field (the IIS scenario sets only its name, `iis01`). |
-| [`promote.yml`](promote.yml) | Promote it to a DC (`git_cgallagher.molecule.ad_forest`), then wait until AD Web Services, SYSVOL (the domain's DFS path included) and GPMC answer |
+| [`promote.yml`](promote.yml) | Promote it to a DC (`git_cgallagher.molecule.ad_forest`), wait until AD Web Services, SYSVOL (the domain's DFS path included) and GPMC answer, then run the role again and check it changes nothing |
 | [`seed.yml`](seed.yml), [`files/lab_fixture.ps1`](files/lab_fixture.ps1) | Seed the authored state: OUs, groups, a WMI filter and five GPOs with links and filtering, including the [real-world scenarios](../../docs/scenarios.md). `lab_fixture.ps1 -Action Drift` is the out-of-band drift that `gpo_import`'s scenario repairs. |
-| [`requirements.yml`](requirements.yml) | The collections the lab uses: `ansible.windows` and `microsoft.ad` (for `ad_forest`) |
+| [`requirements.yml`](requirements.yml) | The collections the domain labs use: `ansible.windows` and `microsoft.ad` (for `ad_forest`). The IIS scenario uses [`tests/integration/requirements.yml`](../integration/requirements.yml) instead (`community.windows` for `setup_iis`) |
 
 The VM itself comes from the
 [`molecule-git-cgallagher`](https://github.com/git-cgallagher/ansible-collection-molecule)
@@ -68,8 +68,8 @@ virtualization.
 ```bash
 # The driver and its collection come from one tag (the [windows] extra is pypsrp)
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.1"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.1
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.3.1"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.3.1
 ansible-galaxy collection install -r tests/domain_lab/requirements.yml
 mkdir -p .molecule-collections/ansible_collections/git_cgallagher
 ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows

@@ -93,7 +93,7 @@ jobs:
       # limit is the backstop for the rest, because a composite action's own
       # steps can't set one.
       - name: Set up Molecule, the driver, KVM and QEMU
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@0a21eb793e3e5b50fe25c06fcbf76a7d202c634f  # v0.2.1
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@d894cf0d27719d8f26a3256cd23b562510d8ab08  # v0.3.1
         timeout-minutes: 15
         with:
           collection: git_cgallagher.windows
@@ -118,7 +118,7 @@ jobs:
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@0a21eb793e3e5b50fe25c06fcbf76a7d202c634f  # v0.2.1
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@d894cf0d27719d8f26a3256cd23b562510d8ab08  # v0.3.1
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}
