@@ -123,6 +123,10 @@ lab to the scripts — and record the surprise below as a gotcha.
 
 ## Conventions
 
+- **Every CI job sets `timeout-minutes`** (2026-11-01): GitHub's default is 6
+  hours, and a stalled install would hold the runner that long. The quick jobs
+  get 15 minutes, several times their slowest green run; `domain-lab` keeps 120
+  with step limits. A new job needs one too.
 - PowerShell lives in `roles/*/files/*.ps1`, executed via
   `ansible.windows.win_powershell` with `parameters:`; scripts must stay
   **Windows PowerShell 5.1-compatible** (no `??`, no ternary, no

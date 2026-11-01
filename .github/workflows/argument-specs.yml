@@ -14,9 +14,13 @@ on:
 permissions:
   contents: read
 
+# Every job sets timeout-minutes: GitHub's default is 6 hours, and a stalled
+# install or image pull would hold the runner that long. Each limit is several
+# times the job's slowest green run (2026-11-01).
 jobs:
   argument-specs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       PY_COLORS: '1'
       ANSIBLE_FORCE_COLOR: '1'
