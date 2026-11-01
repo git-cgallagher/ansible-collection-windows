@@ -384,6 +384,15 @@ ansible-galaxy collection build --force
   found" in one lab run 6 seconds after the other checks passed.
   `tests/domain_lab/promote.yml` sets `ad_forest_wait_sysvol_path`, and the
   role polls `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
+- **`ad_forest`'s "Point DNS at itself" task reports `changed` on a promoted
+  DC.** Seen in PR #33's lab runs (2026-11-01): the second `include_role` in
+  `promote.yml` left every other task `ok` or skipped, but `win_dns_client`
+  (`dns_servers: [127.0.0.1]` on every adapter) changed again. Promotion with
+  DNS installed sets the client to `127.0.0.1` and `::1`, so the module
+  probably removes `::1` each time; the cause is unverified. The task isn't
+  registered, so promote.yml's assert can't catch it: fix it in
+  ansible-collection-molecule (issue filed from PR #33), then extend the assert
+  there, not here.
 - **The effective domain password policy** follows link order at the domain
   root after `gpupdate /target:computer /force` on the PDC (the first refresh
   after promotion took about 90 seconds in the lab).
