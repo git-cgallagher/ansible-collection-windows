@@ -7,7 +7,8 @@ cluster instances (FCIs) and Always On availability groups (AGs).
 On **every host in the play** it installs `Failover-Clustering` and the
 clustering PowerShell tools (plus any `wsfc_extra_features`). Then,
 **once, on the managing node** (the first host, or `wsfc_manage_node`),
-it:
+it runs the collection's `wsfc_cluster` module
+(`ansible-doc git_cgallagher.windows.wsfc_cluster`), which:
 
 1. finds the cluster through any node, and refuses a node that belongs to a
    different cluster;
@@ -29,8 +30,28 @@ Safety behaviour:
 - a disk is only formatted when `initialize` is set **and** it is still RAW;
 - a feature install that needs a reboot fails unless
   `wsfc_allow_reboot: true`;
-- `wsfc_report_only: true` (or `--check`) reports every action
-  without changing the cluster.
+- `--check` reports every action without changing anything, and so does
+  `wsfc_report_only: true` for the cluster (see below).
+
+The module's result is registered as `wsfc_run` and the role prints its
+`actions`, `warnings` and `validation_report` (the `Test-Cluster` report's
+path on the managing node).
+
+### Planning: `--check` and `wsfc_report_only`
+
+The cluster task supports check mode for real: under `--check` the module
+reads the cluster, lists the actions it would take (as the task's diff too,
+with `--diff`) and writes nothing. On a cluster that doesn't exist yet the
+plan stops after its creation, because its networks, properties, disks and
+quorum can't be read before it exists, and `--check` leaves the feature
+uninstalled, so on a bare node the plan is just "create the cluster".
+
+`wsfc_report_only: true` runs only the cluster task in check mode. The
+feature install (and a reboot, with `wsfc_allow_reboot`) happens for real,
+and the rest of the play runs normally, so it is the way to install the
+feature on new nodes and read the cluster plan in one run, or to plan the
+cluster from a play you don't want to run with `--check`. Under `--check`
+it makes no difference.
 
 All variables are documented in
 [meta/argument_specs.yml](meta/argument_specs.yml), which Ansible also uses to
@@ -57,7 +78,7 @@ list item's keys, are in the argument spec.
 | `wsfc_networks` | `[]` | `subnet` (CIDR) plus `name`, `role` (`none`, `cluster`, `cluster_and_client`), `metric` |
 | `wsfc_properties` | `{}` | Cluster common properties, for example `SameSubnetThreshold` |
 | `wsfc_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label`, `drive_letter` |
-| `wsfc_report_only` | `false` | Report every action without changing the cluster (`--check` implies it) |
+| `wsfc_report_only` | `false` | Run the cluster task in check mode while the feature install runs for real (`--check` implies it) |
 | `wsfc_become_user` | `''` | Run the cluster task as this account (`runas`); see below |
 | `wsfc_become_password` | `''` | Its password (vault it) |
 | `wsfc_report_dir` | `C:\ProgramData\wsfc-iac` | `Test-Cluster` reports on the managing node |
@@ -150,7 +171,11 @@ Its own Molecule scenario,
 builds a **one-node workgroup cluster** (access point `None`) on a real
 Windows Server 2022 VM: feature install, validation, `New-Cluster`, network
 name, role and metric, common properties, node-majority quorum, an
-idempotent re-run, a report-only plan and a drift fix.
+idempotent re-run, a report-only plan and a drift fix. It then runs the
+`wsfc_cluster` module's own integration target
+(`tests/integration/targets/wsfc_cluster`), which builds and removes a
+cluster of its own: check mode before each change, the change, a repeat
+that changes nothing, out-of-band drift and the error messages.
 
 The multi-node paths are covered by `wsfc_fileserver`'s scenario,
 [`roles/wsfc_fileserver/molecule/default`](https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/wsfc_fileserver/molecule/default):

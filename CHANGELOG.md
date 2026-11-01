@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — 2026-11-01
+## 0.8.0 — 2026-11-01
 
 Clustered file servers, and the first multi-node cluster lab.
 
@@ -18,15 +18,13 @@ Clustered file servers, and the first multi-node cluster lab.
   share, moves the role to another node (`Move-ClusterGroup`), waits for it to
   come online, and proves from the client that the markers read back and each
   share takes a new write. It reports how long the move took.
-- `wsfc`: `wsfc_disks` takes a `drive_letter` for the volume that `initialize`
-  creates, so shares and SQL Server paths can name it.
-- `wsfc`: removes a cluster name address on a network in
-  `wsfc_ignore_networks` (never the name's last one). `New-Cluster` added one
-  there despite `-IgnoreNetwork` in the lab, and the name would register it
-  in DNS.
-- `wsfc`: a static address's network needs a default gateway when the cluster
-  is created (`New-Cluster` gives the client role only to such networks); the
-  variable's documentation now says so.
+- `wsfc_cluster` (and so `wsfc`): removes a cluster name address on a
+  network in `ignore_networks` (`wsfc_ignore_networks`), never the name's
+  last one. `New-Cluster` added one there despite `-IgnoreNetwork` in the
+  lab, and the name would register it in DNS.
+- `wsfc_cluster` and `wsfc`: a static address's network needs a default
+  gateway when the cluster is created (`New-Cluster` gives the client role
+  only to such networks); the documentation now says so.
 - New Molecule scenario `roles/wsfc_fileserver/molecule/default` (the
   `domain-lab` workflow's `molecule (wsfc_fileserver)` job, about an hour):
   three VMs on a lab network, a domain controller that also serves two iSCSI
@@ -37,6 +35,37 @@ Clustered file servers, and the first multi-node cluster lab.
   out-of-band drift.
 - `tests/argument_specs/check_role.yml` checks every entry point of a role's
   argument spec, not only `main`.
+
+## 0.7.0 — 2026-11-01
+
+The `wsfc` role's cluster script is now a module.
+
+- New module `wsfc_cluster`: creates a Windows Server Failover Cluster from
+  the nodes named, or adds the nodes an existing cluster is missing, and
+  converges its networks, common properties, named shared disks and quorum
+  witness. It is `roles/wsfc/files/converge_cluster.ps1` turned into a real
+  module: typed options (`quorum`, `networks`, `properties` and `disks` are
+  nested options rather than JSON strings), real check mode instead of a
+  `ReportOnly` parameter, the planned actions as the diff, the cloud
+  witness's `access_key` masked by the module, and `ansible-doc`
+  documentation. Its behaviour is the script's: the same order of
+  operations, actions, warnings and refusals. One addition, `drive_letter`
+  on a disk, gives the volume a first-time format creates a drive letter
+  (also `wsfc_disks[].drive_letter` in the role).
+- `wsfc` calls the module. Its variables are unchanged. `wsfc_report_only`
+  stays: it runs the cluster task in check mode while the feature install
+  runs for real, which `--check` alone can't do. The cluster task no longer
+  turns check mode off, so `--check` writes nothing. The role reads each
+  node's computer name from the `ansible_facts.hostname` fact (gathering the `min`
+  subset when the play hasn't) instead of running a script for it. The
+  registered result's shape changed: `wsfc_run.actions`,
+  `wsfc_run.warnings`, `wsfc_run.created` and `wsfc_run.validation_report`
+  are top-level keys now, and `report_only` is gone.
+- The module's integration target, `tests/integration/targets/wsfc_cluster`
+  (with `setup_wsfc`), builds and removes its own one-node cluster: check
+  mode before each change, the change, then a repeat that changes nothing;
+  out-of-band drift; the error messages. The `wsfc` Molecule scenario runs
+  it after the role's own checks, so CI's `molecule (wsfc)` job covers both.
 
 ## 0.6.0 — 2026-11-01
 

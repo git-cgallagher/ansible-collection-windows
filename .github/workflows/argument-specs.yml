@@ -57,7 +57,7 @@ jobs:
           ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
         run: |
           ansible-doc -t module -l git_cgallagher.windows
-          for module in iis_mime_type iis_mime_type_info; do
+          for module in iis_mime_type iis_mime_type_info wsfc_cluster; do
             ansible-doc -t module "git_cgallagher.windows.$module" > /dev/null
             echo "ok: git_cgallagher.windows.$module"
           done

@@ -37,56 +37,52 @@
   when: wsfc_features.reboot_required | default(false)
 
 # The cluster's node names are computer names, which needn't match inventory
-# names; read them rather than guess. Read-only, so it runs in check mode too.
+# names; read them from facts rather than guess. The platform subset (in min)
+# sets ansible_facts.hostname. Only when the play hasn't gathered it already.
 - name: Read the node's computer name
-  ansible.windows.win_powershell:
-    script: |
-      $Ansible.Changed = $false
-      $env:COMPUTERNAME
-  register: wsfc_computer
-  check_mode: false
-  when: wsfc_nodes | length == 0
+  ansible.windows.setup:
+    gather_subset: ['!all', 'min']
+  when:
+    - wsfc_nodes | length == 0
+    - ansible_facts.hostname is not defined
 
 # --- once, on the managing node --------------------------------------------------
-# New-Cluster has no -WhatIf worth trusting, so the script itself runs in check
-# mode and maps it onto report-only (like gpo_import).
 - name: Create or converge the cluster
-  ansible.windows.win_powershell:
-    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/converge_cluster.ps1') }}"
-    parameters:
-      Name: "{{ wsfc_name }}"
-      Nodes: "{{ wsfc_node_names }}"
-      AdministrativeAccessPoint: "{{ wsfc_administrative_access_point }}"
-      StaticAddresses: "{{ wsfc_static_addresses }}"
-      IgnoreNetworks: "{{ wsfc_ignore_networks }}"
-      Validate: "{{ wsfc_validate | bool }}"
-      ValidateIgnore: "{{ wsfc_validate_ignore }}"
-      ReportDir: "{{ wsfc_report_dir }}"
-      QuorumJson: "{{ wsfc_quorum | to_json }}"
-      NetworksJson: "{{ wsfc_networks | to_json }}"
-      PropertiesJson: "{{ wsfc_properties | to_json }}"
-      DisksJson: "{{ wsfc_disks | to_json }}"
-      ReportOnly: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+  git_cgallagher.windows.wsfc_cluster:
+    name: "{{ wsfc_name }}"
+    nodes: "{{ wsfc_node_names }}"
+    administrative_access_point: "{{ wsfc_administrative_access_point }}"
+    static_addresses: "{{ wsfc_static_addresses }}"
+    ignore_networks: "{{ wsfc_ignore_networks }}"
+    validate: "{{ wsfc_validate | bool }}"
+    validate_ignore: "{{ wsfc_validate_ignore }}"
+    report_dir: "{{ wsfc_report_dir }}"
+    quorum: "{{ wsfc_quorum }}"
+    networks: "{{ wsfc_networks }}"
+    properties: "{{ wsfc_properties }}"
+    disks: "{{ wsfc_disks }}"
   vars:
     wsfc_node_names: >-
       {{ wsfc_nodes if wsfc_nodes | length > 0 else
-         ansible_play_hosts | map('extract', hostvars, ['wsfc_computer', 'output', 0]) | list }}
+         ansible_play_hosts | map('extract', hostvars, ['ansible_facts', 'hostname']) | list }}
     ansible_become_password: "{{ wsfc_become_password }}"
   become: "{{ wsfc_become_user | length > 0 }}"
   become_method: ansible.builtin.runas
   become_user: "{{ wsfc_become_user }}"
-  # The module arguments carry a cloud witness's access key.
-  no_log: "{{ wsfc_quorum.access_key | default('') | length > 0 }}"
   delegate_to: "{{ wsfc_manage_node if wsfc_manage_node | length > 0 else ansible_play_hosts[0] }}"
   run_once: true
   register: wsfc_run
-  check_mode: false
+  # wsfc_report_only plans the cluster (the module's check mode) while the
+  # feature install above runs for real. The "or ansible_check_mode" keeps
+  # --check honest: without it, report_only false would template to
+  # check_mode false and the task would write during a check run.
+  check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
 
 - name: Report actions and warnings
   ansible.builtin.debug:
     msg:
-      - "report_only: {{ wsfc_run.result.report_only }}"
-      - "actions: {{ wsfc_run.result.actions }}"
-      - "warnings: {{ wsfc_run.result.warnings }}"
-      - "validation report: {{ wsfc_run.result.validation_report }}"
+      - "planned only: {{ wsfc_report_only | bool or ansible_check_mode }}"
+      - "actions: {{ wsfc_run.actions | default([]) }}"
+      - "warnings: {{ wsfc_run.warnings | default([]) }}"
+      - "validation report: {{ wsfc_run.validation_report | default('') }}"
   run_once: true

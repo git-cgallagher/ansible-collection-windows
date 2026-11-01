@@ -1,0 +1,11 @@
+---
+# The cluster the wsfc_cluster target builds and removes. Access point None:
+# no domain, no DNS, no network name, so it works on a workgroup host.
+setup_wsfc_name: WSFCTEST
+
+# The targets' own view of the node's cluster, and the cleanup (files/). The
+# targets are this role's siblings, so the calling target's role_path finds
+# them. Both read the cluster through the FailoverClusters cmdlets, never
+# through the module under test.
+setup_wsfc_read_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_wsfc/files/cluster_state.ps1') }}"
+setup_wsfc_remove_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_wsfc/files/remove_cluster.ps1') }}"

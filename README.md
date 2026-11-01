@@ -6,7 +6,7 @@ Each area's roles and modules carry its prefix.
 | Area | Roles and modules | What they do |
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; module `gpo_export` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
-| [Failover clustering](#failover-clustering) | `wsfc`, `wsfc_fileserver` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; run a clustered file server on it, fail it over between nodes and validate it from a client |
+| [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; module `wsfc_cluster` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; run a clustered file server on it, fail it over between nodes and validate it from a client |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
@@ -285,6 +285,14 @@ availability groups come after it. The [role README](roles/wsfc/README.md)
 covers credentials (the double hop), what file servers, SQL Server FCIs and
 availability groups each need from it, and what isn't lab-tested yet;
 [examples/cluster.yml](examples/cluster.yml) has a playbook for each.
+
+The cluster itself is the work of the `wsfc_cluster` module, which the role
+runs once from the managing node. Call it directly when the feature is
+already installed, or from a play of your own: it finds the cluster through
+any of its nodes, creates it or adds the missing nodes, and converges the
+networks, properties, disks and quorum, all with check mode (the planned
+actions are the diff) and without ever removing what the options don't list.
+`ansible-doc git_cgallagher.windows.wsfc_cluster` has every option.
 
 ```yaml
 - name: Build the availability group cluster
