@@ -44,7 +44,7 @@
     that:
       - iis_mime_type_read.result.effective == []
       - iis_mime_type_read.result.application_host == []
-    fail_msg: "{{ iis_mime_type_read.result }}"
+    fail_msg: "{{ iis_mime_type_read.result | string }}"
 
 - name: Name a website that doesn't exist
   git_cgallagher.windows.iis_mime_type:

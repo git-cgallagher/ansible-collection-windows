@@ -68,7 +68,7 @@
     that:
       - iis_mime_type_add_again is not changed
       - iis_mime_type_add_again.mime_type == 'text/x-ansible-test'
-    fail_msg: "{{ iis_mime_type_add_again }}"
+    fail_msg: "{{ iis_mime_type_add_again | string }}"
 
 # --- other spellings of the same extension -------------------------------------------
 - name: Add .ansibletest again, named without its dot
@@ -159,7 +159,7 @@
 - name: Check the repeated change changed nothing
   ansible.builtin.assert:
     that: iis_mime_type_change_again is not changed
-    fail_msg: "{{ iis_mime_type_change_again }}"
+    fail_msg: "{{ iis_mime_type_change_again | string }}"
 
 # --- remove -----------------------------------------------------------------------------
 - name: Remove .ansibletest (check mode)

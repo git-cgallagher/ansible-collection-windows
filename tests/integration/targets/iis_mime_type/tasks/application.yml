@@ -52,4 +52,4 @@
     that:
       - iis_mime_type_app_add_again is not changed
       - iis_mime_type_app_add_again.config_path == setup_iis_application_path
-    fail_msg: "{{ iis_mime_type_app_add_again }}"
+    fail_msg: "{{ iis_mime_type_app_add_again | string }}"

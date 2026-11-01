@@ -170,7 +170,7 @@
           - iis_mime_type_info_site_check is not changed
           - iis_mime_type_info_site_check is not skipped
           - iis_mime_type_info_site_check.mime_types == iis_mime_type_info_site.mime_types
-        fail_msg: "{{ iis_mime_type_info_site_check }}"
+        fail_msg: "{{ iis_mime_type_info_site_check | string }}"
 
     - name: Name a website that doesn't exist
       git_cgallagher.windows.iis_mime_type_info:
@@ -202,4 +202,4 @@
     that:
       - iis_mime_type_info_read.result.application_host == []
       - iis_mime_type_info_read.result.web_config == []
-    fail_msg: "{{ iis_mime_type_info_read.result }}"
+    fail_msg: "{{ iis_mime_type_info_read.result | string }}"

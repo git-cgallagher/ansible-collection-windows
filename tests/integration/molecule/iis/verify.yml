@@ -29,7 +29,7 @@
     - name: Check the server level has no test mapping
       ansible.builtin.assert:
         that: lab_levels.results[0].result.effective | selectattr('extension', 'match', '.ansible') | list == []
-        fail_msg: "{{ lab_levels.results[0].result.effective | selectattr('extension', 'match', '.ansible') | list }}"
+        fail_msg: "{{ lab_levels.results[0].result.effective | selectattr('extension', 'match', '.ansible') | list | string }}"
 
     - name: Check the test website and application store nothing of their own
       ansible.builtin.assert:
