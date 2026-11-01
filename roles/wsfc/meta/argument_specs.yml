@@ -55,6 +55,9 @@ argument_specs:
             one per subnet).
           - Empty means DHCP. Ignored when O(wsfc_administrative_access_point=None).
           - Only used when the cluster is created.
+          - Each address's network needs a default gateway on the nodes when the cluster is created. C(New-Cluster)
+            gives the client role, the only one that can hold the address, only to networks with a gateway, and
+            otherwise fails with "no appropriate ClusterandClient network was found".
       wsfc_ignore_networks:
         type: list
         elements: str

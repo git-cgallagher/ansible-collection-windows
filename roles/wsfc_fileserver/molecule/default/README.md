@@ -27,7 +27,7 @@ by their lab addresses. Each disk has the same UniqueId on both nodes, so
 | Step | What happens | What's asserted |
 |---|---|---|
 | create | Boot the three VMs side by side | WinRM/PSRP answers on each |
-| prepare | Quiet every VM; promote dc01 (renamed DC01); install the iSCSI target and serve both disks; on the nodes, use dc01 for DNS, rename and join the domain, open file sharing, connect to the iSCSI target | Both nodes see both disks |
+| prepare | Quiet every VM; promote dc01 (renamed DC01); install the iSCSI target and serve both disks; on the nodes, use dc01 for DNS, give the lab NIC a default gateway (New-Cluster puts a static address only on a network with one), rename and join the domain, open file sharing, connect to the iSCSI target | Both nodes see both disks |
 | converge | Read the disks' UniqueIds; `wsfc` builds cluster `FSCLU` (10.42.0.100, Active Directory access point) after `Test-Cluster` with storage tests, takes the management network out of cluster use, formats and adds both disks (`FS Data` as S:) and sets the disk witness; `wsfc_fileserver` builds file server `FSLAB` (10.42.0.101) on `FS Data` with shares `Projects` and `AppData` | — |
 | idempotence | Run both roles again | No task reports a change |
 | verify | Read the cluster and the file server | Two nodes up; the cluster address; disk witness; both disks online; network roles; the file server online with its address, preferred owners, disk and both shares' paths, settings and exact permissions |

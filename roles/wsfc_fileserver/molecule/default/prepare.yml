@@ -106,6 +106,24 @@
         adapter_names: '*'
         dns_servers: ["{{ lab_dc_address }}"]
 
+    # New-Cluster gives the client role (ClusterAndClient), the only one that
+    # can hold the cluster's static address, only to networks with a default
+    # gateway; without one it fails with "no appropriate ClusterandClient
+    # network was found". Nothing answers at 10.42.0.1, and the high metric
+    # keeps real traffic on the management NIC's gateway.
+    - name: Give the lab network a default gateway
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Gateway)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          if (-not (Get-NetRoute -InterfaceAlias cluster -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)) {
+              $null = New-NetRoute -InterfaceAlias cluster -DestinationPrefix '0.0.0.0/0' -NextHop $Gateway -RouteMetric 5000
+              $Ansible.Changed = $true
+          }
+        parameters:
+          Gateway: "{{ lab_cluster.gateway }}"
+
     - name: Rename the node and join the domain
       microsoft.ad.membership:
         dns_domain_name: "{{ lab_domain }}"

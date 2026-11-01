@@ -52,6 +52,9 @@ provisioner:
           # The lab network carries the cluster; the management network
           # (QEMU user networking, 10.0.2.15 on every VM) carries only WinRM.
           subnet: 10.42.0.0/24
+          # A default gateway on the lab network, which New-Cluster needs to
+          # put the static address there (prepare.yml). Nothing answers at it.
+          gateway: 10.42.0.1
           management_subnet: 10.0.2.0/24
           # The iSCSI target's virtual disks, by cluster disk name.
           disks:

@@ -303,8 +303,8 @@ ansible-galaxy collection build --force
   allowed by the nodes' lab addresses (`IPAddress:10.42.0.11`), and each
   node connects persistently. A LUN has the same UniqueId on every node (what
   `wsfc_disks` matches), and Windows' target supports the persistent
-  reservations `Test-Cluster`'s storage tests need. Unconfirmed until the
-  scenario's first green run.
+  reservations `Test-Cluster`'s storage tests need (confirmed by the first
+  run, 2026-11-01: both nodes saw both disks and storage validation passed).
 
 - **Every lab VM's management NIC is 10.0.2.15** (QEMU user networking,
   which carries WinRM and can't reach the other VMs). In a cluster lab it
@@ -313,6 +313,18 @@ ansible-galaxy collection build --force
   [Network]`), keeps the cluster names off it (`*_ignore_networks`) and sets
   its role to none. If `New-Cluster` ever fails over it, the fix is per-VM
   user-network subnets in the driver, not here.
+
+- **`New-Cluster` puts a static address only on a network with a default
+  gateway.** At creation, the client role (ClusterAndClient, the only one
+  that can hold the cluster name's address) goes only to networks whose NICs
+  have a gateway; the lab network had none, and the first three-VM run
+  (2026-11-01, PR #36) failed with "Static address '10.42.0.100' was given
+  for the Cluster Name but no appropriate ClusterandClient network was
+  found". The scenario's prepare gives each node's lab NIC a default route
+  to an unused 10.42.0.1 at metric 5000 (management traffic keeps its own
+  gateway). The same run confirmed the rest of prepare: the domain, the
+  joins, the iSCSI disks, `Test-Cluster` with storage tests and the `runas`
+  double hop as `GPOLAB\vagrant`.
 
 - **`wsfc`'s cluster task sets `become` itself** (from
   `wsfc_become_user`), which overrides a play-level `become` for that
