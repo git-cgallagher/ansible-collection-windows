@@ -7,10 +7,12 @@ DOCUMENTATION:
       (precedence), enforced and disabled links, block-inheritance, security filtering, WMI filters and GPO status.
     - Keeps a per-domain state file of content hashes in O(work_dir) and ships only GPOs whose settings content changed
       since the last run, so a Git diff of the export shows real changes rather than backup timestamps. The manifest is
-      always included.
+      always included. The hash covers the GPO's live Group Policy Template in SYSVOL, read from the domain controller
+      the export runs against, so deciding what ships needs no backup, and only the GPOs that ship are backed up.
     - Zips the export into C(gpo-export.zip) in O(work_dir). The C(gpo_backup) role fetches that zip and unpacks it into
       a repository working copy on the controller; the C(gpo_import) role consumes the result.
-    - Reads from Active Directory and SYSVOL only. It writes nothing but its own working directory on the host it runs on.
+    - Reads from Active Directory and SYSVOL only. It writes nothing but its own working directory on the host it runs
+      on, and nothing at all in check mode.
   version_added: 0.5.0
   author:
     - Chris Gallagher (@git-cgallagher)
@@ -50,9 +52,12 @@ DOCUMENTATION:
     check_mode:
       support: full
       details:
-        - Check mode runs C(Backup-GPO) into the staging area under O(work_dir), because the content hashes come from the
-          backups, and reports what would ship. It writes neither the zip (RV(zip) is V(null)) nor the state file, so the
-          next real run ships the same GPOs.
+        - Check mode reads Active Directory and the live SYSVOL content, decides exactly as a real run does and reports
+          what would ship. No C(Backup-GPO) runs, O(work_dir) isn't created, its staging area isn't touched, and neither
+          the zip (RV(zip) is V(null)) nor the state file is written, so the next real run ships the same GPOs.
+        - Its one write is a preflight probe that proves the export could be written, a uniquely named file created in
+          O(work_dir) (or, when it doesn't exist, in the nearest existing parent it would be created under) and removed at
+          once. A failed probe fails the task with a message naming the directory, and RV(preflight) reports the result.
     diff_mode:
       support: none
     platform:
@@ -60,11 +65,15 @@ DOCUMENTATION:
   notes:
     - Needs the B(GroupPolicy) and B(ActiveDirectory) PowerShell modules (RSAT) on the host it runs on, and rights to read
       every GPO and the domain's OUs and WMI filters.
-    - The content hash covers a backup's C(DomainSysvol) subtree only, so a GPO's version counter, backup timestamps and
-      the fresh backup GUID of every run don't count as changes. A GPO with no settings hashes as empty.
-    - A GPO whose backup fails (a missing SYSVOL folder, an unreadable ACL) doesn't hide the others. Every failure is
-      collected in RV(errors), the task fails, and the state file is left as it was, so the next run re-exports
-      everything that changed.
+    - The content hash covers the GPO's folder under C(\\<dc>\SYSVOL\<domain>\Policies), every file and directory except
+      C(gpt.ini), which holds the version counter GPMC bumps on every edit. Links, filtering, the WMI filter and GPO status
+      live in Active Directory and are tracked through the manifest instead.
+    - Versions before 0.8.0 hashed the backup's C(DomainSysvol) subtree instead. A state file written by one of them
+      (no C(hash_basis) key) never matches, so the first export after upgrading ships every GPO once, after which the
+      export is incremental again.
+    - A GPO that can't be hashed or backed up (a missing SYSVOL folder, an unreadable file) doesn't hide the others.
+      Every failure is collected in RV(errors), the task fails, and the state file is left as it was, so the next run
+      re-exports everything that changed.
     - Two GPOs whose display names map to the same folder name (the characters C(\/:*?"<>|) become C(_)) fail the
       export; rename one.
   seealso:
@@ -99,6 +108,46 @@ EXAMPLES: |
       work_dir: D:\gpo-iac\backup
 
 RETURN:
+  preflight:
+    description:
+      - What the run proved before exporting anything. A real run proves it by doing the work; check mode proves the
+        directory with a probe file it removes at once.
+    returned: always
+    type: dict
+    contains:
+      ad:
+        description: Active Directory answered for O(domain) (C(Get-ADDomain) succeeded).
+        type: bool
+        returned: always
+        sample: true
+      gpmc:
+        description: GPMC listed the domain's GPOs on RV(server) (C(Get-GPO -All) succeeded).
+        type: bool
+        returned: always
+        sample: true
+      work_dir_exists:
+        description: Whether O(work_dir) existed when the task started. A real run creates it; check mode reports that it would.
+        type: bool
+        returned: always
+        sample: true
+      work_dir_writable:
+        description: Whether the export could be written there. False when the check-mode probe failed, which fails the task.
+        type: bool
+        returned: always
+        sample: true
+      work_dir_probed:
+        description:
+          - The directory the writability proof applies to. O(work_dir) itself, or in check mode the nearest existing
+            parent when O(work_dir) doesn't exist yet. V(null) when the proof didn't get that far.
+        type: str
+        returned: always
+        sample: C:\ProgramData\gpo-iac\backup
+    sample:
+      ad: true
+      gpmc: true
+      work_dir_exists: true
+      work_dir_writable: true
+      work_dir_probed: C:\ProgramData\gpo-iac\backup
   shipped:
     description:
       - The GPOs in the zip, those whose content changed since the last run (every selected GPO with O(full_export)),
