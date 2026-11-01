@@ -125,11 +125,13 @@ workgroup labs (`wsfc`, `iis`) quiet their VM with the same collection's
 own copy of that step. The lab first passed on
 2026-10-28 (PR #1, the initial collection), which closed the lab-validation
 issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
-ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
-parse + PSScriptAnalyzer and the modules' Pester unit tests (the
-`powershell` job), the `hygiene` job (a `cpassword` grep, and the gate that
-every role has a Molecule scenario and every module an integration target
-and unit tests), and the `argument-specs` workflow. Known gaps found by review are tracked as repo issues and listed
+ansible-lint/yamllint, ansible-test sanity (including pslint; stable
+ansible-core branches only, no `devel` canary since 2026-11-01 by owner
+decision), PowerShell parse + PSScriptAnalyzer and the modules' Pester unit
+tests (the `powershell` job), the `hygiene` job (a `cpassword` grep, and the
+gate that every role has a Molecule scenario and every module an integration
+target and unit tests), and the `argument-specs` workflow. Known gaps found
+by review are tracked as repo issues and listed
 in the README's "What this doesn't do (yet)".
 
 The IIS modules are lab-tested the same way, by their integration targets:
