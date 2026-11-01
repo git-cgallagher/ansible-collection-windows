@@ -77,7 +77,7 @@
       ansible.windows.win_find:
         paths: 'C:\ProgramData\gpo-iac\backup'
         recurse: true
-        file_type: both
+        file_type: any
       register: lab_workdir_before
 
     - name: Export the changed domain in check mode
@@ -93,7 +93,7 @@
       ansible.windows.win_find:
         paths: 'C:\ProgramData\gpo-iac\backup'
         recurse: true
-        file_type: both
+        file_type: any
       register: lab_workdir_after
 
     - name: Check that check mode predicted the changed GPO and wrote nothing
@@ -176,7 +176,7 @@
     - name: List what the probe left in the denied directory
       ansible.windows.win_find:
         paths: 'C:\ProgramData\gpo-iac\check-denied'
-        file_type: both
+        file_type: any
       register: lab_denied_files
 
     - name: Check that the preflight failed clearly and left nothing behind
