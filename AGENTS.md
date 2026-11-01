@@ -89,7 +89,10 @@ They share the lab in `tests/domain_lab/` and the Molecule base config
 `tests/domain_lab/promote.yml` with the lab's hooks (GPMC in the features and
 the readiness test, `Group Policy Creator Owners` in the admin groups, the
 SYSVOL path wait), then included again to assert the bootstrap changes nothing
-on a second run; lab-bootstrap bugs are fixed in that role, not here. The lab first passed on
+on a second run; lab-bootstrap bugs are fixed in that role, not here. The
+workgroup labs (`wsfc`, `iis`) quiet their VM with the same collection's
+`quiet_vm` role (`ad_forest` includes it itself), so no scenario carries its
+own copy of that step. The lab first passed on
 2026-10-28 (PR #1, the initial collection), which closed the lab-validation
 issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
 ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
@@ -267,9 +270,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   it. Its reads go through `setup_wsfc/files/cluster_state.ps1`.
   `setup_iis` creates the test website and application with
   `community.windows`'s IIS modules; that collection is a **test dependency**
-  in `tests/integration/requirements.yml` (installed by ansible-test, by the
-  `iis` scenario's dependency step and by the lint job), never a `galaxy.yml`
-  dependency. Keep the targets' own reads (`read_mime_map.ps1`, the inline
+  in `tests/integration/requirements.yml` (installed by ansible-test and by
+  the `iis` scenario's dependency step; the lint image doesn't carry it and
+  ansible-lint passes without it), never a `galaxy.yml` dependency. Keep the targets' own reads (`read_mime_map.ps1`, the inline
   reads) in PowerShell: the oracle must stay independent of the module under
   test and of any other IIS module.
 - **Every module needs `validate-modules:missing-gplv3-license` ignores** in
@@ -309,8 +312,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.1"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.1
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.3.1"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.3.1
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
@@ -384,15 +387,15 @@ ansible-galaxy collection build --force
   found" in one lab run 6 seconds after the other checks passed.
   `tests/domain_lab/promote.yml` sets `ad_forest_wait_sysvol_path`, and the
   role polls `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
-- **`ad_forest`'s "Point DNS at itself" task reports `changed` on a promoted
-  DC.** Seen in PR #33's lab runs (2026-11-01): the second `include_role` in
-  `promote.yml` left every other task `ok` or skipped, but `win_dns_client`
-  (`dns_servers: [127.0.0.1]` on every adapter) changed again. Promotion with
-  DNS installed sets the client to `127.0.0.1` and `::1`, so the module
-  probably removes `::1` each time; the cause is unverified. The task isn't
-  registered, so promote.yml's assert can't catch it: fix it in
-  ansible-collection-molecule (issue filed from PR #33), then extend the assert
-  there, not here.
+- **The lab bootstrap's idempotence is only partly asserted.** `promote.yml`
+  runs `ad_forest` twice and asserts on the results the role registers (the
+  forest, the SYSVOL wait, the groups); its DNS client, feature and quiet
+  tasks aren't registered, so their `changed` shows only in the lab log. PR
+  #33's first lab runs (2026-11-01, driver v0.2.1) caught `win_dns_client`
+  changing on every run that way: promotion adds `::1` and the role listed
+  only `127.0.0.1`. Fixed in the molecule collection's 0.3.0 (its issue 11),
+  which the labs pin. A lab-bootstrap surprise is fixed in that role, then
+  the assert extended there, not patched around in promote.yml.
 - **The effective domain password policy** follows link order at the domain
   root after `gpupdate /target:computer /force` on the PDC (the first refresh
   after promotion took about 90 seconds in the lab).

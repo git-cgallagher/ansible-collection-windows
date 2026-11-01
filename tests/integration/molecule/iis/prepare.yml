@@ -10,19 +10,11 @@
       ansible.builtin.wait_for_connection:
         timeout: 600
 
-    # As tests/domain_lab/promote.yml does for the domain labs.
+    # The shared step from the molecule collection (ad_forest includes it
+    # itself, so the domain labs don't).
     - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
-      ansible.windows.win_powershell:
-        script: |
-          $Ansible.Changed = $false
-          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
-          try {
-              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
-          }
-          catch {
-              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
-          }
+      ansible.builtin.include_role:
+        name: git_cgallagher.molecule.quiet_vm
 
     - name: Look for IIS
       ansible.windows.win_service_info:

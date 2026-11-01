@@ -9,6 +9,11 @@ Test-only: nothing shipped changes.
   onto the driver), and now runs the role a second time on the promoted DC
   and asserts that it changed nothing: the forest, the SYSVOL wait and the
   admin group membership.
+- The labs pin the molecule collection and driver at v0.3.1, whose
+  `ad_forest` is idempotent on a promoted DC (its DNS task listed only
+  `127.0.0.1`, which PR #33's second-run check caught), and the `wsfc` and
+  `iis` scenarios quiet their VM with its shared `quiet_vm` role instead of a
+  copied PowerShell block.
 - `setup_iis`, the IIS integration targets' setup, creates the test website
   and application with `community.windows.win_iis_website` and
   `community.windows.win_iis_webapplication` instead of a PowerShell script,
