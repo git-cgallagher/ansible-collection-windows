@@ -84,7 +84,12 @@ role):
   repeat-changes-nothing check after each change, and the error messages.
 
 They share the lab in `tests/domain_lab/` and the Molecule base config
-`.config/molecule/config.yml` (see Conventions). The lab first passed on
+`.config/molecule/config.yml` (see Conventions). The promotion is
+`git_cgallagher.molecule.ad_forest`, included once by
+`tests/domain_lab/promote.yml` with the lab's hooks (GPMC in the features and
+the readiness test, `Group Policy Creator Owners` in the admin groups, the
+SYSVOL path wait), then included again to assert the bootstrap changes nothing
+on a second run; lab-bootstrap bugs are fixed in that role, not here. The lab first passed on
 2026-10-28 (PR #1, the initial collection), which closed the lab-validation
 issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
 ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
@@ -98,7 +103,9 @@ installs IIS and runs `tests/integration/targets/iis_mime_type` and
 `iis_mime_type_info`: server, site and application levels, both
 `config_file` stores, check and diff mode, overriding and hiding inherited
 mappings, the refusal to override a level's own `web.config`, and the error
-messages. The job first ran on 0.4.0's pull request. Not covered: a section
+messages. The job first ran on 0.4.0's pull request. Its prepare step also
+runs `setup_iis` twice and asserts the second run changed nothing (the
+scenario has no idempotence step). Not covered: a section
 locked at a parent level, content directories on UNC paths, and a host with
 IIS but without its management tools (the lab installs them for the
 targets' independent reads).
@@ -258,6 +265,13 @@ lab to the scripts — and record the surprise below as a gotcha.
   molecule.yml points at `tests/integration/targets`), after the role's own
   checks; the target removes the role's cluster, builds its own and removes
   it. Its reads go through `setup_wsfc/files/cluster_state.ps1`.
+  `setup_iis` creates the test website and application with
+  `community.windows`'s IIS modules; that collection is a **test dependency**
+  in `tests/integration/requirements.yml` (installed by ansible-test, by the
+  `iis` scenario's dependency step and by the lint job), never a `galaxy.yml`
+  dependency. Keep the targets' own reads (`read_mime_map.ps1`, the inline
+  reads) in PowerShell: the oracle must stay independent of the module under
+  test and of any other IIS module.
 - **Every module needs `validate-modules:missing-gplv3-license` ignores** in
   `tests/sanity/ignore-2.18.txt` through `ignore-2.23.txt`, for its `.ps1`
   and its `.yml`: the collection is MIT, and validate-modules demands a GPLv3
@@ -368,8 +382,8 @@ ansible-galaxy collection build --force
   the SYSVOL share and `SysvolReady`. Group Policy Preferences cmdlets write
   through the domain's DFS path, which failed with "The network path was not
   found" in one lab run 6 seconds after the other checks passed.
-  `tests/domain_lab/promote.yml` polls
-  `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
+  `tests/domain_lab/promote.yml` sets `ad_forest_wait_sysvol_path`, and the
+  role polls `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
 - **The effective domain password policy** follows link order at the domain
   root after `gpupdate /target:computer /force` on the PDC (the first refresh
   after promotion took about 90 seconds in the lab).

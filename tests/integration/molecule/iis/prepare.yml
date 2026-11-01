@@ -38,3 +38,24 @@
     - name: Install IIS and create the test website
       ansible.builtin.include_role:
         name: setup_iis
+
+    # The targets depend on setup_iis, so it runs again under converge; it
+    # must change nothing then. The scenario has no idempotence step (the
+    # targets change mappings on purpose), so check the second run here, on
+    # the results setup_iis registers.
+    - name: Run setup_iis again (nothing to do)
+      ansible.builtin.include_role:
+        name: setup_iis
+
+    - name: Check the second setup_iis run changed nothing
+      ansible.builtin.assert:
+        that:
+          - not setup_iis_feature.changed
+          - not setup_iis_feature.reboot_required
+          - not setup_iis_dirs.changed
+          - not setup_iis_website.changed
+          - not setup_iis_application_result.changed
+        fail_msg: >-
+          The second setup_iis run reported changes:
+          feature {{ setup_iis_feature.changed }}, directories {{ setup_iis_dirs.changed }},
+          website {{ setup_iis_website.changed }}, application {{ setup_iis_application_result.changed }}

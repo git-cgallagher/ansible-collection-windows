@@ -1,7 +1,8 @@
 ---
 # Installs IIS and creates the test website and application. Idempotent, so
 # every target can depend on it (meta/main.yml) and the Molecule scenario's
-# prepare step can run it first.
+# prepare step can run it first, then again to check that nothing changes.
+# Every task registers a setup_iis_* result for that second-run check.
 - name: Install IIS, its management tools and the WebAdministration module
   ansible.windows.win_feature:
     name:
@@ -22,31 +23,24 @@
   loop:
     - "{{ setup_iis_site_dir }}"
     - "{{ setup_iis_application_dir }}"
+  register: setup_iis_dirs
 
-- name: Create the test website and its application
-  ansible.windows.win_powershell:
-    script: |
-      param (
-          [string]$Site,
-          [int]$Port,
-          [string]$SiteDir,
-          [string]$Application,
-          [string]$ApplicationDir
-      )
-      $Ansible.Changed = $false
-      Import-Module -Name WebAdministration
-      if (-not (Get-Website | Where-Object { $_.Name -eq $Site })) {
-          $null = New-Website -Name $Site -Port $Port -PhysicalPath $SiteDir
-          $Ansible.Changed = $true
-      }
-      $name = $Application.TrimStart('/')
-      if (-not (Get-WebApplication -Site $Site -Name $name)) {
-          $null = New-WebApplication -Site $Site -Name $name -PhysicalPath $ApplicationDir -ApplicationPool DefaultAppPool
-          $Ansible.Changed = $true
-      }
-    parameters:
-      Site: "{{ setup_iis_site }}"
-      Port: "{{ setup_iis_site_port }}"
-      SiteDir: "{{ setup_iis_site_dir }}"
-      Application: "{{ setup_iis_application }}"
-      ApplicationDir: "{{ setup_iis_application_dir }}"
+# community.windows' IIS modules are a test dependency only
+# (tests/integration/requirements.yml), not one of the collection's.
+- name: Create the test website
+  community.windows.win_iis_website:
+    name: "{{ setup_iis_site }}"
+    port: "{{ setup_iis_site_port }}"
+    physical_path: "{{ setup_iis_site_dir }}"
+    state: started
+  register: setup_iis_website
+
+# IIS names the application without the leading slash its path carries.
+- name: Create the test application
+  community.windows.win_iis_webapplication:
+    site: "{{ setup_iis_site }}"
+    name: "{{ setup_iis_application | regex_replace('^/', '') }}"
+    physical_path: "{{ setup_iis_application_dir }}"
+    application_pool: DefaultAppPool
+    state: present
+  register: setup_iis_application_result
