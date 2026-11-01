@@ -225,9 +225,21 @@
     - name: Drift a property and the network's name out-of-band
       ansible.windows.win_powershell:
         script: |
+          $ErrorActionPreference = 'Stop'
           Import-Module -Name FailoverClusters
-          (Get-Cluster -Name $env:COMPUTERNAME).SameSubnetThreshold = 12
-          (Get-ClusterNetwork -Cluster $env:COMPUTERNAME | Select-Object -First 1).Name = 'Drifted'
+          $cluster = Get-Cluster -Name $env:COMPUTERNAME
+          $cluster.SameSubnetThreshold = 12
+          $network = Get-ClusterNetwork -Cluster $env:COMPUTERNAME -Name $Name
+          $network.Name = 'Drifted'
+          # Read both back: a drift that didn't take would fail the plan's
+          # assertions later with a misleading message.
+          $after = Get-Cluster -Name $env:COMPUTERNAME
+          if ([int]$after.SameSubnetThreshold -ne 12) { throw "SameSubnetThreshold is $($after.SameSubnetThreshold), not 12" }
+          if (-not (Get-ClusterNetwork -Cluster $env:COMPUTERNAME | Where-Object { $_.Name -eq 'Drifted' })) {
+              throw "The network wasn't renamed to Drifted"
+          }
+        parameters:
+          Name: "{{ wsfc_cluster_test_network_name }}"
 
     - name: Plan the fix (check mode)
       git_cgallagher.windows.wsfc_cluster:
