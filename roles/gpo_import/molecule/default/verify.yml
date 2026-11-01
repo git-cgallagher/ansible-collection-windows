@@ -44,13 +44,13 @@
     - name: Re-plan the import in check mode
       ansible.builtin.include_role:
         name: git_cgallagher.windows.gpo_import
+        apply:
+          check_mode: true
       vars:
         gpo_import_domain: "{{ lab_domain }}"
         gpo_import_source_dir: "{{ lab_repo }}"
         gpo_import_create_wmi_filters: true
         gpo_import_remove_unmanaged_links: true
-        apply:
-          check_mode: true
 
     - name: Check nothing is left to do
       ansible.builtin.assert:
