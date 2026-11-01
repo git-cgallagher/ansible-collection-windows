@@ -402,6 +402,21 @@
         fail_msg: "{{ gpo_export_deleted_check }} / {{ gpo_export_deleted }} / {{ gpo_export_deleted_again }}"
 
     # --- failures: each fails clearly and writes nothing ----------------------------------------
+    # Two GPOs whose display names map to the same folder name can't share
+    # an export; the clash test below fails before anything is written. They
+    # exist before the domain is read, so the read after the failures
+    # compares like with like.
+    - name: Create two GPOs whose names map to the same folder name
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string[]]$Names)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          foreach ($name in $Names) { New-GPO -Name $name -Domain $Domain -Server $pdc | Out-Null }
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Names: "{{ gpo_export_dup_gpos }}"
+
     - name: Read the domain before the failures
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
@@ -477,19 +492,6 @@
           - not gpo_export_no_parent.preflight.work_dir_writable
           - gpo_export_no_parent.preflight.work_dir_probed is none
         fail_msg: "{{ gpo_export_no_parent | string }}"
-
-    # Two GPOs whose display names map to the same folder name can't share
-    # an export; the run fails before anything is written.
-    - name: Create two GPOs whose names map to the same folder name
-      ansible.windows.win_powershell:
-        script: |
-          param([string]$Domain, [string[]]$Names)
-          Import-Module GroupPolicy
-          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
-          foreach ($name in $Names) { New-GPO -Name $name -Domain $Domain -Server $pdc | Out-Null }
-        parameters:
-          Domain: "{{ setup_gpo_lab_domain }}"
-          Names: "{{ gpo_export_dup_gpos }}"
 
     - name: Export with the clashing names
       git_cgallagher.windows.gpo_export:
