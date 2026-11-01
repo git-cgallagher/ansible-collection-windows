@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 — 2026-11-01
+
+The GPO export is a module.
+
+- New module `gpo_export`: what `roles/gpo_backup/files/backup_gpos.ps1` did,
+  as a documented module (`ansible-doc git_cgallagher.windows.gpo_export`)
+  with a typed argument spec (`domain`, `server`, `work_dir`, `gpo_names`,
+  `full_export`) and real check-mode support: a `--check` run computes what
+  would ship and writes neither the zip (returned as `null`) nor the
+  content-hash state file. Manifest content, hashing, change detection, the
+  state file and the backup folder layout are unchanged, so existing exports
+  and `gpo_import` round trips are unaffected.
+- `gpo_backup` calls the module instead of `win_powershell`, without
+  `check_mode: false`, and fetches the zip only when the module wrote one.
+  Its registered result, `gpo_backup_export`, now carries the module's return
+  values at the top level (`shipped`, `deleted`, `manifest_changed`,
+  `gpo_count`, `zip`, `server`, `errors`) instead of under `result`. The
+  role's variables are unchanged.
+- `gpo_backup`'s Molecule scenario now also runs the role in check mode after
+  changing a GPO and checks that it predicts that GPO, and only it, without
+  writing the zip, and that the real run that follows still ships it.
+
 ## 0.4.0 — 2026-11-01
 
 A new area, IIS, with the collection's first modules.

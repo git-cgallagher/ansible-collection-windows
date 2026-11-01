@@ -1,0 +1,170 @@
+DOCUMENTATION:
+  module: gpo_export
+  short_description: Export a domain's GPOs and their topology manifest
+  description:
+    - Runs C(Backup-GPO) for every GPO in a domain (or the ones named), each into its own self-contained backup folder,
+      and writes C(gpo-manifest.json), which records what C(Import-GPO) never carries, namely link targets, link order
+      (precedence), enforced and disabled links, block-inheritance, security filtering, WMI filters and GPO status.
+    - Keeps a per-domain state file of content hashes in O(work_dir) and ships only GPOs whose settings content changed
+      since the last run, so a Git diff of the export shows real changes rather than backup timestamps. The manifest is
+      always included.
+    - Zips the export into C(gpo-export.zip) in O(work_dir). The C(gpo_backup) role fetches that zip and unpacks it into
+      a repository working copy on the controller; the C(gpo_import) role consumes the result.
+    - Reads from Active Directory and SYSVOL only. It writes nothing but its own working directory on the host it runs on.
+  version_added: 0.5.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    domain:
+      description:
+        - DNS name of the domain to export, for example V(lab.example.com).
+      type: str
+      required: true
+    server:
+      description:
+        - Domain controller to run against.
+        - Omitted or empty means the domain's PDC emulator, which avoids AD-versus-SYSVOL replication races.
+      type: str
+    work_dir:
+      description:
+        - Working directory on the host the module runs on. It holds the staging area, the export zip and the per-domain
+          state file of content hashes, C(backup-state-<domain>.json).
+        - The state file is what makes the export incremental. Delete it to re-ship every GPO once, or set O(full_export).
+      type: str
+      default: C:\ProgramData\gpo-iac\backup
+    gpo_names:
+      description:
+        - Limit the export to these GPO display names. Empty exports every GPO.
+        - Deleted-GPO detection is skipped while filtering, because an unselected GPO is not a deleted one.
+      type: list
+      elements: str
+      default: []
+    full_export:
+      description:
+        - Ship every GPO even when its content hash is unchanged.
+      type: bool
+      default: false
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+      details:
+        - Check mode runs C(Backup-GPO) into the staging area under O(work_dir), because the content hashes come from the
+          backups, and reports what would ship. It writes neither the zip (RV(zip) is V(null)) nor the state file, so the
+          next real run ships the same GPOs.
+    diff_mode:
+      support: none
+    platform:
+      platforms: windows
+  notes:
+    - Needs the B(GroupPolicy) and B(ActiveDirectory) PowerShell modules (RSAT) on the host it runs on, and rights to read
+      every GPO and the domain's OUs and WMI filters.
+    - The content hash covers a backup's C(DomainSysvol) subtree only, so a GPO's version counter, backup timestamps and
+      the fresh backup GUID of every run don't count as changes. A GPO with no settings hashes as empty.
+    - A GPO whose backup fails (a missing SYSVOL folder, an unreadable ACL) doesn't hide the others. Every failure is
+      collected in RV(errors), the task fails, and the state file is left as it was, so the next run re-exports
+      everything that changed.
+    - Two GPOs whose display names map to the same folder name (the characters C(\/:*?"<>|) become C(_)) fail the
+      export; rename one.
+  seealso:
+    - name: The gpo_backup role
+      description: Runs this module and fetches the export into a repository working copy on the controller.
+      link: https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/gpo_backup
+    - name: The manifest format
+      description: The shape of gpo-manifest.json, the contract between the export and the gpo_import role.
+      link: https://github.com/git-cgallagher/ansible-collection-windows#the-manifest
+
+EXAMPLES: |
+  - name: Export every GPO in the domain that changed since the last run
+    git_cgallagher.windows.gpo_export:
+      domain: lab.example.com
+    register: export
+
+  - name: Fetch the zip to the controller when something shipped
+    ansible.builtin.fetch:
+      src: "{{ export.zip }}"
+      dest: /tmp/gpo-export.zip
+      flat: true
+    when: export.changed
+
+  - name: Re-ship two GPOs against a specific DC, whether or not they changed
+    git_cgallagher.windows.gpo_export:
+      domain: lab.example.com
+      server: dc02.lab.example.com
+      gpo_names:
+        - Server Baseline
+        - RDP Access
+      full_export: true
+      work_dir: D:\gpo-iac\backup
+
+RETURN:
+  shipped:
+    description:
+      - The GPOs in the zip, those whose content changed since the last run (every selected GPO with O(full_export)),
+        each with the folder it lands in under C(gpos/).
+      - In check mode, the GPOs that would ship.
+    returned: always
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The GPO's display name.
+        type: str
+        returned: always
+        sample: RDP Access
+      backup_dir:
+        description: The GPO's folder name under C(gpos/) in the export.
+        type: str
+        returned: always
+        sample: RDP Access
+    sample:
+      - name: RDP Access
+        backup_dir: RDP Access
+  deleted:
+    description:
+      - GPOs that the state file knows but the domain no longer has. Empty while O(gpo_names) filters the export.
+    returned: always
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The GPO's display name.
+        type: str
+        returned: always
+        sample: Old Policy
+      backup_dir:
+        description: The folder the GPO had under C(gpos/) in the previous export.
+        type: str
+        returned: always
+        sample: Old Policy
+    sample: []
+  manifest_changed:
+    description: Whether C(gpo-manifest.json) differs from the previous run's.
+    returned: always
+    type: bool
+    sample: false
+  gpo_count:
+    description: How many GPOs the export covered, after O(gpo_names) filtering.
+    returned: always
+    type: int
+    sample: 7
+  zip:
+    description:
+      - Path of the export zip on the host, C(gpo-export.zip) under O(work_dir). It holds C(gpo-manifest.json) and
+        C(gpos/<name>/...) for every shipped GPO, and is rewritten on every run, even when nothing shipped.
+      - V(null) in check mode, where no zip is written.
+    returned: always
+    type: str
+    sample: C:\ProgramData\gpo-iac\backup\gpo-export.zip
+  server:
+    description: The domain controller the export ran against.
+    returned: always
+    type: str
+    sample: dc01.lab.example.com
+  errors:
+    description: One message per GPO whose backup failed. The task fails when this isn't empty.
+    returned: always
+    type: list
+    elements: str
+    sample: []

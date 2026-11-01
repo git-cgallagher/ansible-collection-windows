@@ -75,13 +75,13 @@
     # settings are identical; this records which GPOs that happened to.
     - name: Report GPOs whose exported content changed byte-wise after Import-GPO
       ansible.builtin.debug:
-        msg: "{{ gpo_backup_export.result.shipped | map(attribute='name') | list }}"
+        msg: "{{ gpo_backup_export.shipped | map(attribute='name') | list }}"
 
     - name: Check links, precedence, filtering, WMI filters and status round-tripped exactly
       block:
         - name: Require an unchanged manifest
           ansible.builtin.assert:
-            that: not gpo_backup_export.result.manifest_changed
+            that: not gpo_backup_export.manifest_changed
             quiet: true
       rescue:
         - name: Show the pre-drift manifest
@@ -108,9 +108,9 @@
       ansible.builtin.assert:
         that:
           - not gpo_backup_export.changed
-          - gpo_backup_export.result.shipped | length == 0
-          - not gpo_backup_export.result.manifest_changed
-        fail_msg: "Export not stable after import: {{ gpo_backup_export.result | to_nice_json }}"
+          - gpo_backup_export.shipped | length == 0
+          - not gpo_backup_export.manifest_changed
+        fail_msg: "Export not stable after import: {{ gpo_backup_export | to_nice_json }}"
 
 # Scenario: promoting a GPO between environments. Restricted Groups members are
 # SIDs in a security setting, so Import-GPO translates them through a migration
@@ -201,8 +201,8 @@
       ansible.builtin.assert:
         that:
           - gpo_backup_export.changed
-          - gpo_backup_export.result.shipped | map(attribute='name') | list == [lab_fixture.gpo_ws_admins]
-        fail_msg: "Expected exactly {{ lab_fixture.gpo_ws_admins }} to ship: {{ gpo_backup_export.result.shipped }}"
+          - gpo_backup_export.shipped | map(attribute='name') | list == [lab_fixture.gpo_ws_admins]
+        fail_msg: "Expected exactly {{ lab_fixture.gpo_ws_admins }} to ship: {{ gpo_backup_export.shipped }}"
 
     - name: Import it again without the migration table
       ansible.builtin.include_role:
