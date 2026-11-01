@@ -29,40 +29,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        with:
-          python-version: '3.13'
-
-      - run: pip install ansible-core
-
-      - name: Build and install the collection
+      # The ansible-runtime image ansible-test.yml pins: ansible-core and ansible.windows
+      # at its versions. One container, so /tmp/dist and /tmp/colls live only inside it.
+      # --no-deps: ansible.windows comes from the image (site-packages, always on the
+      # search path), not a fresh Galaxy download.
+      - name: Use the ansible-runtime image ansible-test.yml pins
         run: |
-          ansible-galaxy collection build --force --output-path "$RUNNER_TEMP/dist"
-          ansible-galaxy collection install "$RUNNER_TEMP"/dist/git_cgallagher-windows-*.tar.gz -p "$RUNNER_TEMP/collections"
+          echo "RUNTIME_IMAGE=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)" >> "$GITHUB_ENV"
 
-      - name: Render each role's documentation from its spec
-        env:
-          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
+      - name: Build, install, render the docs and exercise the specs
         run: |
-          ansible-doc -t role -l git_cgallagher.windows
-          for role in gpo_backup gpo_import wsfc wsfc_fileserver; do
-            ansible-doc -t role "git_cgallagher.windows.$role" > /dev/null
-            echo "ok: git_cgallagher.windows.$role"
-          done
+          .github/ci/runtime.sh bash -euo pipefail -c '
+            ansible-galaxy collection build --force --output-path /tmp/dist
+            ansible-galaxy collection install --no-deps /tmp/dist/git_cgallagher-windows-*.tar.gz -p /tmp/colls
+            export ANSIBLE_COLLECTIONS_PATH=/tmp/colls
 
-      # The modules document themselves in YAML files next to them; rendering
-      # them from the installed tarball proves those files ship.
-      - name: Render each module's documentation
-        env:
-          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
-        run: |
-          ansible-doc -t module -l git_cgallagher.windows
-          for module in iis_mime_type iis_mime_type_info wsfc_cluster; do
-            ansible-doc -t module "git_cgallagher.windows.$module" > /dev/null
-            echo "ok: git_cgallagher.windows.$module"
-          done
+            # the documentation of each role, from its spec
+            ansible-doc -t role -l git_cgallagher.windows
+            for role in gpo_backup gpo_import wsfc wsfc_fileserver; do
+              ansible-doc -t role "git_cgallagher.windows.$role" > /dev/null
+              echo "ok: git_cgallagher.windows.$role"
+            done
 
-      - name: Check specs against defaults and exercise validation
-        env:
-          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
-        run: ansible-playbook tests/argument_specs/validate.yml
+            # the modules document themselves in YAML files next to them; rendering
+            # them from the installed tarball proves those files ship
+            ansible-doc -t module -l git_cgallagher.windows
+            for module in iis_mime_type iis_mime_type_info wsfc_cluster; do
+              ansible-doc -t module "git_cgallagher.windows.$module" > /dev/null
+              echo "ok: git_cgallagher.windows.$module"
+            done
+
+            # specs against defaults, and validation
+            ansible-playbook tests/argument_specs/validate.yml'

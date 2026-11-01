@@ -96,10 +96,22 @@ jobs:
       # action limits its own apt-get calls (3 and 8 minutes); this step's
       # limit is the backstop for the rest, because a composite action's own
       # steps can't set one.
+      # Python packages at the versions of the ansible-runtime image ansible-test.yml
+      # pins (its constraints.txt), so the lab runs the same ansible-core, Molecule and
+      # pypsrp as the jobs that run in the image. .cache/ is gitignored.
+      - name: Read the ansible-runtime image's pins
+        timeout-minutes: 10
+        run: |
+          image=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
+          [ -n "$image" ] || { echo "::error::RUNTIME_IMAGE not found in ansible-test.yml"; exit 1; }
+          mkdir -p .cache
+          docker run --rm "$image" cat /usr/share/ansible-runtime/constraints.txt > .cache/constraints.txt
+
       - name: Set up Molecule, the driver, KVM and QEMU
         uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@d894cf0d27719d8f26a3256cd23b562510d8ab08  # v0.3.1
         timeout-minutes: 15
         with:
+          constraints: .cache/constraints.txt
           collection: git_cgallagher.windows
           requirements: requirements.yml
           kvm: 'true'
