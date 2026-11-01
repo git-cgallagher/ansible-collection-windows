@@ -15,6 +15,7 @@ VM is never promoted to a domain controller.
 | verify | Read the cluster | One node, up; the network's name, role (cluster only) and metric; both properties; no witness; no cluster network name |
 | | Change a property out-of-band, then run the role report-only | The plan has exactly that one fix, and the cluster is unchanged |
 | | Run the role for real | It fixes only that property, and doesn't recreate the cluster |
+| | Run the `wsfc_cluster` module's integration target ([tests/integration/targets/wsfc_cluster](../../../../tests/integration/targets/wsfc_cluster)) | It removes the cluster above, plans and creates its own, converges its network, properties and quorum, plans and fixes out-of-band drift (check mode before each change, a repeat that changes nothing), fails clearly on bad input, and leaves no cluster behind |
 
 Not covered here (one VM, no shared network or storage): adding nodes, the
 `ActiveDirectoryAndDns` and `Dns` access points, static addresses, shared

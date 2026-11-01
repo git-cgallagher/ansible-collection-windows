@@ -10,6 +10,10 @@
 scenario:
   name: default
 provisioner:
+  env:
+    # verify.yml ends by running the wsfc_cluster module's integration target
+    # (tests/integration/targets/) as a role; setup_wsfc is its dependency.
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/integration/targets
   inventory:
     group_vars:
       all:
