@@ -424,8 +424,13 @@ ansible-galaxy collection build --force
   probe's own write was refused too, while the diagnostics' identical writes
   about a minute later worked, so the likelier cause is time: the client
   first reached the file server about two minutes after converge created it.
-  Unconfirmed; the probe now retries each share for up to three minutes and
-  reports `attempts`, which will show it.
+  Ruled out by the run after: four and five retries over three minutes were
+  all refused, and the diagnostics' writes right after still worked. What
+  differed was that the probe read the file back with `Get-Content`, and the
+  failing calls so far (`Test-Path`, `Directory.Exists`, `Get-Content`) are
+  all reads. The probe now uses `[System.IO.File]` calls, names the failing
+  step in its error, and keeps the retries; the diagnostics try each step
+  (provider and .NET reads, a listing, the root `Test-Path`) separately.
   `wsfc_fileserver`'s probe now just writes, reads back and deletes, and
   reports the write's error.
 

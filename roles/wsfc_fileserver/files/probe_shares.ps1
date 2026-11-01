@@ -32,17 +32,37 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
 
+# .NET file calls rather than the FileSystem provider (Set-Content,
+# Get-Content, Test-Path): in the lab the provider's calls on a clustered
+# share were refused with "Access is denied" while plain writes worked. Each
+# step names itself in the error.
+function Invoke-Step {
+    param([string]$Step, [scriptblock]$Action)
+    try {
+        & $Action
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($null -ne $_.Exception.InnerException) { $message = $_.Exception.InnerException.Message }
+        throw ('{0}: {1}' -f $Step, $message)
+    }
+}
+
 function Test-RoundTrip {
     param([string]$Unc)
     $token = [guid]::NewGuid().ToString()
-    $file = Join-Path $Unc ".wsfc_fileserver-probe-$token.txt"
-    Set-Content -LiteralPath $file -Value $token -Encoding ASCII
+    $file = $Unc + '\.wsfc_fileserver-probe-' + $token + '.txt'
+    Invoke-Step 'write' { [System.IO.File]::WriteAllText($file, $token) }
+    $readError = $null
     try {
-        $back = (Get-Content -LiteralPath $file -Raw).Trim()
+        $back = Invoke-Step 'read' { [System.IO.File]::ReadAllText($file).Trim() }
     }
-    finally {
-        Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+    catch {
+        $readError = $_
     }
+    # Delete even after a failed read, but report the read's error first.
+    Invoke-Step 'delete' { [System.IO.File]::Delete($file) }
+    if ($null -ne $readError) { throw $readError }
     if ($back -ne $token) { throw "read back '$back', wrote '$token'" }
 }
 
@@ -56,7 +76,7 @@ foreach ($share in $Shares) {
     # \\<name>\<share> itself failed (Test-Path "Access is denied",
     # Directory.Exists false) while writing files into it worked. The write
     # is the check; its error says why a share is unreachable.
-    $markerFile = Join-Path $unc ".wsfc_fileserver-failover-$Marker.txt"
+    $markerFile = $unc + '\.wsfc_fileserver-failover-' + $Marker + '.txt'
     $markerChecked = $false
     $deadline = (Get-Date).AddSeconds($RetrySeconds)
     while ($true) {
@@ -64,18 +84,21 @@ foreach ($share in $Shares) {
         try {
             switch ($Mode) {
                 'mark' {
-                    Set-Content -LiteralPath $markerFile -Value $Marker -Encoding ASCII
+                    Invoke-Step 'write marker' { [System.IO.File]::WriteAllText($markerFile, $Marker) }
                 }
                 'check' {
                     if (-not $markerChecked) {
                         try {
-                            $back = (Get-Content -LiteralPath $markerFile -Raw).Trim()
+                            $back = [System.IO.File]::ReadAllText($markerFile).Trim()
                         }
-                        catch [System.Management.Automation.ItemNotFoundException] {
+                        catch [System.IO.FileNotFoundException] {
                             throw 'the marker written before the failover is gone'
                         }
+                        catch {
+                            throw ('read marker: {0}' -f $_.Exception.Message)
+                        }
                         if ($back -ne $Marker) { throw "the marker reads '$back', expected '$Marker'" }
-                        Remove-Item -LiteralPath $markerFile -Force
+                        Invoke-Step 'delete marker' { [System.IO.File]::Delete($markerFile) }
                         $markerChecked = $true
                     }
                     Test-RoundTrip -Unc $unc

@@ -16,15 +16,26 @@ $targets += @($Local | Where-Object { $_ })
 
 $attempts = foreach ($target in $targets) {
     $file = Join-Path $target ('.lab-probe-{0}.txt' -f [guid]::NewGuid())
-    $outcome = 'ok'
-    try {
-        Set-Content -LiteralPath $file -Value 'probe' -Encoding ASCII
-        Remove-Item -LiteralPath $file -Force
+    # Each step separately: write, read back with the provider and with .NET,
+    # list the folder, delete.
+    $steps = [ordered]@{
+        write = { Set-Content -LiteralPath $file -Value 'probe' -Encoding ASCII }
+        get_content = { $null = Get-Content -LiteralPath $file -Raw }
+        read_all_text = { $null = [System.IO.File]::ReadAllText($file) }
+        test_path_root = { if (-not (Test-Path -LiteralPath $target)) { throw 'false' } }
+        list = { $null = [System.IO.Directory]::GetFiles($target) }
+        delete = { Remove-Item -LiteralPath $file -Force }
     }
-    catch {
-        $outcome = '{0}: {1} (HRESULT 0x{2:X8})' -f $_.Exception.GetType().Name, $_.Exception.Message, $_.Exception.HResult
+    $outcome = foreach ($step in $steps.Keys) {
+        try {
+            & $steps[$step]
+            '{0}=ok' -f $step
+        }
+        catch {
+            '{0}={1} (0x{2:X8})' -f $step, $_.Exception.Message, $_.Exception.HResult
+        }
     }
-    '{0} -> {1}' -f $target, $outcome
+    '{0} -> {1}' -f $target, ($outcome -join ', ')
 }
 
 [ordered]@{
