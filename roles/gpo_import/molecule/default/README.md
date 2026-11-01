@@ -12,7 +12,8 @@ run this scenario from `roles/gpo_import` with `molecule test`.
 | | Seed the authored state (`lab_fixture.ps1 -Action Seed`): five GPOs including the [real-world scenarios](../../../../docs/scenarios.md) | The seeded domain password policy, linked above Default Domain Policy, is the *effective* policy (14 characters, lockout at 5) |
 | | Export it with `gpo_backup` (`gpo_backup`'s own scenario checks the export) | — |
 | | Drift the domain out-of-band (`-Action Drift`): delete a GPO and the WMI filter, reorder the domain root, add Domain Users to the servers' local Administrators preference, unlink the Restricted Groups GPO, and more | Default Domain Policy's weaker settings now win (7 characters, no lockout) |
-| | `gpo_import` in report-only mode (check mode on the module) | Predicts the drift's fixes (`changed`, the action list); recreates nothing and writes no state file |
+| | `gpo_import` in report-only mode (check mode on the module) | Predicts the drift's fixes (`changed`, the action list); recreates nothing and writes no state file; its `preflight` facts all pass and the state_dir probe file is gone |
+| | `gpo_import` report-only with a `state_dir` the connection account is denied write to | Fails in the preflight (`state_dir ... is not writable`), plans nothing, touches nothing |
 | | `gpo_import` on a copy with a GPP `cpassword` planted | The module fails before touching the domain and names the file |
 | converge | `gpo_import` from the export | — |
 | idempotence | Converge again | No task reports a change |

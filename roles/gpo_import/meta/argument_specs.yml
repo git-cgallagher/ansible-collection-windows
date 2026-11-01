@@ -13,7 +13,8 @@ argument_specs:
       - The import itself is the module M(git_cgallagher.windows.gpo_import); the role stages the export on the
         management host and calls it. Its result is registered as C(gpo_import_run).
       - Supports check mode; check mode and O(gpo_import_report_only) predict every action without changing the
-        domain.
+        domain, after the module's preflight proved the run could work (state directory writable, manifest and
+        migration table valid, domain and GPMC readable).
     author:
       - Chris Gallagher (@git-cgallagher)
     options:

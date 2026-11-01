@@ -11,6 +11,11 @@ DOCUMENTATION:
     - Security filtering never strips a trustee's last permission. A trustee that lost Apply is downgraded to Read (MS16-072).
       Deny entries are left alone, and a Deny entry in the manifest that the domain lacks is an error.
     - Refuses an export that contains a Group Policy Preferences C(cpassword) before touching the domain.
+    - Before planning, a preflight proves the run could work and reports what it found in RV(preflight). It checks that the
+      manifest parses and that every backup folder it names and the export carries is a complete C(Backup-GPO) folder, that
+      the migration table parses, that O(state_dir) is writable (a probe file is created and removed; a directory that
+      doesn't exist yet is probed at its nearest existing parent), and that the domain, GPMC, the links at the domain root
+      and the WMI filters can be read. A failing check fails the module, in check mode too, before anything is planned.
     - C(changed) is true when there was something to do. A converged domain reports no change. In check mode the module plans
       every action, returns it in RV(actions) and the diff, and writes neither to the domain nor to the state file.
   version_added: 0.6.0
@@ -81,7 +86,10 @@ DOCUMENTATION:
   attributes:
     check_mode:
       support: full
-      details: Plans every action without touching the domain or the state file. C(changed) says whether there was anything to do.
+      details:
+        - Plans every action without touching the domain or the state file. C(changed) says whether there was anything to do.
+        - The preflight runs in check mode too, so a plan is only reported when the real run could complete. Its only write
+          is the probe file in O(state_dir) (or its nearest existing parent), removed again.
     diff_mode:
       support: full
       details: The diff is the list of planned (or performed) actions, one per line.
@@ -127,6 +135,95 @@ EXAMPLES: |
     register: plan
 
 RETURN:
+  preflight:
+    description:
+      - What the preflight found before planning. Returned on a preflight failure too (then C(passed) is false and C(errors)
+        says why), and partially on the cpassword refusal.
+    returned: always
+    type: dict
+    contains:
+      passed:
+        description: Whether every check passed.
+        type: bool
+        sample: true
+      errors:
+        description: The failing checks' messages, also joined into C(msg) when the module fails.
+        type: list
+        elements: str
+        sample: []
+      manifest:
+        description: The manifest file read.
+        type: str
+        sample: C:\ProgramData\gpo-iac\import\stage\gpo-manifest.json
+      manifest_valid:
+        description: The manifest exists, parses as JSON and has a C(gpos) object.
+        type: bool
+        sample: true
+      backup_folders:
+        description: Backup folders the manifest names and the export carries.
+        type: int
+        sample: 6
+      backup_folders_incomplete:
+        description: Those without exactly one C({GUID}) subfolder holding C(Backup.xml) and C(gpreport.xml).
+        type: list
+        elements: str
+        sample: []
+      cpassword_clean:
+        description: No Group Policy Preferences XML in the export carries a non-empty C(cpassword).
+        type: bool
+        sample: true
+      migration_table:
+        description: The migration table's resolved path, or V(null) when none was given.
+        type: str
+        sample: C:\ProgramData\gpo-iac\import\stage\migtables\prod.migtable
+      migration_table_valid:
+        description: The migration table exists and parses as a C(<MigrationTable>) document, or V(null) when none was given.
+        type: bool
+        sample: true
+      state_dir:
+        description: O(state_dir) as given.
+        type: str
+        sample: C:\ProgramData\gpo-iac
+      state_dir_exists:
+        description: Whether O(state_dir) already exists.
+        type: bool
+        sample: true
+      state_dir_probe:
+        description: The directory the probe file was written to, O(state_dir) itself or its nearest existing parent.
+        type: str
+        sample: C:\ProgramData\gpo-iac
+      state_dir_writable:
+        description: The probe file could be created there.
+        type: bool
+        sample: true
+      domain_reachable:
+        description: C(Get-ADDomain) answered for O(domain).
+        type: bool
+        sample: true
+      server:
+        description: The domain controller used, O(server) or the PDC emulator. Set once the domain was reached.
+        type: str
+        sample: dc01.prod.example.com
+      gpmc_reachable:
+        description: GPMC listed the domain's GPOs on that server.
+        type: bool
+        sample: true
+      live_gpo_count:
+        description: How many GPOs GPMC listed.
+        type: int
+        sample: 6
+      links_readable:
+        description: The links at the domain root could be read.
+        type: bool
+        sample: true
+      wmi_filters_readable:
+        description: The domain's WMI filters could be listed.
+        type: bool
+        sample: true
+      live_wmi_filter_count:
+        description: How many WMI filters the domain has.
+        type: int
+        sample: 1
   actions:
     description: Every action performed, or planned in check mode, in order.
     returned: always
@@ -168,7 +265,7 @@ RETURN:
     sample: 2
   server:
     description: The domain controller the module ran against.
-    returned: always
+    returned: when the domain was reached
     type: str
     sample: dc01.prod.example.com
   state_file:

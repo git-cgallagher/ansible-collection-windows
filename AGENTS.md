@@ -39,7 +39,7 @@ Its second area is **failover clustering** (0.3.0):
   are `wsfc_*`. A later role in this area, say `wsfc_fileserver`, gets
   variables `wsfc_fileserver_*`: don't add a `wsfc_` variable whose name
   starts with another role's suffix (`wsfc_fileserver_…`).
-- `roles/wsfc_fileserver` (0.9.0) — a general-purpose clustered file server
+- `roles/wsfc_fileserver` (0.10.0) — a general-purpose clustered file server
   on a `wsfc` cluster: File Server role service on every node, then
   `Add-ClusterFileServerRole` (or converge: disks, online, preferred owners)
   and SMB shares scoped to its name, with exact share permissions
@@ -84,9 +84,11 @@ role):
   list check mode planned.
 - `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
   report-only plan (check mode: predicts the drift, writes nothing, no state
-  file), the cpassword refusal, import, idempotence, verify (including a
-  check-mode re-plan with zero actions and no change), re-export round
-  trip, and an import through a migration table.
+  file, preflight facts pass and the probe file is gone), a report-only plan
+  against an ACL-denied `state_dir` that fails in the preflight, the
+  cpassword refusal, import, idempotence, verify (including a check-mode
+  re-plan with zero actions and no change), re-export round trip, and an
+  import through a migration table.
 - `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
@@ -195,7 +197,12 @@ lab to the scripts — and record the surprise below as a gotcha.
   variable is sugar for check mode on the task
   (`check_mode: "{{ true if x | bool else omit }}"`: `omit` keeps the play's
   own check mode in force; a templated `false` would switch `--check` off
-  for that task).
+  for that task). A role that must stage files during `--check` (gpo_import
+  copies the export so the module can plan) owes a **preflight** in return
+  (owner decision, issue #41): check mode proves the real run could work
+  (writable state directory, parseable inputs, reachable services) and
+  fails with the reason instead of reporting a plan; the facts come back as
+  `preflight`.
 - **Check mode writes nothing on the management host** (owner rule,
   2026-11-01, issue #39): no working directory, no staging, no scratch
   files, no temp path, however short-lived. A module that needs data a write
@@ -207,8 +214,10 @@ lab to the scripts — and record the surprise below as a gotcha.
   export target can be written**, with a uniquely named probe file in the
   target directory (or its nearest existing parent) that is removed at once,
   reported under `preflight` with whether AD and GPMC answered, and a clear
-  failure when the probe fails. The gpo_import module gets the same
-  (tracked as its own issue).
+  failure when the probe fails. The gpo_import module does the same for its
+  state directory, and also validates the manifest, backup folders and
+  migration table and reads the domain, GPMC, links and WMI filters (issue
+  #41, 0.9.0).
 - `wsfc` passes its structured variables (quorum, networks, properties,
   disks) to `wsfc_cluster` as the module's typed nested options. In the
   module, a list option left out is `$null` and `@($null).Count` is 1, so

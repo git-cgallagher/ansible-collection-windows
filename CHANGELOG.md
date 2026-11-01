@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 — 2026-11-01
+## 0.10.0 — 2026-11-01
 
 Clustered file servers, and the first multi-node cluster lab.
 
@@ -40,6 +40,25 @@ Clustered file servers, and the first multi-node cluster lab.
 - `tests/argument_specs/check_role.yml` checks every entry point of a role's
   argument spec, not only `main`.
 
+## 0.9.0 — 2026-11-01
+
+`gpo_import` proves a plan could run (issue #41).
+
+- The `gpo_import` module runs a preflight before planning, in check mode
+  too, and returns what it found as `preflight`: the manifest parses and
+  every backup folder it names and the export carries is a complete
+  `Backup-GPO` folder, the migration table parses, no `cpassword`,
+  `state_dir` is writable (a probe file is created and removed; a directory
+  that doesn't exist yet is probed at its nearest existing parent), and the
+  domain, GPMC, the links at the domain root and the WMI filters can be
+  read. A failing check fails the module with the reason, before anything
+  is planned or touched, so `--check` no longer reports a plan the real run
+  could not complete (an unwritable state directory, for example). The
+  cpassword refusal and the module's behaviour otherwise are unchanged.
+- The lab asserts the preflight facts of the report-only plan, that the
+  probe file is gone, and that a plan against a state directory the
+  connection account is denied write to fails in the preflight and touches
+  nothing.
 ## 0.8.0 — 2026-11-01
 
 `gpo_export` writes nothing in check mode.
