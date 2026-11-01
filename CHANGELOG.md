@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — 2026-11-01
+## 0.9.0 — 2026-11-01
 
 Clustered file servers, and the first multi-node cluster lab.
 
@@ -39,6 +39,28 @@ Clustered file servers, and the first multi-node cluster lab.
   out-of-band drift.
 - `tests/argument_specs/check_role.yml` checks every entry point of a role's
   argument spec, not only `main`.
+
+## 0.8.0 — 2026-11-01
+
+`gpo_export` writes nothing in check mode.
+
+- `gpo_export` decides what ships from each GPO's live Group Policy Template
+  in SYSVOL (every file and directory under
+  `\\<dc>\SYSVOL\<domain>\Policies\{guid}` except `gpt.ini`), read from the
+  domain controller the export runs against, instead of from a fresh backup
+  of every GPO. A `--check` run therefore reads Active Directory and SYSVOL
+  and returns the plan: no `Backup-GPO`, no working directory, no staging,
+  no zip (`zip: null`), no state file. A real run backs up only the GPOs that
+  ship. Results keep their shape.
+- **Behaviour change on upgrade:** the state file's hashes change basis
+  (`hash_basis: sysvol`), so the first export after upgrading from 0.5.0 to
+  0.7.x ships every GPO once; the next export is incremental again.
+- `gpo_backup`'s Molecule scenario checks that a check-mode run leaves the
+  working directory byte-for-byte as it was, that one pointed at a missing
+  working directory plans every GPO without creating it, that one pointed at
+  a directory whose ACL denies writes fails with the preflight message and
+  leaves no probe file, and that the real run ships the list check mode
+  planned.
 
 ## 0.7.1 — 2026-11-01
 

@@ -9,9 +9,9 @@
     fail_msg: gpo_backup_domain and gpo_backup_repo_dir must be non-empty
     quiet: true
 
-# Read-only against AD; writes only its working directory on the management
-# host. The module supports check mode itself: it still computes what would
-# ship but writes neither the zip nor its state file.
+# Read-only against AD and SYSVOL; writes only its working directory on the
+# management host, and nothing at all in check mode, where it still computes
+# what would ship.
 - name: Export GPOs and topology manifest
   git_cgallagher.windows.gpo_export:
     domain: "{{ gpo_backup_domain }}"

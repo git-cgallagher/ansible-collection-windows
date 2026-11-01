@@ -69,10 +69,17 @@
           Domain: "{{ lab_domain }}"
           Name: "{{ lab_fixture.gpo_rdp }}"
 
-    # 3. Check mode predicts the same without writing: the module reports the
-    #    changed GPO as shipping, writes no zip (so the role fetches nothing),
-    #    and leaves the state file alone, which the real run below proves by
-    #    shipping that GPO.
+    # 3. Check mode predicts the same without writing anything on the
+    #    management host: the module reports the changed GPO as shipping and
+    #    no zip, work_dir is byte-for-byte as it was (the state file, the last
+    #    zip and the last stage), and the real run below ships the same list.
+    - name: Snapshot the working directory before the check-mode run
+      ansible.windows.win_find:
+        paths: 'C:\ProgramData\gpo-iac\backup'
+        recurse: true
+        file_type: any
+      register: lab_workdir_before
+
     - name: Export the changed domain in check mode
       ansible.builtin.include_role:
         name: git_cgallagher.windows.gpo_backup
@@ -82,14 +89,114 @@
         gpo_backup_domain: "{{ lab_domain }}"
         gpo_backup_repo_dir: "{{ lab_repo }}"
 
-    - name: Check that check mode predicted the changed GPO without writing the zip
+    - name: Snapshot the working directory after the check-mode run
+      ansible.windows.win_find:
+        paths: 'C:\ProgramData\gpo-iac\backup'
+        recurse: true
+        file_type: any
+      register: lab_workdir_after
+
+    - name: Check that check mode predicted the changed GPO and wrote nothing
       ansible.builtin.assert:
         that:
           - gpo_backup_export.changed
           - gpo_backup_export.shipped | map(attribute='name') | list == [lab_fixture.gpo_rdp]
           - not gpo_backup_export.manifest_changed
           - gpo_backup_export.zip is none
-        fail_msg: "Check mode should predict exactly {{ lab_fixture.gpo_rdp }}: {{ gpo_backup_export | to_nice_json }}"
+          - gpo_backup_export.preflight.ad and gpo_backup_export.preflight.gpmc
+          - gpo_backup_export.preflight.work_dir_exists and gpo_backup_export.preflight.work_dir_writable
+          - lab_workdir_before.files | map(attribute='path') | list
+            == lab_workdir_after.files | map(attribute='path') | list
+          - lab_workdir_before.files | map(attribute='lastwritetime') | list
+            == lab_workdir_after.files | map(attribute='lastwritetime') | list
+          - lab_workdir_before.files | map(attribute='size') | list
+            == lab_workdir_after.files | map(attribute='size') | list
+        fail_msg: >-
+          Check mode should predict exactly {{ lab_fixture.gpo_rdp }} and leave the working directory alone:
+          {{ gpo_backup_export | to_nice_json }}; before: {{ lab_workdir_before.files | map(attribute='path') | list }};
+          after: {{ lab_workdir_after.files | map(attribute='path') | list }}
+
+    - name: Remember the check-mode plan
+      ansible.builtin.set_fact:
+        lab_check_plan: "{{ gpo_backup_export.shipped | map(attribute='name') | list }}"
+
+    # A working directory that doesn't exist must not come into being either:
+    # with no state file every GPO is new, so the plan is the whole domain.
+    - name: Run check mode against a working directory that doesn't exist
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.gpo_backup
+        apply:
+          check_mode: true
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+        gpo_backup_workdir: 'C:\ProgramData\gpo-iac\check-probe'
+
+    - name: Look for the working directory check mode was pointed at
+      ansible.windows.win_stat:
+        path: 'C:\ProgramData\gpo-iac\check-probe'
+      register: lab_check_probe
+
+    - name: Check that a missing working directory stays missing after check mode
+      ansible.builtin.assert:
+        that:
+          - not lab_check_probe.stat.exists
+          - gpo_backup_export.changed
+          - gpo_backup_export.shipped | length == gpo_backup_export.gpo_count
+          - gpo_backup_export.zip is none
+          - not gpo_backup_export.preflight.work_dir_exists
+          - gpo_backup_export.preflight.work_dir_writable
+          - gpo_backup_export.preflight.work_dir_probed == 'C:\\ProgramData\\gpo-iac'
+        fail_msg: "Check mode with no state must plan every GPO and create nothing: {{ gpo_backup_export | to_nice_json }}"
+
+    # Check mode still has to prove the export could be written: its one
+    # write is a probe file in work_dir (or the nearest existing parent),
+    # removed at once. A directory that denies writes must fail the plan.
+    - name: Create a working directory that denies writes
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\gpo-iac\check-denied'
+        state: directory
+
+    - name: Deny everyone write access to it
+      ansible.windows.win_acl:
+        path: 'C:\ProgramData\gpo-iac\check-denied'
+        user: Everyone
+        rights: Write
+        type: deny
+        state: present
+
+    - name: Run the module in check mode against the denied directory
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ lab_domain }}"
+        work_dir: 'C:\ProgramData\gpo-iac\check-denied'
+      check_mode: true
+      register: lab_denied
+      ignore_errors: true
+
+    - name: List what the probe left in the denied directory
+      ansible.windows.win_find:
+        paths: 'C:\ProgramData\gpo-iac\check-denied'
+        file_type: any
+      register: lab_denied_files
+
+    - name: Check that the preflight failed clearly and left nothing behind
+      ansible.builtin.assert:
+        that:
+          - lab_denied is failed
+          - "'preflight failed' in lab_denied.msg"
+          - '"isn''t writable" in lab_denied.msg'
+          - lab_denied.preflight.ad
+          - lab_denied.preflight.gpmc
+          - lab_denied.preflight.work_dir_exists
+          - not lab_denied.preflight.work_dir_writable
+          - lab_denied.preflight.work_dir_probed == 'C:\\ProgramData\\gpo-iac\\check-denied'
+          - lab_denied_files.files | length == 0
+        fail_msg: "Expected the check-mode preflight to refuse the denied directory: {{ lab_denied | to_nice_json }}"
+
+    - name: Remove the denied directory
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\gpo-iac\check-denied'
+        state: absent
 
     - name: Export the changed domain
       ansible.builtin.include_role:
@@ -107,4 +214,5 @@
           - gpo_backup_export.shipped | map(attribute='name') | list == [lab_fixture.gpo_rdp]
           - not gpo_backup_export.manifest_changed
           - gpo_backup_export.zip is not none
-        fail_msg: "Expected exactly {{ lab_fixture.gpo_rdp }} to ship: {{ gpo_backup_export | to_nice_json }}"
+          - gpo_backup_export.shipped | map(attribute='name') | list == lab_check_plan
+        fail_msg: "Expected exactly {{ lab_fixture.gpo_rdp }} to ship, as check mode planned: {{ gpo_backup_export | to_nice_json }}"
