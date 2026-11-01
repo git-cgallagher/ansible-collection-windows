@@ -103,6 +103,8 @@
           - gpo_backup_export.shipped | map(attribute='name') | list == [lab_fixture.gpo_rdp]
           - not gpo_backup_export.manifest_changed
           - gpo_backup_export.zip is none
+          - gpo_backup_export.preflight.ad and gpo_backup_export.preflight.gpmc
+          - gpo_backup_export.preflight.work_dir_exists and gpo_backup_export.preflight.work_dir_writable
           - lab_workdir_before.files | map(attribute='path') | list
             == lab_workdir_after.files | map(attribute='path') | list
           - lab_workdir_before.files | map(attribute='lastwritetime') | list
@@ -142,7 +144,59 @@
           - gpo_backup_export.changed
           - gpo_backup_export.shipped | length == gpo_backup_export.gpo_count
           - gpo_backup_export.zip is none
+          - not gpo_backup_export.preflight.work_dir_exists
+          - gpo_backup_export.preflight.work_dir_writable
+          - gpo_backup_export.preflight.work_dir_probed == 'C:\\ProgramData\\gpo-iac'
         fail_msg: "Check mode with no state must plan every GPO and create nothing: {{ gpo_backup_export | to_nice_json }}"
+
+    # Check mode still has to prove the export could be written: its one
+    # write is a probe file in work_dir (or the nearest existing parent),
+    # removed at once. A directory that denies writes must fail the plan.
+    - name: Create a working directory that denies writes
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\gpo-iac\check-denied'
+        state: directory
+
+    - name: Deny everyone write access to it
+      ansible.windows.win_acl:
+        path: 'C:\ProgramData\gpo-iac\check-denied'
+        user: Everyone
+        rights: Write
+        type: deny
+        state: present
+
+    - name: Run the module in check mode against the denied directory
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ lab_domain }}"
+        work_dir: 'C:\ProgramData\gpo-iac\check-denied'
+      check_mode: true
+      register: lab_denied
+      ignore_errors: true
+
+    - name: List what the probe left in the denied directory
+      ansible.windows.win_find:
+        paths: 'C:\ProgramData\gpo-iac\check-denied'
+        file_type: both
+      register: lab_denied_files
+
+    - name: Check that the preflight failed clearly and left nothing behind
+      ansible.builtin.assert:
+        that:
+          - lab_denied is failed
+          - "'preflight failed' in lab_denied.msg"
+          - '"isn''t writable" in lab_denied.msg'
+          - lab_denied.preflight.ad
+          - lab_denied.preflight.gpmc
+          - lab_denied.preflight.work_dir_exists
+          - not lab_denied.preflight.work_dir_writable
+          - lab_denied.preflight.work_dir_probed == 'C:\\ProgramData\\gpo-iac\\check-denied'
+          - lab_denied_files.files | length == 0
+        fail_msg: "Expected the check-mode preflight to refuse the denied directory: {{ lab_denied | to_nice_json }}"
+
+    - name: Remove the denied directory
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\gpo-iac\check-denied'
+        state: absent
 
     - name: Export the changed domain
       ansible.builtin.include_role:

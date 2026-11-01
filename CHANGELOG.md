@@ -17,8 +17,10 @@
   0.7.x ships every GPO once; the next export is incremental again.
 - `gpo_backup`'s Molecule scenario checks that a check-mode run leaves the
   working directory byte-for-byte as it was, that one pointed at a missing
-  working directory plans every GPO without creating it, and that the real
-  run ships the list check mode planned.
+  working directory plans every GPO without creating it, that one pointed at
+  a directory whose ACL denies writes fails with the preflight message and
+  leaves no probe file, and that the real run ships the list check mode
+  planned.
 
 ## 0.7.1 — 2026-11-01
 

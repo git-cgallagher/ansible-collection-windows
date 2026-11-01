@@ -232,10 +232,22 @@ $module.Result.gpo_count = 0
 $module.Result.zip = $null
 $module.Result.server = $null
 $module.Result.errors = @()
+# What the run proved before doing anything: AD and GPMC answer for the
+# domain, and work_dir (or the nearest existing parent it would be created
+# under) takes a file. In check mode the latter is a uniquely named probe
+# file, created and removed at once: the one write check mode makes.
+$module.Result.preflight = [ordered]@{
+    ad = $false
+    gpmc = $false
+    work_dir_exists = $false
+    work_dir_writable = $false
+    work_dir_probed = $null
+}
 
 # FailJson exits through an exception, so the try block below only computes;
 # failures are reported after it (a per-GPO backup failure) or in catch.
 $backupErrors = New-Object System.Collections.ArrayList
+$preflightFailure = $null
 try {
     try {
         Import-Module GroupPolicy, ActiveDirectory
@@ -251,6 +263,33 @@ try {
     $rootDn = $adDomain.DistinguishedName
     $netbios = $adDomain.NetBIOSName
     $module.Result.server = $pdc
+    $module.Result.preflight.ad = $true
+
+    # --- preflight: can the export be written? ------------------------------
+    $module.Result.preflight.work_dir_exists = [bool](Test-Path -LiteralPath $WorkDir -PathType Container)
+    if ($checkMode) {
+        $probeDir = $WorkDir
+        while ($probeDir -and -not (Test-Path -LiteralPath $probeDir -PathType Container)) {
+            $probeDir = Split-Path -LiteralPath $probeDir -Parent
+        }
+        if (-not $probeDir) {
+            $preflightFailure = "work_dir $WorkDir can't be created: none of its parents exist."
+        }
+        else {
+            $module.Result.preflight.work_dir_probed = $probeDir
+            $probeFile = Join-Path $probeDir ('gpo_export-probe-{0}.tmp' -f [guid]::NewGuid())
+            try {
+                [System.IO.File]::WriteAllText($probeFile, 'gpo_export check-mode writability probe')
+                $module.Result.preflight.work_dir_writable = $true
+            }
+            catch {
+                $preflightFailure = "work_dir $WorkDir isn't writable (probed $probeDir): $($_.Exception.Message)"
+            }
+            finally {
+                if (Test-Path -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
+            }
+        }
+    }
 
     # --- state --------------------------------------------------------------
     # Read-only here: check mode must not create work_dir either.
@@ -270,6 +309,8 @@ try {
 
     # --- decide what ships, from the live GPOs ------------------------------
     $live = @(Get-GPO -All -Domain $Domain -Server $pdc | Sort-Object DisplayName)
+    $module.Result.preflight.gpmc = $true
+    if ($preflightFailure) { throw "check-mode preflight failed: $preflightFailure" }
     if ($GpoNames.Count -gt 0) {
         $live = @($live | Where-Object { $GpoNames -contains $_.DisplayName })
     }
@@ -423,6 +464,8 @@ try {
         $exportRoot = Join-Path $stage 'export'
         $exportGpos = Join-Path $exportRoot 'gpos'
         New-Item -ItemType Directory -Path $exportGpos -Force | Out-Null
+        $module.Result.preflight.work_dir_probed = $WorkDir
+        $module.Result.preflight.work_dir_writable = $true
 
         foreach ($entry in $shipped) {
             try {

@@ -15,8 +15,11 @@ management host and keeps the per-domain content-hash state in
 `gpo_backup_repo_dir`. The role reports `changed` only when a GPO shipped, a
 GPO disappeared or the manifest changed, so a second run against an
 unchanged domain changes nothing. In check mode the module predicts what
-would ship without writing anything on the management host (it hashes the
-live SYSVOL content, so no `Backup-GPO` runs), and the fetch is skipped.
+would ship from the live SYSVOL content, so no `Backup-GPO` runs and nothing
+is staged or saved; its one write is a probe file in `gpo_backup_workdir`
+(or the nearest existing parent), removed at once, that proves the export
+could be written and fails the plan otherwise. The module's `preflight`
+return value records that, and the fetch is skipped.
 
 Runs against the domain's PDC emulator unless `gpo_backup_server` is set.
 Requires RSAT (GroupPolicy + ActiveDirectory modules) on the target host and

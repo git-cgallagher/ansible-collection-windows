@@ -185,6 +185,12 @@ lab to the scripts — and record the surprise below as a gotcha.
   Group Policy Template under `\\<dc>\SYSVOL\<domain>\Policies\{guid}`
   (minus `gpt.ini`) in both modes, so check mode and the real run decide from
   the same hash and `Backup-GPO` runs only for the GPOs that ship (0.8.0).
+  The one exception, also the owner's: check mode must still **prove the
+  export target can be written**, with a uniquely named probe file in the
+  target directory (or its nearest existing parent) that is removed at once,
+  reported under `preflight` with whether AD and GPMC answered, and a clear
+  failure when the probe fails. The gpo_import module gets the same
+  (tracked as its own issue).
 - `wsfc` passes its structured variables (quorum, networks, properties,
   disks) to `wsfc_cluster` as the module's typed nested options. In the
   module, a list option left out is `$null` and `@($null).Count` is 1, so

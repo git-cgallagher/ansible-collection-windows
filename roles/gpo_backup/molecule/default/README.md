@@ -13,5 +13,6 @@ from `roles/gpo_backup` with `molecule test`.
 | idempotence | Export again | No task reports a change: an unchanged domain ships nothing |
 | verify | Read the export | The manifest has the exact link order (domain root included), enforced and disabled links, block-inheritance, security filtering, the WMI filter and GPO status; every GPO has a backup folder |
 | | Change a setting in one GPO through GPMC, then export in check mode | The run predicts that GPO, and only it, with no zip, and the working directory is byte-for-byte as before |
-| | Check mode again, against a working directory that doesn't exist | Every GPO is planned and the directory still doesn't exist |
+| | Check mode again, against a working directory that doesn't exist | Every GPO is planned, the preflight probed the nearest existing parent, and the directory still doesn't exist |
+| | The module in check mode against a directory whose ACL denies writes | It fails with the preflight message, `preflight.work_dir_writable` is false, and the probe file is gone |
 | | Export again for real | That GPO ships, and only it, the same list check mode planned (so check mode didn't consume the state); the manifest doesn't change |
