@@ -1,58 +1,72 @@
-# import_gpos.ps1 — converge a domain on a git_cgallagher.windows export.
+#!powershell
+
+# Copyright: (c) 2026, Chris Gallagher (@git-cgallagher)
+# MIT License (see LICENSE or https://opensource.org/licenses/MIT)
+
+#AnsibleRequires -CSharpUtil Ansible.Basic
+
+# gpo_import — converge a domain on a git_cgallagher.windows export.
 #
 # Runs on a Windows management host with RSAT (GroupPolicy + ActiveDirectory
-# modules) in the TARGET domain. Invoked by roles/gpo_import via
-# ansible.windows.win_powershell; also runnable standalone for debugging.
+# modules) in the TARGET domain; roles/gpo_import stages the export and calls
+# it.
 #
 # Order of operations:
-#   0. refuse any backup containing GPP cpassword
-#   1. WMI filters (create missing ones only with -CreateWmiFilters)
+#   0. refuse any backup containing GPP cpassword (before touching the domain)
+#   1. WMI filters (create missing ones only with create_wmi_filters)
 #   2. GPO contents: Import-GPO -CreateIfNeeded [-MigrationTable] when the GPO
 #      is missing, its backup content-hash changed since the last import
-#      (state file, per domain), or -ForceImport
+#      (state file, per domain), or force
 #   3. GPO properties: status, WMI filter link, security filtering (removed
 #      Apply trustees are downgraded to Read, never stripped — MS16-072)
 #   4. links: each manifest SOM's whole ordered list (order = precedence),
 #      block-inheritance; unmanaged links reported, removed only with
-#      -RemoveUnmanagedLinks
+#      remove_unmanaged_links
 #
-# -ReportOnly (and Ansible check mode) reports every action without touching
-# the domain.
+# Check mode plans every action (returned in `actions` and the diff) without
+# touching the domain or the state file; `changed` is true whenever there is
+# something to do, in both modes.
 #
-# Windows PowerShell 5.1-compatible. Keep '# region common' in sync with
-# roles/gpo_backup/files/backup_gpos.ps1.
+# Windows PowerShell 5.1-compatible. The '# region common' block is a copy of
+# the one in plugins/modules/gpo_export.ps1: the two must stay identical
+# (hashing decides what re-imports, and the manifest is the roles' contract).
 
-[CmdletBinding(SupportsShouldProcess = $true)]
-param(
-    [Parameter(Mandatory = $true)][string]$Domain,
-    [string]$Server = '',
-    [Parameter(Mandatory = $true)][string]$SourceDir,
-    [string]$ManifestPath = 'gpo-manifest.json',
-    [string]$MigrationTablePath = '',
-    [string]$StateDir = 'C:\ProgramData\gpo-iac',
-    [bool]$ReportOnly = $false,
-    [bool]$RemoveUnmanagedLinks = $false,
-    [bool]$CreateWmiFilters = $false,
-    [bool]$ForceImport = $false,
-    [string[]]$GpoNames = @()
-)
+# The argument spec and Create come first: ansible-test's validate-modules runs
+# this file under pwsh on Linux up to Create to read the spec.
+$spec = @{
+    options = @{
+        domain = @{ type = 'str'; required = $true }
+        server = @{ type = 'str' }
+        source_dir = @{ type = 'path'; required = $true }
+        manifest_path = @{ type = 'path'; default = 'gpo-manifest.json' }
+        migration_table_path = @{ type = 'path' }
+        state_dir = @{ type = 'path'; default = 'C:\ProgramData\gpo-iac' }
+        remove_unmanaged_links = @{ type = 'bool'; default = $false }
+        create_wmi_filters = @{ type = 'bool'; default = $false }
+        force = @{ type = 'bool'; default = $false }
+        gpo_names = @{ type = 'list'; elements = 'str'; default = @() }
+    }
+    supports_check_mode = $true
+}
+
+$module = [Ansible.Basic.AnsibleModule]::Create($args, $spec)
+
+$Domain = $module.Params.domain
+$Server = $module.Params.server
+$SourceDir = $module.Params.source_dir
+$ManifestPath = $module.Params.manifest_path
+$MigrationTablePath = $module.Params.migration_table_path
+$StateDir = $module.Params.state_dir
+$RemoveUnmanagedLinks = $module.Params.remove_unmanaged_links
+$CreateWmiFilters = $module.Params.create_wmi_filters
+$ForceImport = $module.Params.force
+$GpoNames = @($module.Params.gpo_names)
+$checkMode = $module.CheckMode
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
-$checkMode = $false
-if ($inAnsible -and $Ansible.CheckMode) { $checkMode = $true }
-if ($checkMode) { $ReportOnly = $true }
-
-try {
-    Import-Module GroupPolicy, ActiveDirectory
-}
-catch {
-    throw "The GroupPolicy and ActiveDirectory PowerShell modules are required (install RSAT): $_"
-}
-
-# region common — keep in sync with backup_gpos.ps1
+# region common — keep in sync with gpo_export.ps1
 function ConvertTo-SafeName {
     param([string]$Name)
     $safe = $Name -replace '[\\/:*?"<>|]', '_'
@@ -62,6 +76,9 @@ function ConvertTo-SafeName {
 }
 
 function Get-DirContentHash {
+    # Deterministic hash of a directory tree: relative paths (case-folded) +
+    # per-file SHA256. Empty directories count, so a GPO gaining or losing an
+    # empty User/ folder still registers.
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
     $base = (Get-Item -LiteralPath $Path).FullName
@@ -97,9 +114,12 @@ function Get-StringHash {
 }
 
 function Get-GpoSysvolPath {
-    # A GPO with no settings has no DomainSysvol: return $null (hashes as '')
-    # rather than fall back to the volatile Backup.xml / bkupInfo.xml /
-    # gpreport.xml, which would make it re-ship on every run.
+    # Inside a Backup-GPO folder, the settings payload lives under
+    # {backup-guid}\DomainSysvol. Hashing only that subtree keeps the hash
+    # stable across re-backups (Backup.xml / bkupInfo.xml / gpreport.xml
+    # carry timestamps and a fresh backup GUID every time). A GPO with no
+    # settings has no DomainSysvol: return $null (hashes as '') rather than
+    # fall back to those volatile files, or it would re-ship on every run.
     param([string]$BackupDir)
     $guidDir = Get-ChildItem -LiteralPath $BackupDir -Directory |
         Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
@@ -119,7 +139,7 @@ function Write-Utf8File {
 function Get-YesNo { param([bool]$Value) if ($Value) { 'Yes' } else { 'No' } }
 
 function ConvertTo-WmiFilterParm2 {
-    # Single-query encoder; inverse of the parser in backup_gpos.ps1.
+    # Single-query encoder; inverse of the parser in gpo_export.ps1.
     param([string]$Namespace, [string]$Query)
     '1;3;{0};{1};WQL;{2};{3};' -f $Namespace.Length, $Query.Length, $Namespace, $Query
 }
@@ -157,6 +177,15 @@ function Test-Denied {
     # A Deny entry (typically "Deny Apply group policy" to exclude admins).
     param($Permission)
     [bool]($Permission.PSObject.Properties['Denied'] -and $Permission.Denied)
+}
+
+function Get-RelativeTrusteeName {
+    param([string]$Name, [string]$NetBiosName)
+    if ($Name -and $Name.Contains('\')) {
+        $parts = $Name.Split('\', 2)
+        if ($parts[0] -eq $NetBiosName) { return $parts[1] }
+    }
+    $Name
 }
 
 function Sync-GpoSecurity {
@@ -219,32 +248,36 @@ function Sync-GpoSecurity {
     }
 }
 
-function Get-RelativeTrusteeName {
-    param([string]$Name, [string]$NetBiosName)
-    if ($Name -and $Name.Contains('\')) {
-        $parts = $Name.Split('\', 2)
-        if ($parts[0] -eq $NetBiosName) { return $parts[1] }
-    }
-    $Name
-}
-
 $actions = New-Object System.Collections.ArrayList
 $warnings = New-Object System.Collections.ArrayList
 $errors = New-Object System.Collections.ArrayList
 
 function Invoke-Change {
-    # Record the action; perform it unless this is a report-only run.
+    # Record the action; perform it unless this is a check-mode run.
     param([string]$Description, [scriptblock]$Action)
     [void]$script:actions.Add($Description)
-    if (-not $ReportOnly) { & $Action }
+    if (-not $checkMode) { & $Action }
 }
 
-# --- load manifest + guardrails ----------------------------------------------
+function Add-Warning {
+    # Shown by Ansible as a warning, and returned as data in `notices`
+    # (`warnings` is a reserved result key that Ansible consumes).
+    param([string]$Message)
+    [void]$script:warnings.Add($Message)
+    $module.Warn($Message)
+}
+
+# --- load manifest + guardrails (nothing here touches the domain) ---------------
 $manifestFile = Join-Path $SourceDir $ManifestPath
 if (-not (Test-Path -LiteralPath $manifestFile)) {
-    throw "Manifest not found: $manifestFile"
+    $module.FailJson("Manifest not found: $manifestFile")
 }
-$manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+try {
+    $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+catch {
+    $module.FailJson("Cannot read the manifest $($manifestFile): $($_.Exception.Message)", $_)
+}
 
 $gposRoot = Join-Path $SourceDir 'gpos'
 if (Test-Path -LiteralPath $gposRoot) {
@@ -257,7 +290,8 @@ if (Test-Path -LiteralPath $gposRoot) {
     )
     if ($hits.Count -gt 0) {
         $paths = ($hits | ForEach-Object { $_.Path }) -join '; '
-        throw "Refusing to import: GPP cpassword found in: $paths. Remove the preference (use LAPS/gMSA instead) and re-export."
+        $module.Result.cpassword_files = @($hits | ForEach-Object { $_.Path })
+        $module.FailJson("Refusing to import: GPP cpassword found in: $paths. Remove the preference (use LAPS/gMSA instead) and re-export.")
     }
 }
 
@@ -268,7 +302,7 @@ if ($MigrationTablePath) {
         $migTable = Join-Path $SourceDir $MigrationTablePath
     }
     if (-not (Test-Path -LiteralPath $migTable)) {
-        throw "Migration table not found: $migTable"
+        $module.FailJson("Migration table not found: $migTable")
     }
 }
 # Part of each GPO's recorded import key: editing the migration table (say,
@@ -277,15 +311,25 @@ $migTableHash = ''
 if ($migTable) { $migTableHash = (Get-FileHash -LiteralPath $migTable -Algorithm SHA256).Hash }
 
 # --- domain context + state ---------------------------------------------------
-$adDomain = Get-ADDomain -Identity $Domain
+try {
+    Import-Module GroupPolicy, ActiveDirectory
+}
+catch {
+    $module.FailJson("The GroupPolicy and ActiveDirectory PowerShell modules are required (install RSAT): $($_.Exception.Message)", $_)
+}
+
+try {
+    $adDomain = Get-ADDomain -Identity $Domain
+}
+catch {
+    $module.FailJson("Cannot read domain $($Domain): $($_.Exception.Message)", $_)
+}
 $pdc = $Server
 if (-not $pdc) { $pdc = $adDomain.PDCEmulator }
 $rootDn = $adDomain.DistinguishedName
 $netbios = $adDomain.NetBIOSName
+$module.Result.server = $pdc
 
-if (-not (Test-Path -LiteralPath $StateDir)) {
-    New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
-}
 $stateFile = Join-Path $StateDir ("import-state-{0}.json" -f $Domain.ToLowerInvariant())
 $state = @{}
 if (Test-Path -LiteralPath $stateFile) {
@@ -296,7 +340,7 @@ if (Test-Path -LiteralPath $stateFile) {
         }
     }
 }
-# Start from the recorded state so a filtered (GpoNames) run doesn't drop
+# Start from the recorded state so a filtered (gpo_names) run doesn't drop
 # the other GPOs' entries and force them all to re-import next time.
 $newState = @{}
 foreach ($k in $state.Keys) { $newState[$k] = $state[$k] }
@@ -319,7 +363,7 @@ foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
     if ($liveFilters.ContainsKey($name)) { continue }
     $def = $manifestFilters[$name]
     if (-not $CreateWmiFilters) {
-        [void]$warnings.Add("WMI filter '$name' does not exist in $Domain (set gpo_import_create_wmi_filters to create it)")
+        Add-Warning "WMI filter '$name' does not exist in $Domain (set create_wmi_filters to create it)"
         continue
     }
     if (-not $def.query) {
@@ -328,26 +372,31 @@ foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
     }
     $ns = $def.namespace
     if (-not $ns) { $ns = 'root\CIMv2' }
-    Invoke-Change -Description "create WMI filter '$name'" -Action {
-        $id = '{' + [guid]::NewGuid().ToString() + '}'
-        $now = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss.ffffff-000')
-        $desc = [string]$def.description
-        if (-not $desc) { $desc = ' ' }   # empty msWMI-Parm1 breaks GPMC's filter list
-        New-ADObject -Type 'msWMI-Som' -Name $id -Path $somContainer -Server $pdc -OtherAttributes @{
-            'msWMI-Name' = $name
-            'msWMI-Parm1' = $desc
-            'msWMI-Parm2' = (ConvertTo-WmiFilterParm2 -Namespace $ns -Query ([string]$def.query))
-            'msWMI-ID' = $id
-            'msWMI-Author' = 'git_cgallagher.windows'
-            'msWMI-ChangeDate' = $now
-            'msWMI-CreationDate' = $now
-        } | Out-Null
+    try {
+        Invoke-Change -Description "create WMI filter '$name'" -Action {
+            $id = '{' + [guid]::NewGuid().ToString() + '}'
+            $now = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss.ffffff-000')
+            $desc = [string]$def.description
+            if (-not $desc) { $desc = ' ' }   # empty msWMI-Parm1 breaks GPMC's filter list
+            New-ADObject -Type 'msWMI-Som' -Name $id -Path $somContainer -Server $pdc -OtherAttributes @{
+                'msWMI-Name' = $name
+                'msWMI-Parm1' = $desc
+                'msWMI-Parm2' = (ConvertTo-WmiFilterParm2 -Namespace $ns -Query ([string]$def.query))
+                'msWMI-ID' = $id
+                'msWMI-Author' = 'git_cgallagher.windows'
+                'msWMI-ChangeDate' = $now
+                'msWMI-CreationDate' = $now
+            } | Out-Null
+        }
+        if (-not $checkMode) {
+            $created = Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
+                -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$(ConvertTo-LdapFilterValue -Value $name)))" -Properties msWMI-Name |
+                Select-Object -First 1
+            if ($created) { $liveFilters[$name] = $created }
+        }
     }
-    if (-not $ReportOnly) {
-        $created = Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
-            -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$(ConvertTo-LdapFilterValue -Value $name)))" -Properties msWMI-Name |
-            Select-Object -First 1
-        if ($created) { $liveFilters[$name] = $created }
+    catch {
+        [void]$errors.Add("WMI filter '$name': $($_.Exception.Message)")
     }
 }
 
@@ -377,7 +426,7 @@ foreach ($name in $gpoOrder) {
         # -- contents --
         if (-not (Test-Path -LiteralPath $wrapper)) {
             if ($liveGpo) {
-                [void]$warnings.Add("GPO '$name': no backup folder in the export; contents unmanaged, reconciling properties only")
+                Add-Warning "GPO '$name': no backup folder in the export; contents unmanaged, reconciling properties only"
             }
             else {
                 [void]$errors.Add("GPO '$name': does not exist in $Domain and the export has no backup folder to create it from")
@@ -408,7 +457,7 @@ foreach ($name in $gpoOrder) {
                     Import-GPO @importArgs | Out-Null
                 }
                 $importedCount++
-                if (-not $ReportOnly) {
+                if (-not $checkMode) {
                     # Recorded only after Import-GPO succeeded (a throw skips
                     # this), so a failed import is retried on the next run.
                     $newState[$name] = $importKey
@@ -418,7 +467,7 @@ foreach ($name in $gpoOrder) {
         }
 
         if (-not $liveGpo) {
-            # Report-only run against a GPO that doesn't exist yet: the
+            # Check-mode run against a GPO that doesn't exist yet: the
             # property/link work below needs the live object, so just plan it.
             [void]$actions.Add("set status/filtering/WMI filter on '$name' (after create)")
             continue
@@ -453,7 +502,7 @@ foreach ($name in $gpoOrder) {
                     $liveGpo.WmiFilter = $filter
                 }
             }
-            elseif ($ReportOnly -and $CreateWmiFilters) {
+            elseif ($checkMode -and $CreateWmiFilters) {
                 [void]$actions.Add("GPO '$name': link WMI filter '$desiredFilter' (after create)")
             }
             else {
@@ -546,7 +595,7 @@ foreach ($som in $soms) {
                 }
             }
             else {
-                [void]$warnings.Add("SOM '$target': unmanaged link '$($w.name)' left in place (gpo_import_remove_unmanaged_links not set)")
+                Add-Warning "SOM '$target': unmanaged link '$($w.name)' left in place (remove_unmanaged_links not set)"
             }
         }
     }
@@ -556,40 +605,34 @@ foreach ($som in $soms) {
 }
 
 # --- state + result -------------------------------------------------------------
-if (-not $ReportOnly) {
-    $stateOut = [ordered]@{ gpos = [ordered]@{} }
-    foreach ($name in ($newState.Keys | Sort-Object)) {
-        $stateOut.gpos[$name] = [ordered]@{ imported_hash = $newState[$name] }
+# The state file records what landed; a check-mode run writes nothing.
+if (-not $checkMode) {
+    try {
+        if (-not (Test-Path -LiteralPath $StateDir)) {
+            New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+        }
+        $stateOut = [ordered]@{ gpos = [ordered]@{} }
+        foreach ($name in ($newState.Keys | Sort-Object)) {
+            $stateOut.gpos[$name] = [ordered]@{ imported_hash = $newState[$name] }
+        }
+        Write-Utf8File -Path $stateFile -Content ($stateOut | ConvertTo-Json -Depth 10)
     }
-    Write-Utf8File -Path $stateFile -Content ($stateOut | ConvertTo-Json -Depth 10)
+    catch {
+        [void]$errors.Add("state file $($stateFile): $($_.Exception.Message)")
+    }
 }
 
-$failed = ($errors.Count -gt 0)
-$changed = $false
-if ($ReportOnly) {
-    if ($checkMode) { $changed = ($actions.Count -gt 0) }
-}
-else {
-    $changed = ($actions.Count -gt 0)
-}
+$module.Result.changed = ($actions.Count -gt 0)
+$module.Result.actions = @($actions)
+$module.Result.notices = @($warnings)
+$module.Result.errors = @($errors)
+$module.Result.imported = $importedCount
+$module.Result.gpo_count = $gpoOrder.Count
+$module.Result.som_count = $soms.Count
+$module.Result.state_file = $stateFile
+$module.Diff.prepared = (@($actions) -join "`n")
 
-$result = @{
-    report_only = $ReportOnly
-    actions = @($actions)
-    warnings = @($warnings)
-    errors = @($errors)
-    imported = $importedCount
-    gpo_count = $gpoOrder.Count
-    som_count = $soms.Count
-    server = $pdc
+if ($errors.Count -gt 0) {
+    $module.FailJson("gpo_import finished with $($errors.Count) error(s); see errors")
 }
-
-if ($inAnsible) {
-    $Ansible.Changed = $changed
-    $Ansible.Result = $result
-    if ($failed) { $Ansible.Failed = $true }
-}
-else {
-    $result | ConvertTo-Json -Depth 6
-    if ($failed) { throw "gpo_import finished with $($errors.Count) error(s); see result.errors" }
-}
+$module.ExitJson()

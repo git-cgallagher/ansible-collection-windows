@@ -103,10 +103,13 @@ cross-domain story and what was rejected, is in
   `gpreport.xml` or `Get-GPOReport`; see
   [docs/design.md](docs/design.md#7-format-notes-for-reviewers).)
 - `roles/gpo_import` copies the tree to a management host in the target
-  domain and converges the domain on it: `Import-GPO -CreateIfNeeded`
-  (optionally through a [migration table](docs/design.md#cross-domain)),
-  then GPO status, WMI filter links, security filtering, and each
-  container's whole ordered link list.
+  domain and converges the domain on it with the `gpo_import` module:
+  `Import-GPO -CreateIfNeeded` (optionally through a
+  [migration table](docs/design.md#cross-domain)), then GPO status, WMI
+  filter links, security filtering, and each container's whole ordered link
+  list. The module reports a change only when the domain changed, and in
+  check mode predicts every action without writing
+  (`ansible-doc git_cgallagher.windows.gpo_import`).
 
 ### Requirements
 
@@ -141,7 +144,7 @@ Review `git diff`, commit, merge. Then import (repo → target domain):
         gpo_import_domain: prod.example.com
         gpo_import_source_dir: "{{ playbook_dir }}/gpo-repo"
         gpo_import_migration_table: migtables/prod.migtable   # optional, repo-relative
-        gpo_import_report_only: true    # plan first; flip to false to apply
+        gpo_import_report_only: true    # plan first (check mode on the import); flip to false to apply
 ```
 
 Example playbooks are in [examples/](examples/), including a commented
@@ -234,7 +237,7 @@ and that bad input is rejected.
 | `gpo_backup_prune_deleted` | `false` | Delete repo folders for GPOs gone from the domain |
 | `gpo_import_source_dir` | — | Controller directory holding `gpos/` + manifest |
 | `gpo_import_migration_table` | `""` | `.migtable` path relative to source dir (cross-domain) |
-| `gpo_import_report_only` | `false` | Report every action without touching the domain |
+| `gpo_import_report_only` | `false` | Run the import in check mode: predict every action, change nothing (`--check` does the same) |
 | `gpo_import_remove_unmanaged_links` | `false` | Remove links not in the manifest (on managed containers) |
 | `gpo_import_create_wmi_filters` | `false` | Create missing WMI filters from the manifest |
 | `gpo_import_force` | `false` | Re-import every GPO regardless of state |

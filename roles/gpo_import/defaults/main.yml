@@ -13,7 +13,8 @@ gpo_import_manifest: 'gpo-manifest.json'
 # absolute on the management host).
 gpo_import_migration_table: ''
 
-# Report every action without touching the domain. --check implies it.
+# Run the import task in check mode: predict every action, change nothing.
+# --check does the same for the whole play.
 gpo_import_report_only: false
 
 # On manifest-managed containers, remove links the manifest doesn't list.

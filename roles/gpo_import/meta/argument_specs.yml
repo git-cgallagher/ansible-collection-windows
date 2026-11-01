@@ -10,7 +10,9 @@ argument_specs:
         links, security filtering (removed Apply trustees are downgraded to Read, never stripped, because of
         MS16-072), and each managed container's whole ordered link list and block-inheritance.
       - Refuses any export that contains a Group Policy Preferences C(cpassword).
-      - Supports check mode; check mode and O(gpo_import_report_only) report every action without changing the
+      - The import itself is the module M(git_cgallagher.windows.gpo_import); the role stages the export on the
+        management host and calls it. Its result is registered as C(gpo_import_run).
+      - Supports check mode; check mode and O(gpo_import_report_only) predict every action without changing the
         domain.
     author:
       - Chris Gallagher (@git-cgallagher)
@@ -48,7 +50,9 @@ argument_specs:
         type: bool
         default: false
         description:
-          - Report every action without changing the domain (a plan). Check mode implies it.
+          - Run the import task in check mode, predicting every action (C(changed) says whether there is anything to
+            do) without changing the domain. The same as C(--check), for this role alone inside a play that
+            otherwise applies.
       gpo_import_remove_unmanaged_links:
         type: bool
         default: false

@@ -16,7 +16,7 @@
 #   export\gpo-manifest.json                                  always included
 #
 # Windows PowerShell 5.1-compatible. Keep '# region common' in sync with
-# roles/gpo_import/files/import_gpos.ps1.
+# plugins/modules/gpo_import.ps1.
 
 # The argument spec and Create come first: ansible-test's validate-modules runs
 # this file under pwsh on Linux up to Create to read the spec.
@@ -43,7 +43,7 @@ $GpoNames = @($module.Params.gpo_names)
 $FullExport = [bool]$module.Params.full_export
 $checkMode = $module.CheckMode
 
-# region common — keep in sync with import_gpos.ps1
+# region common — keep in sync with gpo_import.ps1
 function ConvertTo-SafeName {
     param([string]$Name)
     $safe = $Name -replace '[\\/:*?"<>|]', '_'

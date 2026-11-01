@@ -19,8 +19,11 @@ status. Problem statement + decisions: `docs/design.md`. Two roles:
   working copy (zip over WinRM, content-hash state so only changes ship).
   The export itself is the `gpo_export` module (0.5.0), which the role calls;
   the role fetches and unpacks the zip on the controller.
-- `roles/gpo_import` — converge a target domain on the repo (import +
-  reconcile topology; migration-table aware; report-only mode).
+- `roles/gpo_import` — converge a target domain on the repo: stages the
+  export and runs the module `plugins/modules/gpo_import` (0.6.0; it was the
+  role's `files/import_gpos.ps1` through `win_powershell` before), which
+  imports and reconciles topology, migration-table aware, with real check
+  and diff mode. `gpo_import_report_only` is check mode on that task.
 
 Its second area is **failover clustering** (0.3.0):
 
@@ -34,7 +37,7 @@ Its second area is **failover clustering** (0.3.0):
   are `wsfc_*`. A later role in this area, say `wsfc_fileserver`, gets
   variables `wsfc_fileserver_*`: don't add a `wsfc_` variable whose name
   starts with another role's suffix (`wsfc_fileserver_…`).
-- `roles/wsfc_fileserver` (0.6.0) — a general-purpose clustered file server
+- `roles/wsfc_fileserver` (0.7.0) — a general-purpose clustered file server
   on a `wsfc` cluster: File Server role service on every node, then
   `Add-ClusterFileServerRole` (or converge: disks, online, preferred owners)
   and SMB shares scoped to its name, with exact share permissions
@@ -76,8 +79,10 @@ role):
   folders, an unchanged domain shipping nothing, a check-mode run predicting
   a changed GPO without writing, and that GPO then shipping alone.
 - `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
-  report-only plan, import, verify, re-export round trip, and an import
-  through a migration table.
+  report-only plan (check mode: predicts the drift, writes nothing, no state
+  file), the cpassword refusal, import, idempotence, verify (including a
+  check-mode re-plan with zero actions and no change), re-export round
+  trip, and an import through a migration table.
 - `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
@@ -116,8 +121,10 @@ Not covered by the lab yet (issue #16 unless noted):
 
 - importing into a *different* domain: link targets rebased onto another
   root DN, domain-relative trustee names, a migration table between domains
-- `--check` runs of `gpo_import` (it maps check mode onto report-only, which
-  is covered); `gpo_backup`'s check mode is covered by its scenario
+- `--check` runs of a whole play (`gpo_import`'s module runs in check mode
+  in the lab, through `gpo_import_report_only` and `apply: {check_mode:
+  true}` on the role's include; `gpo_backup`'s check mode is covered by its
+  scenario)
 - security filtering on trustees other than domain groups and Authenticated
   Users, and Deny entries (the lab's GPOs have none)
 - a member-server management host and a least-privilege account (#15);
@@ -154,11 +161,23 @@ lab to the scripts — and record the surprise below as a gotcha.
   `ConvertFrom-Json -AsHashtable`). A script that takes parameters, returns a
   structured result and needs `check_mode: false` to compute its report is
   module-shaped: make it a module with real check-mode support, the way
-  `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28).
-- The GPO export module (`gpo_export.ps1`) and `import_gpos.ps1` duplicate a
-  small `# region common` helper block — keep the copies in sync (a shared
-  `module_utils` is the follow-up once both are modules).
-  `converge_cluster.ps1` shares nothing with them.
+  `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28) and
+  `import_gpos.ps1` became `gpo_import` (0.6.0, issue #29).
+- The GPO modules `gpo_export.ps1` and `gpo_import.ps1` duplicate a small
+  `# region common` helper block — keep the copies in sync (a shared
+  `plugins/module_utils/_GpoCommon.psm1` is the follow-up now that both are
+  modules). `converge_cluster.ps1` shares nothing with them.
+- **Idempotency contract (owner rule, 2026-11-01):** a task reports
+  `changed` only when it changed the target, and a second converge reports
+  zero changes (Molecule's `idempotence` step). `--check` predicts without
+  writing, declared honestly: never `check_mode: false` on a task that could
+  write managed state. `gpo_import`'s staging tasks keep `check_mode: false`
+  + `changed_when: false` because the staging directory is scratch the
+  module needs to plan from, never managed state. A `*_report_only` role
+  variable is sugar for check mode on the task
+  (`check_mode: "{{ true if x | bool else omit }}"`: `omit` keeps the play's
+  own check mode in force; a templated `false` would switch `--check` off
+  for that task).
 - `wsfc` passes its structured variables (quorum, networks,
   properties, disks) to PowerShell as JSON strings. Windows PowerShell 5.1's
   `ConvertFrom-Json` emits a JSON array as one object, so enumerate it
@@ -217,7 +236,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   at the top, before anything Windows-only: validate-modules runs the file
   under pwsh on Linux up to `Create` to read the spec. They support check
   mode, and stay Windows PowerShell 5.1-compatible and pslint-clean like the
-  roles' scripts. The IIS modules use IIS's native configuration API
+  roles' scripts. A module's structured warnings go in a key of their own
+  (`gpo_import` returns `notices`) and through `$module.Warn()`: `warnings`
+  is a reserved result key that Ansible consumes. The IIS modules use IIS's native configuration API
   (`Microsoft.ApplicationHost.AdminManager`/`WritableAdminManager`, what
   `appcmd.exe` uses), which ships with the `Web-Server` feature itself, and
   call it only through `_IisConfig.psm1`'s `Invoke-IisComMember` and
@@ -246,9 +267,15 @@ lab to the scripts — and record the surprise below as a gotcha.
 ## Commands
 
 ```bash
-# lint (what CI runs)
+# lint, exactly as CI runs it: in the ansible-runtime image (pinned ansible-core,
+# ansible-lint, yamllint, ansible.windows, microsoft.ad), through the same wrapper.
+# Needs Docker. The image tag + digest live in ansible-test.yml's RUNTIME_IMAGE.
+export RUNTIME_IMAGE=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
+.github/ci/runtime.sh yamllint . && .github/ci/runtime.sh ansible-lint
+
+# ...or with your own tools (versions may differ from CI's):
 pip install ansible-core ansible-lint yamllint
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install -r requirements.yml -r tests/domain_lab/requirements.yml
 yamllint . && ansible-lint
 
 # PowerShell lint exactly as CI's `ansible-test sanity` pslint runs it — the
