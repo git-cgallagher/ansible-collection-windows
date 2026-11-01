@@ -270,7 +270,7 @@ try {
     if ($checkMode) {
         $probeDir = $WorkDir
         while ($probeDir -and -not (Test-Path -LiteralPath $probeDir -PathType Container)) {
-            $probeDir = Split-Path -LiteralPath $probeDir -Parent
+            $probeDir = [System.IO.Path]::GetDirectoryName($probeDir)
         }
         if (-not $probeDir) {
             $preflightFailure = "work_dir $WorkDir can't be created: none of its parents exist."
