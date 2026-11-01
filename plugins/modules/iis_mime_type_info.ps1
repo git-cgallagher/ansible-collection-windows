@@ -37,8 +37,7 @@ try {
     $level = Resolve-IisConfigLevel -AdminManager $reader -Site $module.Params.site -Application $module.Params.application
     $entries = @(Get-IisMimeMapEntry -Collection (Get-IisSectionCollection -AdminManager $reader -Section $section -ConfigPath $level.ConfigPath))
 
-    # What the parent level serves, to tell inherited entries from local ones
-    # when IIS doesn't report where an entry is defined.
+    # What the parent level serves, to tell inherited entries from local ones.
     $parent = @{}
     if ($level.ParentPath) {
         foreach ($entry in (Get-IisMimeMapEntry -Collection (Get-IisSectionCollection -AdminManager $reader -Section $section -ConfigPath $level.ParentPath))) {
@@ -50,6 +49,21 @@ catch {
     $module.FailJson($_.Exception.Message, $_)
 }
 
+# An entry that repeats the parent level's mapping is local only when the
+# level's own configuration stores it: IIS doesn't report where an entry is
+# defined.
+$stored = $null
+if ($level.ParentPath) {
+    try {
+        $stored = Get-IisStoredMimeMapExtension -ConfigPath $level.ConfigPath -PhysicalPath $level.PhysicalPath
+    }
+    catch {
+        $msg = "Couldn't read the configuration stored for $($level.ConfigPath), so entries that repeat the parent level's mapping "
+        $msg += "are reported as inherited: $($_.Exception.Message)"
+        $module.Warn($msg)
+    }
+}
+
 # Sorted by extension, ordinally and ignoring case, so the order doesn't
 # depend on the host's culture.
 $sorted = [System.Collections.Generic.List[object]]$entries
@@ -58,9 +72,9 @@ $sorted.Sort([System.Comparison[object]] {
         [string]::CompareOrdinal($x.Extension.ToLowerInvariant(), $y.Extension.ToLowerInvariant())
     })
 
-# An entry is inherited when the parent level serves the same mapping and IIS
-# doesn't say it's defined at this level (in a <location> element or in the
-# level's web.config). At the server level nothing is inherited.
+# An entry is inherited when the parent level serves the same mapping and the
+# level doesn't store its own (in a <location> element of applicationHost.config
+# or in the level's web.config). At the server level nothing is inherited.
 $mimeTypes = New-Object -TypeName 'System.Collections.Generic.List[object]'
 foreach ($entry in $sorted) {
     if ($null -ne $extension -and $entry.Extension -ne $extension) {
@@ -71,7 +85,7 @@ foreach ($entry in $sorted) {
     }
 
     $sameAsParent = $parent.ContainsKey($entry.Extension) -and $parent[$entry.Extension] -ceq $entry.MimeType
-    $definedHere = $entry.DefinedAt -and $entry.DefinedAt -eq $level.ConfigPath
+    $definedHere = $null -ne $stored -and $stored.Contains($entry.Extension)
     $mimeTypes.Add([ordered]@{
             extension = $entry.Extension
             mime_type = $entry.MimeType

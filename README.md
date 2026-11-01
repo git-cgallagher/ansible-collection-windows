@@ -326,6 +326,9 @@ Not here yet: going back to inheriting a mapping that a level hid or overrode
 (the `<remove>` element stays; IIS Manager's **Revert To Parent** on the
 level's MIME Types page does it), and the rest of IIS's configuration, for
 which see [microsoft.iis](https://docs.ansible.com/ansible/latest/collections/microsoft/iis/index.html).
+`iis_mime_type_info` doesn't read `<location>` elements in a parent level's
+`web.config`: a mapping that one defines for the level, with the same MIME
+type the level would inherit anyway, is returned as inherited.
 
 ## Active Directory sites
 

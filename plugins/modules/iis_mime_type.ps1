@@ -184,12 +184,8 @@ try {
         $storedMimeType = $stored.MimeType
     }
     if ($storedMimeType -cne $currentMimeType) {
-        $source = ''
-        if ($current -and $current.DefinedAt) {
-            $source = " IIS defines it at $($current.DefinedAt)."
-        }
         $refusal = "Can't change $extension at $($level.ConfigPath) through ${file}: IIS serves '$currentMimeType', "
-        $refusal += "but that file sees '$storedMimeType'.$source"
+        $refusal += "but that file sees '$storedMimeType'."
     }
     else {
         # Delete what this file sees for the extension. Deleting an entry

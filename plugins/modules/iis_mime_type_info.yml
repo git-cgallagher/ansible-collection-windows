@@ -46,6 +46,10 @@ DOCUMENTATION:
   notes:
     - Needs IIS (the C(Web-Server) feature) on the managed host. The module uses IIS's native configuration API, the one
       C(appcmd.exe) uses, rather than the WebAdministration PowerShell module.
+    - IIS doesn't report where a mapping is defined, so for a mapping that repeats its parent level's, the module reads the
+      level's own C(<location>) element in C(applicationHost.config) and its C(web.config). A C(<location>) element in a
+      parent level's C(web.config) that targets the level isn't read; a mapping defined only there is returned as
+      inherited.
   seealso:
     - module: git_cgallagher.windows.iis_mime_type
     - name: Adding Static Content MIME Mappings <mimeMap>

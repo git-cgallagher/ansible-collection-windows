@@ -332,11 +332,19 @@ ansible-galaxy collection build --force
   evaluates `that`, so even a passing assertion fails with `argument
   'fail_msg' is of type dict`. End such a `fail_msg` in `| string`, or put
   text around the expression.
-- **`IsLocallyStored` can't tell a `<location>` entry from a server-level
-  one.** Microsoft.Web.Administration documents it per file, and both live
-  in `applicationHost.config`. `iis_mime_type_info` decides `inherited` from
-  the native API's `deepestPathSet` metadata (the configuration path an
-  element comes from) and a comparison with the parent level's map.
+- **IIS doesn't say where a collection entry is defined.** [MC-IISA]
+  documents a `deepestPathSet` metadata for elements, but on the lab VM
+  (IIS 10, Windows Server 2022) `GetMetadata('deepestPathSet')` on a MIME
+  map entry returns ERROR_NOT_SUPPORTED, and Microsoft.Web.Administration's
+  `IsLocallyStored` is per file, so it can't tell a `<location>` entry from a
+  server-level one in `applicationHost.config`. `iis_mime_type_info` decides
+  `inherited` by comparing with the parent level's map and, for an entry
+  that repeats the parent's mapping, by reading the level's own `<location>`
+  element and `web.config` (`Get-IisStoredMimeMapExtension`, which follows
+  `redirection.config` for shared configuration). It doesn't read a
+  `<location>` element in a parent level's `web.config` that targets the
+  level. The lab's website redefines `.png` with the MIME type it inherits
+  to test this.
 - **`ansible.windows.win_powershell` serializes results only 2 levels deep
   by default**; a dict of lists of dicts comes back with the inner dicts as
   strings. The IIS targets pass `depth: 5` to every read.
