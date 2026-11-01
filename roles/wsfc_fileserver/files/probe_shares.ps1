@@ -45,7 +45,7 @@ if ($Mode -ne 'roundtrip' -and -not $Marker) { throw "Mode $Mode needs a Marker"
 $results = [System.Collections.Generic.List[object]]::new()
 foreach ($share in $Shares) {
     $unc = "\\$Server\$share"
-    $entry = [ordered]@{ share = $share; unc = $unc; ok = $false; error = '' }
+    $entry = [ordered]@{ share = $share; unc = $unc; ok = $false; error = ''; error_type = '' }
     try {
         if (-not (Test-Path -LiteralPath $unc)) { throw 'the share is not reachable' }
         $markerFile = Join-Path $unc ".wsfc_fileserver-failover-$Marker.txt"
@@ -68,6 +68,7 @@ foreach ($share in $Shares) {
     }
     catch {
         $entry.error = $_.Exception.Message
+        $entry.error_type = $_.Exception.GetType().FullName
     }
     $results.Add([pscustomobject]$entry)
 }
@@ -76,6 +77,9 @@ $failedShares = @($results | Where-Object { -not $_.ok })
 $result = [ordered]@{
     server = $Server
     mode = $Mode
+    # Who reached the shares: a WinRM logon without credentials (no become)
+    # reaches them anonymously, the double hop.
+    identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     shares = $results.ToArray()
     failed = @($failedShares | ForEach-Object { $_.share })
 }

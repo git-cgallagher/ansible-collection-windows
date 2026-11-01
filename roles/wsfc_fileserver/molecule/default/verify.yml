@@ -64,9 +64,72 @@
 
     # 2. The shares from a client (dc01), through \\FSLAB\<share>.
     - name: Validate the file server from dc01
-      ansible.builtin.include_role:
-        name: git_cgallagher.windows.wsfc_fileserver
-        tasks_from: validate
+      block:
+        - name: Validate the file server from dc01
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc_fileserver
+            tasks_from: validate
+      rescue:
+        # Why a share refused the client: the folders' NTFS permissions on
+        # the owner, and the client's identity, groups and tickets.
+        - name: Read the share folders' permissions on the owner
+          ansible.windows.win_powershell:
+            script: |
+              param([string]$Scope)
+              $Ansible.Changed = $false
+              foreach ($share in @(Get-SmbShare -ScopeName $Scope | Where-Object { -not $_.Special })) {
+                  [ordered]@{
+                      share = $share.Name
+                      path = $share.Path
+                      owner = (Get-Acl -LiteralPath $share.Path).Owner
+                      ntfs = @((Get-Acl -LiteralPath $share.Path).Access | ForEach-Object {
+                              '{0} {1} {2}' -f $_.IdentityReference, $_.AccessControlType, $_.FileSystemRights }) -join '; '
+                      share_access = @(Get-SmbShareAccess -ScopeName $Scope -Name $share.Name | ForEach-Object {
+                              '{0}:{1}:{2}' -f $_.AccountName, $_.AccessControlType, $_.AccessRight }) -join '; '
+                  }
+              }
+            parameters:
+              Scope: "{{ lab_fileserver.name }}"
+          become: true
+          become_method: ansible.builtin.runas
+          become_user: "{{ lab_admin_user }}"
+          vars:
+            ansible_become_password: "{{ lab_admin_password }}"
+            lab_owner_host: >-
+              {{ groups['lab_nodes'] | map('extract', hostvars) |
+                 selectattr('lab_hostname', 'equalto', lab_state.result.fileserver.owner) |
+                 map(attribute='inventory_hostname') | first }}
+          delegate_to: "{{ lab_owner_host }}"
+          run_once: true
+          register: lab_acl
+
+        - name: Read the client's identity, groups and Kerberos tickets
+          ansible.windows.win_powershell:
+            script: |
+              $Ansible.Changed = $false
+              [ordered]@{
+                  identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                  groups = (whoami /groups /fo csv | ConvertFrom-Csv | ForEach-Object { $_.'Group Name' }) -join '; '
+                  tickets = ((klist) -join ' | ')
+                  resolve = (Resolve-DnsName -Name '{{ lab_fileserver.name }}' -ErrorAction SilentlyContinue |
+                          ForEach-Object { [string]$_.IPAddress }) -join ', '
+              }
+          become: true
+          become_method: ansible.builtin.runas
+          become_user: "{{ lab_admin_user }}"
+          vars:
+            ansible_become_password: "{{ lab_admin_password }}"
+          delegate_to: dc01
+          run_once: true
+          register: lab_client
+
+        - name: Fail with what the check saw
+          ansible.builtin.fail:
+            msg:
+              validation: "{{ wsfc_fileserver_validation.result | default(wsfc_fileserver_validation) }}"
+              folders: "{{ lab_acl.output | default([]) }}"
+              client: "{{ lab_client.output | default([]) }}"
+          run_once: true
 
     # 3. Fail over to the other node and back, proving data written before
     # each move reads back after it.
