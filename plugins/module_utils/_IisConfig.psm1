@@ -68,7 +68,9 @@ Function Get-IisSectionCollection {
         $collection = $AdminManager.GetAdminSection($Section, $ConfigPath).Collection
     }
     catch {
-        throw "Couldn't read $Section at ${ConfigPath}: $($_.Exception.Message)"
+        # TEMPORARY (PR 22): the full exception, to diagnose the IIS lab.
+        $detail = "$($_.Exception.GetType().FullName) on a $([Threading.Thread]::CurrentThread.GetApartmentState()) thread: $($_.Exception.ToString())"
+        throw "Couldn't read $Section at ${ConfigPath}: $($_.Exception.Message) [$detail]"
     }
 
     # The comma keeps PowerShell from enumerating a COM collection on output.

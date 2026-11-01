@@ -38,3 +38,97 @@
     - name: Install IIS and create the test website
       ansible.builtin.include_role:
         name: setup_iis
+
+    # TEMPORARY (PR 22): which way of calling IIS's configuration API works
+    # from a module's runspace. Removed with the fix.
+    - name: Diagnose IIS's COM configuration API
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $out = [ordered]@{}
+          $out.apartment = [Threading.Thread]::CurrentThread.GetApartmentState().ToString()
+          $out.ps = $PSVersionTable.PSVersion.ToString()
+          $out.x64 = [Environment]::Is64BitProcess
+          foreach ($progId in 'Microsoft.ApplicationHost.AdminManager', 'Microsoft.ApplicationHost.WritableAdminManager') {
+              $clsid = (Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\$progId\CLSID" -ErrorAction SilentlyContinue).'(default)'
+              $inproc = Get-ItemProperty -LiteralPath "Registry::HKEY_CLASSES_ROOT\CLSID\$clsid\InprocServer32" -ErrorAction SilentlyContinue
+              $out["reg $progId"] = "$clsid $($inproc.'(default)') ThreadingModel=$($inproc.ThreadingModel)"
+          }
+          $out.mwa_file = Test-Path -LiteralPath "$env:windir\system32\inetsrv\Microsoft.Web.Administration.dll"
+          $sec = 'system.webServer/staticContent'
+          $apphost = 'MACHINE/WEBROOT/APPHOST'
+          $tests = [ordered]@{
+              binder_ro = {
+                  $m = New-Object -ComObject Microsoft.ApplicationHost.AdminManager
+                  $m.GetAdminSection($sec, $apphost).Collection.Count
+              }
+              binder_rw = {
+                  $m = New-Object -ComObject Microsoft.ApplicationHost.WritableAdminManager
+                  $m.CommitPath = $apphost
+                  $m.GetAdminSection($sec, $apphost).Collection.Count
+              }
+              members = {
+                  $m = New-Object -ComObject Microsoft.ApplicationHost.AdminManager
+                  ($m | Get-Member | ForEach-Object -MemberName Name) -join ','
+              }
+              invoke_ro = {
+                  $t = [System.__ComObject]
+                  $m = (New-Object -ComObject Microsoft.ApplicationHost.AdminManager).psobject.BaseObject
+                  $s = $t.InvokeMember('GetAdminSection', 'InvokeMethod', $null, $m, @($sec, $apphost))
+                  $c = $t.InvokeMember('Collection', 'GetProperty', $null, $s, $null)
+                  $n = $t.InvokeMember('Count', 'GetProperty', $null, $c, $null)
+                  $e = $t.InvokeMember('Item', 'GetProperty', $null, $c, @(0))
+                  $p = $t.InvokeMember('Properties', 'GetProperty', $null, $e, $null)
+                  $x = $t.InvokeMember('Item', 'GetProperty', $null, $p, @('fileExtension'))
+                  $v = $t.InvokeMember('Value', 'GetProperty', $null, $x, $null)
+                  $d = $t.InvokeMember('GetMetadata', 'InvokeMethod', $null, $e, @('deepestPathSet'))
+                  "count=$n first=$v deepestPathSet=$d"
+              }
+              invoke_rw = {
+                  $t = [System.__ComObject]
+                  $m = (New-Object -ComObject Microsoft.ApplicationHost.WritableAdminManager).psobject.BaseObject
+                  $t.InvokeMember('CommitPath', 'SetProperty', $null, $m, @($apphost))
+                  $s = $t.InvokeMember('GetAdminSection', 'InvokeMethod', $null, $m, @($sec, "$apphost/Ansible IIS Test"))
+                  $c = $t.InvokeMember('Collection', 'GetProperty', $null, $s, $null)
+                  $e = $t.InvokeMember('CreateNewElement', 'InvokeMethod', $null, $c, @('mimeMap'))
+                  "count=$($t.InvokeMember('Count', 'GetProperty', $null, $c, $null)) new=$($null -ne $e)"
+              }
+              mwa = {
+                  Add-Type -AssemblyName 'Microsoft.Web.Administration, Version=7.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'
+                  $sm = New-Object -TypeName Microsoft.Web.Administration.ServerManager
+                  $sm.GetApplicationHostConfiguration().GetSection($sec).GetCollection().Count
+              }
+              binder_sta = {
+                  $rs = [RunspaceFactory]::CreateRunspace()
+                  $rs.ApartmentState = 'STA'
+                  $rs.ThreadOptions = 'ReuseThread'
+                  $rs.Open()
+                  try {
+                      $ps = [PowerShell]::Create()
+                      $ps.Runspace = $rs
+                      $inner = 'param ($s, $p) $m = New-Object -ComObject Microsoft.ApplicationHost.AdminManager; ' +
+                          '"$([Threading.Thread]::CurrentThread.GetApartmentState()) " + $m.GetAdminSection($s, $p).Collection.Count'
+                      $null = $ps.AddScript($inner)
+                      $null = $ps.AddArgument($sec).AddArgument($apphost)
+                      $r = $ps.Invoke()
+                      "$r $($ps.Streams.Error | Out-String)"
+                  }
+                  finally {
+                      $rs.Dispose()
+                  }
+              }
+          }
+          foreach ($name in @($tests.Keys)) {
+              try {
+                  $out[$name] = "ok: $(& $tests[$name])"
+              }
+              catch {
+                  $out[$name] = "$($_.Exception.GetType().FullName): $($_.Exception.ToString())"
+              }
+          }
+          $Ansible.Result = $out
+      register: lab_iis_diag
+
+    - name: Show the diagnosis
+      ansible.builtin.debug:
+        var: lab_iis_diag.result
