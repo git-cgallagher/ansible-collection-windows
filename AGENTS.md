@@ -99,7 +99,9 @@ workgroup labs (`wsfc`, `iis`) quiet their VM with the same collection's
 own copy of that step. The lab first passed on
 2026-10-28 (PR #1, the initial collection), which closed the lab-validation
 issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
-ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
+ansible-lint/yamllint, ansible-test sanity (including pslint; stable
+ansible-core branches only, no `devel` canary since 2026-11-01 by owner
+decision), PowerShell
 parse + PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs`
 workflow. Known gaps found by review are tracked as repo issues and listed
 in the README's "What this doesn't do (yet)".
