@@ -22,8 +22,8 @@
   when: setup_wsfc_feature.reboot_required
 
 # The cluster's node name is the computer name; the platform subset (in min)
-# sets ansible_hostname.
+# sets ansible_facts.hostname.
 - name: Read the node's computer name
   ansible.windows.setup:
     gather_subset: ['!all', 'min']
-  when: ansible_hostname is not defined
+  when: ansible_facts.hostname is not defined

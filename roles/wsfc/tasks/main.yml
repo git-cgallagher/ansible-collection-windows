@@ -38,13 +38,13 @@
 
 # The cluster's node names are computer names, which needn't match inventory
 # names; read them from facts rather than guess. The platform subset (in min)
-# sets ansible_hostname. Only when the play hasn't gathered it already.
+# sets ansible_facts.hostname. Only when the play hasn't gathered it already.
 - name: Read the node's computer name
   ansible.windows.setup:
     gather_subset: ['!all', 'min']
   when:
     - wsfc_nodes | length == 0
-    - ansible_hostname is not defined
+    - ansible_facts.hostname is not defined
 
 # --- once, on the managing node --------------------------------------------------
 - name: Create or converge the cluster
@@ -64,7 +64,7 @@
   vars:
     wsfc_node_names: >-
       {{ wsfc_nodes if wsfc_nodes | length > 0 else
-         ansible_play_hosts | map('extract', hostvars, 'ansible_hostname') | list }}
+         ansible_play_hosts | map('extract', hostvars, ['ansible_facts', 'hostname']) | list }}
     ansible_become_password: "{{ wsfc_become_password }}"
   become: "{{ wsfc_become_user | length > 0 }}"
   become_method: ansible.builtin.runas

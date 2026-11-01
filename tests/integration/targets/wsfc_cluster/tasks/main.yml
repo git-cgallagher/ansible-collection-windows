@@ -26,14 +26,14 @@
     ansible_become_password: "{{ ansible_password }}"
     wsfc_cluster_test_network_name: Ansible Test
     wsfc_cluster_test_metric: 31000
-    wsfc_cluster_test_same_subnet: 20
+    wsfc_cluster_test_same_subnet: 25
     wsfc_cluster_test_cross_subnet: 30
   block:
     # --- create ----------------------------------------------------------------
     - name: Plan the cluster's creation (check mode)
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         properties:
@@ -67,7 +67,7 @@
     - name: Create the cluster
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
       diff: true
@@ -90,7 +90,7 @@
           - wsfc_cluster_create.validation_report == ''
           - wsfc_cluster_read.result.exists
           - wsfc_cluster_read.result.name == setup_wsfc_name
-          - wsfc_cluster_read.result.nodes | map('upper') | list == [ansible_hostname | upper]
+          - wsfc_cluster_read.result.nodes | map('upper') | list == [ansible_facts.hostname | upper]
           - wsfc_cluster_read.result.node_states == ['Up']
           - wsfc_cluster_read.result.networks | length >= 1
         fail_msg: "{{ wsfc_cluster_create }} / {{ wsfc_cluster_read.result }}"
@@ -98,7 +98,7 @@
     - name: Create the cluster again
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
       register: wsfc_cluster_create_again
@@ -116,7 +116,7 @@
     - name: Converge the network, properties and quorum (check mode)
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         networks:
@@ -157,7 +157,7 @@
     - name: Converge the network, properties and quorum
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         networks:
@@ -197,7 +197,7 @@
     - name: Converge again
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         networks:
@@ -232,7 +232,7 @@
     - name: Plan the fix (check mode)
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         networks:
@@ -271,7 +271,7 @@
     - name: Fix the drift
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         networks:
@@ -306,7 +306,7 @@
     - name: Name a cluster this node doesn't belong to
       git_cgallagher.windows.wsfc_cluster:
         name: WSFCOTHER
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
       register: wsfc_cluster_wrong_name
@@ -316,7 +316,7 @@
     - name: Set a common property the cluster doesn't have
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         properties:
@@ -327,7 +327,7 @@
     - name: Leave the disk out of a disk witness quorum
       git_cgallagher.windows.wsfc_cluster:
         name: "{{ setup_wsfc_name }}"
-        nodes: ["{{ ansible_hostname }}"]
+        nodes: ["{{ ansible_facts.hostname }}"]
         administrative_access_point: None
         validate: false
         quorum:

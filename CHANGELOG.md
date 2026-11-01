@@ -18,7 +18,7 @@ The `wsfc` role's cluster script is now a module.
   stays: it runs the cluster task in check mode while the feature install
   runs for real, which `--check` alone can't do. The cluster task no longer
   turns check mode off, so `--check` writes nothing. The role reads each
-  node's computer name from the `ansible_hostname` fact (gathering the `min`
+  node's computer name from the `ansible_facts.hostname` fact (gathering the `min`
   subset when the play hasn't) instead of running a script for it. The
   registered result's shape changed: `wsfc_run.actions`,
   `wsfc_run.warnings`, `wsfc_run.created` and `wsfc_run.validation_report`
