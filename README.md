@@ -5,7 +5,7 @@ Each area's roles and modules carry its prefix.
 
 | Area | Roles and modules | What they do |
 |---|---|---|
-| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
+| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; module `gpo_export` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
 | [Failover clustering](#failover-clustering) | `wsfc`, `wsfc_fileserver` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; run a clustered file server on it, fail it over between nodes and validate it from a client |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
@@ -92,11 +92,12 @@ cross-domain story and what was rejected, is in
 ```
 
 - `roles/gpo_backup` runs on a Windows management host with RSAT (GPMC +
-  ActiveDirectory modules). It backs up every GPO (each into its own
-  self-contained backup folder), generates `gpo-manifest.json` from the live
-  domain, and ships a zip back to the controller, which unpacks it into your
-  repo working copy. Only GPOs whose *content* changed are re-exported, so
-  `git diff` lists exactly the GPOs that changed, not timestamp churn.
+  ActiveDirectory modules). Its `gpo_export` module backs up every GPO (each
+  into its own self-contained backup folder), generates `gpo-manifest.json`
+  from the live domain and zips them; the role ships the zip back to the
+  controller and unpacks it into your repo working copy. Only GPOs whose
+  *content* changed are re-exported, so `git diff` lists exactly the GPOs
+  that changed, not timestamp churn.
 - You review and merge the change like any other code change. (The payload
   formats are binary or UTF-16, so for the settings themselves review
   `gpreport.xml` or `Get-GPOReport`; see

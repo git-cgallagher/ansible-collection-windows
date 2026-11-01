@@ -17,6 +17,8 @@ status. Problem statement + decisions: `docs/design.md`. Two roles:
 
 - `roles/gpo_backup` — export GPOs + manifest from a domain into a Git
   working copy (zip over WinRM, content-hash state so only changes ship).
+  The export itself is the `gpo_export` module (0.5.0), which the role calls;
+  the role fetches and unpacks the zip on the controller.
 - `roles/gpo_import` — converge a target domain on the repo (import +
   reconcile topology; migration-table aware; report-only mode).
 
@@ -32,7 +34,7 @@ Its second area is **failover clustering** (0.3.0):
   are `wsfc_*`. A later role in this area, say `wsfc_fileserver`, gets
   variables `wsfc_fileserver_*`: don't add a `wsfc_` variable whose name
   starts with another role's suffix (`wsfc_fileserver_…`).
-- `roles/wsfc_fileserver` (0.5.0) — a general-purpose clustered file server
+- `roles/wsfc_fileserver` (0.6.0) — a general-purpose clustered file server
   on a `wsfc` cluster: File Server role service on every node, then
   `Add-ClusterFileServerRole` (or converge: disks, online, preferred owners)
   and SMB shares scoped to its name, with exact share permissions
@@ -71,8 +73,8 @@ to a DC and runs its role against it (the `domain-lab` workflow, one job per
 role):
 
 - `roles/gpo_backup/molecule/default`: the export, its manifest and backup
-  folders, an unchanged domain shipping nothing and a changed GPO shipping
-  alone.
+  folders, an unchanged domain shipping nothing, a check-mode run predicting
+  a changed GPO without writing, and that GPO then shipping alone.
 - `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
   report-only plan, import, verify, re-export round trip, and an import
   through a migration table.
@@ -114,8 +116,8 @@ Not covered by the lab yet (issue #16 unless noted):
 
 - importing into a *different* domain: link targets rebased onto another
   root DN, domain-relative trustee names, a migration table between domains
-- `--check` runs (`gpo_import` maps check mode onto report-only, which is
-  covered; `gpo_backup` has its own check-mode path)
+- `--check` runs of `gpo_import` (it maps check mode onto report-only, which
+  is covered); `gpo_backup`'s check mode is covered by its scenario
 - security filtering on trustees other than domain groups and Authenticated
   Users, and Deny entries (the lab's GPOs have none)
 - a member-server management host and a least-privilege account (#15);
@@ -141,12 +143,22 @@ lab to the scripts — and record the surprise below as a gotcha.
 
 ## Conventions
 
+- **Every CI job sets `timeout-minutes`** (2026-11-01): GitHub's default is 6
+  hours, and a stalled install would hold the runner that long. The quick jobs
+  get 15 minutes, several times their slowest green run; `domain-lab` keeps 120
+  with step limits. A new job needs one too.
 - PowerShell lives in `roles/*/files/*.ps1`, executed via
-  `ansible.windows.win_powershell` with `parameters:`; scripts must stay
+  `ansible.windows.win_powershell` with `parameters:`, or in a module under
+  `plugins/modules/` (see the module bullets below); either way it must stay
   **Windows PowerShell 5.1-compatible** (no `??`, no ternary, no
-  `ConvertFrom-Json -AsHashtable`).
-- Both GPO scripts duplicate a small `# region common` helper block — keep
-  the copies in sync. `converge_cluster.ps1` shares nothing with them.
+  `ConvertFrom-Json -AsHashtable`). A script that takes parameters, returns a
+  structured result and needs `check_mode: false` to compute its report is
+  module-shaped: make it a module with real check-mode support, the way
+  `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28).
+- The GPO export module (`gpo_export.ps1`) and `import_gpos.ps1` duplicate a
+  small `# region common` helper block — keep the copies in sync (a shared
+  `module_utils` is the follow-up once both are modules).
+  `converge_cluster.ps1` shares nothing with them.
 - `wsfc` passes its structured variables (quorum, networks,
   properties, disks) to PowerShell as JSON strings. Windows PowerShell 5.1's
   `ConvertFrom-Json` emits a JSON array as one object, so enumerate it
@@ -211,7 +223,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   call it only through `_IisConfig.psm1`'s `Invoke-IisComMember` and
   `Set-IisElementValue`, never as `$element.Method()` (see Gotchas).
 - **A module's tests are an ansible-test integration target named after
-  it**, in `tests/integration/targets/<module>/`: `aliases` (`windows`),
+  it** (`gpo_export` is the exception: it needs a domain, so the `gpo_backup`
+  scenario, which calls it through the role, is its test), in
+  `tests/integration/targets/<module>/`: `aliases` (`windows`),
   `meta/main.yml` (depends on the area's `setup_<area>` target) and `tasks/`.
   They're plain role tasks with no ansible-test-only variables, so they run
   both through `ansible-test windows-integration` against any Windows host

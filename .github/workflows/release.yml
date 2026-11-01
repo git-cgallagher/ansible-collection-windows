@@ -26,6 +26,9 @@ concurrency:
   group: galaxy-release
   cancel-in-progress: false
 
+# Every job sets timeout-minutes: GitHub's default is 6 hours, and a stalled
+# install or image pull would hold the runner that long. Each limit is several
+# times the job's slowest green run (2026-11-01).
 jobs:
   release:
     # After CI: only for a green run triggered by a push to main (a merge).
@@ -33,6 +36,7 @@ jobs:
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # GALAXY_API_KEY lives in this environment, which only main may deploy to.
     environment: galaxy
     steps:
