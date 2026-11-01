@@ -93,7 +93,7 @@ try {
     $module.Result.preflight.ad = $true
 
     # --- preflight: can the export be written? ------------------------------
-    $module.Result.preflight.work_dir_exists = [bool](Test-Path -LiteralPath $WorkDir -PathType Container)
+    $module.Result.preflight.work_dir_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $WorkDir -PathType Container)
     if ($checkMode) {
         $probeDir = Get-NearestExistingDirectory -Path $WorkDir
         if (-not $probeDir) {
@@ -110,7 +110,7 @@ try {
                 $preflightFailure = "work_dir $WorkDir isn't writable (probed $probeDir): $($_.Exception.Message)"
             }
             finally {
-                if (Test-Path -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
+                if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
             }
         }
     }
@@ -119,7 +119,7 @@ try {
     # Read-only here: check mode must not create work_dir either.
     $stateFile = Join-Path $WorkDir ("backup-state-{0}.json" -f $Domain.ToLowerInvariant())
     $state = @{ gpos = @{}; manifest_hash = '' }
-    if (Test-Path -LiteralPath $stateFile) {
+    if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stateFile) {
         $rawState = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($rawState.PSObject.Properties['gpos']) {
             foreach ($p in $rawState.gpos.PSObject.Properties) {
@@ -160,7 +160,7 @@ try {
         # the others: collect every failure, then fail the run without saving state.
         try {
             $gpt = Join-Path $policies ('{{{0}}}' -f $gpo.Id)
-            if (-not (Test-Path -LiteralPath $gpt -PathType Container)) {
+            if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $gpt -PathType Container)) {
                 throw "its SYSVOL folder $gpt does not exist"
             }
             $hash = Get-GpoLiveContentHash -Path $gpt
@@ -276,11 +276,11 @@ try {
 
     # --- real run only: stage, back up what ships, zip, save state ----------
     if (-not $checkMode) {
-        if (-not (Test-Path -LiteralPath $WorkDir)) {
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $WorkDir)) {
             New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
         }
         $stage = Join-Path $WorkDir 'stage'
-        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
         $exportRoot = Join-Path $stage 'export'
         $exportGpos = Join-Path $exportRoot 'gpos'
         New-Item -ItemType Directory -Path $exportGpos -Force | Out-Null
@@ -302,7 +302,7 @@ try {
         Write-Utf8File -Path (Join-Path $exportRoot 'gpo-manifest.json') -Content $manifestJson
 
         $zipPath = Join-Path $WorkDir 'gpo-export.zip'
-        if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+        if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
         New-ZipFromDirectory -Source $exportRoot -Destination $zipPath
         $module.Result.zip = $zipPath
 

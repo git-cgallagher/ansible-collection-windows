@@ -62,7 +62,7 @@ Function Get-DirContentHash {
         [string[]]$Exclude = @()
     )
 
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
+    if (-not $Path -or -not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $Path)) { return '' }
     $excluded = @($Exclude | ForEach-Object { $_.ToLowerInvariant() })
     $base = (Get-Item -LiteralPath $Path).FullName
     $sb = New-Object System.Text.StringBuilder
@@ -96,7 +96,7 @@ Function Get-GpoLiveContentHash {
     [CmdletBinding()]
     param ([string]$Path)
 
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+    if (-not $Path -or -not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $Path -PathType Container)) {
         throw "its SYSVOL folder $Path does not exist"
     }
     Get-DirContentHash -Path $Path -Exclude 'gpt.ini'
@@ -121,7 +121,7 @@ Function Get-GpoSysvolPath {
         Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
     if ($null -eq $guidDir) { return $null }
     $sysvol = Join-Path $guidDir.FullName 'DomainSysvol'
-    if (Test-Path -LiteralPath $sysvol) { return $sysvol }
+    if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $sysvol) { return $sysvol }
     return $null
 }
 
@@ -140,7 +140,7 @@ Function Test-GpoBackupFolder {
     }
     $problem = ''
     foreach ($f in 'Backup.xml', 'gpreport.xml') {
-        if (-not (Test-Path -LiteralPath (Join-Path $guidDirs[0].FullName $f))) { $problem = "no $f in $($guidDirs[0].Name)" }
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath (Join-Path $guidDirs[0].FullName $f))) { $problem = "no $f in $($guidDirs[0].Name)" }
     }
     $problem
 }
@@ -162,13 +162,14 @@ Function Get-NearestExistingDirectory {
     .SYNOPSIS
     Returns the path itself when it is a directory, else its nearest existing
     parent directory, or $null when none exists: where a preflight probe file
-    proves a directory that doesn't exist yet could be created.
+    proves a directory that doesn't exist yet could be created. A path on a
+    drive that doesn't exist has no parent either: $null, not an error.
     #>
     [CmdletBinding()]
     param ([string]$Path)
 
     $dir = $Path
-    while ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+    while ($dir -and -not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $dir -PathType Container)) {
         $dir = [System.IO.Path]::GetDirectoryName($dir)
     }
     if ($dir) { $dir } else { $null }

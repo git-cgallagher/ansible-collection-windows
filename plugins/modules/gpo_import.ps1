@@ -196,7 +196,7 @@ $manifestFile = Join-Path $SourceDir $ManifestPath
 $preflight.manifest = $manifestFile
 $preflight.manifest_valid = $false
 $manifest = $null
-if (-not (Test-Path -LiteralPath $manifestFile)) {
+if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $manifestFile)) {
     Add-PreflightError "manifest not found: $manifestFile"
 }
 else {
@@ -228,7 +228,7 @@ if ($manifest) {
         $dir = [string]$p.Value.backup_dir
         if (-not $dir) { $dir = ConvertTo-SafeName -Name $p.Name }
         $wrapper = Join-Path $gposRoot $dir
-        if (-not (Test-Path -LiteralPath $wrapper)) { continue }
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $wrapper)) { continue }
         $preflight.backup_folders++
         $problem = Test-GpoBackupFolder -Path $wrapper
         if ($problem) {
@@ -243,7 +243,7 @@ if ($manifest) {
 #    in Git. Only a non-empty value is one: GPP writes cpassword="" on items that
 #    set no password (renaming the built-in Administrator, for example). --
 $preflight.cpassword_clean = $true
-if (Test-Path -LiteralPath $gposRoot) {
+if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $gposRoot) {
     $hits = @(
         Get-ChildItem -LiteralPath $gposRoot -Recurse -Filter '*.xml' -File |
             Select-String -Pattern 'cpassword="[^"]+"' -List
@@ -265,7 +265,7 @@ if ($MigrationTablePath) {
     $migTable = Resolve-GpoMigrationTablePath -Path $MigrationTablePath -SourceDir $SourceDir
     $preflight.migration_table = $migTable
     $preflight.migration_table_valid = $false
-    if (-not (Test-Path -LiteralPath $migTable)) {
+    if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $migTable)) {
         Add-PreflightError "migration table not found: $migTable"
     }
     else {
@@ -294,7 +294,7 @@ if ($migTable -and $preflight.migration_table_valid) { $migTableHash = (Get-File
 #    (New-Item creates the rest). The probe file is removed again. --
 $probeDir = Get-NearestExistingDirectory -Path $StateDir
 $preflight.state_dir = $StateDir
-$preflight.state_dir_exists = [bool](Test-Path -LiteralPath $StateDir -PathType Container)
+$preflight.state_dir_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $StateDir -PathType Container)
 $preflight.state_dir_probe = $probeDir
 $preflight.state_dir_writable = $false
 if (-not $probeDir) {
@@ -310,7 +310,7 @@ else {
         Add-PreflightError "state_dir $StateDir is not writable (probed $probeDir): $($_.Exception.Message)"
     }
     finally {
-        if (Test-Path -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
+        if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
     }
 }
 
@@ -382,7 +382,7 @@ if ($preflightErrors.Count -gt 0) {
 # --- state ------------------------------------------------------------------
 $stateFile = Join-Path $StateDir ("import-state-{0}.json" -f $Domain.ToLowerInvariant())
 $state = @{}
-if (Test-Path -LiteralPath $stateFile) {
+if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stateFile) {
     $rawState = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($rawState.PSObject.Properties['gpos']) {
         foreach ($p in $rawState.gpos.PSObject.Properties) {
@@ -473,7 +473,7 @@ foreach ($name in $gpoOrder) {
         if ($existed) { Sync-GpoSecurity -Name $name -Entry $entry -Gpo $liveGpo }
 
         # -- contents --
-        if (-not (Test-Path -LiteralPath $wrapper)) {
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $wrapper)) {
             if ($liveGpo) {
                 Add-Warning "GPO '$name': no backup folder in the export; contents unmanaged, reconciling properties only"
             }
@@ -643,7 +643,7 @@ foreach ($som in $soms) {
 # The state file records what landed; a check-mode run writes nothing.
 if (-not $checkMode) {
     try {
-        if (-not (Test-Path -LiteralPath $StateDir)) {
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $StateDir)) {
             New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
         }
         $stateOut = [ordered]@{ gpos = [ordered]@{} }

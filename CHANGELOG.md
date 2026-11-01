@@ -37,12 +37,15 @@ Every module has its own integration target (issue #44).
   and deleted-GPO detection, the import reasons, the link plan (including
   that it converges in one pass and a re-plan is empty), the migration table
   path, the backup folder check and each module's wiring to the util.
-- The `hygiene` CI job fails when a role has no Molecule scenario, or a
-  module has no integration target or no unit tests (`wsfc_cluster` and the
-  IIS modules' unit tests are a follow-up; the job lists them as pending).
-  AGENTS.md records the standard: roles have Molecule scenarios; modules
-  have an integration target (what it must cover, where it runs) and Pester
-  unit tests.
+- AGENTS.md records the testing standard: every role has a Molecule
+  scenario; every module has an integration target (what it must cover,
+  where it runs) and Pester unit tests. It's a convention, not a CI check.
+  `wsfc_cluster` and the IIS modules' unit tests are a follow-up (issue #47).
+- **Fix:** `gpo_export` and `gpo_import` given a `work_dir`, `state_dir` or
+  `source_dir` on a drive that doesn't exist fail in the preflight with its
+  message (`none of its parents exist`, `no existing parent directory`,
+  `manifest not found`) instead of PowerShell's "Cannot find drive". Found
+  by the new `gpo_export` target.
 - **Fix:** a `gpo_export` run with `gpo_names` keeps the unselected GPOs'
   hashes in the state file. Before, it rewrote the state with the selected
   GPOs only, so the next unfiltered export re-shipped every other GPO and

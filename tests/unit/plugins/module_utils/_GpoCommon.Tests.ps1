@@ -166,6 +166,23 @@ Describe 'Get-NearestExistingDirectory' {
         Get-NearestExistingDirectory -Path $file | Should -Be $TestDrive
     }
 
+    It 'returns $null, without an error, for a path on a drive that doesn''t exist' {
+        # Windows PowerShell's Test-Path writes "Cannot find drive" for such a
+        # path, which the modules' $ErrorActionPreference = 'Stop' turns into
+        # a failure before the preflight can say why (found by gpo_export's
+        # integration target). pwsh on Linux doesn't, so model Windows: the
+        # mock throws unless the call suppresses errors.
+        Mock -ModuleName _GpoCommon Test-Path {
+            if ($PesterBoundParameters['ErrorAction'] -ne 'SilentlyContinue') {
+                throw "Cannot find drive. A drive with the name 'Q' does not exist."
+            }
+            $false
+        }
+        Get-NearestExistingDirectory -Path 'Q:\gpo-iac\backup' | Should -BeNullOrEmpty
+        Get-DirContentHash -Path 'Q:\gpo-iac' | Should -BeExactly ''
+        Should -Invoke -ModuleName _GpoCommon Test-Path -Times 2 -Exactly -ParameterFilter { $ErrorAction -eq 'SilentlyContinue' } -Scope It
+    }
+
     It 'returns $null when no parent exists, or for an empty path' {
         Get-NearestExistingDirectory -Path '' | Should -BeNullOrEmpty
         Get-NearestExistingDirectory -Path 'relative-nowhere/at/all' | Should -BeNullOrEmpty

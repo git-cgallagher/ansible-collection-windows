@@ -128,9 +128,8 @@ issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
 ansible-lint/yamllint, ansible-test sanity (including pslint; stable
 ansible-core branches only, no `devel` canary since 2026-11-01 by owner
 decision), PowerShell parse + PSScriptAnalyzer and the modules' Pester unit
-tests (the `powershell` job), the `hygiene` job (a `cpassword` grep, and the
-gate that every role has a Molecule scenario and every module an integration
-target and unit tests), and the `argument-specs` workflow. Known gaps found
+tests (the `powershell` job), the `hygiene` job (a `cpassword` grep), and the
+`argument-specs` workflow. Known gaps found
 by review are tracked as repo issues and listed
 in the README's "What this doesn't do (yet)".
 
@@ -313,15 +312,11 @@ lab to the scripts — and record the surprise below as a gotcha.
   `roles/<role>/molecule/<scenario>/` with converge, idempotence and verify
   (see the Molecule bullet), and **every module has an ansible-test
   integration target and Pester unit tests**. A role's scenario that happens
-  to call a module doesn't count for the module. The `hygiene` job's "Require
-  tests for every role and module" step enforces it: it fails when a role has
-  no `molecule/*/molecule.yml`, or a `plugins/modules/<name>.ps1` has no
-  `tests/integration/targets/<name>/tasks/main.yml` or no
-  `tests/unit/plugins/modules/<name>.Tests.ps1`. Its `UNIT_TESTS_PENDING`
-  list names the modules whose unit tests are still owed (`wsfc_cluster`,
-  `iis_mime_type`, `iis_mime_type_info`, a follow-up to #44); it only
-  shrinks, and the step fails if a listed module gains its tests without
-  leaving the list.
+  to call a module doesn't count for the module. No CI step checks this (the
+  owner dropped the hygiene gate PR 46 first proposed, 2026-11-01): it's a
+  rule every change follows, so a PR that adds or changes a role or module
+  adds or updates its tests in the same PR. Still owed: the unit tests of
+  `wsfc_cluster`, `iis_mime_type` and `iis_mime_type_info` (issue #47).
 - **A module's unit tests** are Pester 5, in
   `tests/unit/plugins/modules/<name>.Tests.ps1`, with shared code's in
   `tests/unit/plugins/module_utils/<util>.Tests.ps1`; the `powershell` CI job
