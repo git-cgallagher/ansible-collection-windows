@@ -385,6 +385,13 @@ ansible-galaxy collection build --force
   ignored network (step 3b), never the last one. The same run passed
   create, prepare, converge (cluster and file server) and idempotence.
 
+- **Don't take a node's computer name from `ansible_facts.hostname`.** On
+  the three-VM lab's slow nodes, `ansible.windows.setup` (`min` subset)
+  warned "Failed to collect platform due to timeout" and left the fact unset,
+  and `wsfc` failed with "object of type 'dict' has no attribute 'hostname'"
+  (2026-11-01, PR #36). The role reads `$env:COMPUTERNAME` with
+  `win_powershell` instead, which has no collector timeout.
+
 - **`win_powershell` renders anything nested deeper than `Result.x[i]` as its
   type name.** A list of hashtables inside a hashtable in `$Ansible.Result`
   came back as `"System.Collections.Hashtable"` strings. Keep result lists of

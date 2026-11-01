@@ -22,6 +22,10 @@ Clustered file servers, and the first multi-node cluster lab.
   network in `ignore_networks` (`wsfc_ignore_networks`), never the name's
   last one. `New-Cluster` added one there despite `-IgnoreNetwork` in the
   lab, and the name would register it in DNS.
+- `wsfc`: reads each node's computer name with `$env:COMPUTERNAME` again,
+  instead of the `ansible_facts.hostname` fact (0.7.0). On slow nodes the
+  setup module's platform collector timed out and left the fact unset, which
+  failed the role.
 - `wsfc_cluster` and `wsfc`: a static address's network needs a default
   gateway when the cluster is created (`New-Cluster` gives the client role
   only to such networks); the documentation now says so.
