@@ -399,8 +399,10 @@ lab to the scripts — and record the surprise below as a gotcha.
 export RUNTIME_IMAGE=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
 .github/ci/runtime.sh yamllint . && .github/ci/runtime.sh ansible-lint
 
-# ...or with your own tools (versions may differ from CI's):
-pip install ansible-core ansible-lint yamllint
+# ...or with your own tools at CI's versions: the image's constraints.txt (every
+# tool version comes from RUNTIME_IMAGE, ansible-runtime's shared dependency model)
+docker run --rm "$RUNTIME_IMAGE" cat /usr/share/ansible-runtime/constraints.txt > /tmp/constraints.txt
+pip install -c /tmp/constraints.txt ansible-core ansible-lint yamllint
 ansible-galaxy collection install -r requirements.yml -r tests/domain_lab/requirements.yml
 yamllint . && ansible-lint
 
@@ -415,7 +417,8 @@ pwsh -c "Invoke-ScriptAnalyzer -Path roles -Recurse -Settings '$S'"
 docker run --rm -v "$PWD:/work:ro" -w /work --entrypoint pwsh quay.io/ansible/default-test-container:v2.21-4 -c \
   'Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck; $c = New-PesterConfiguration; $c.Run.Path = "tests/unit"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 
-# argument specs (what the argument-specs workflow runs): build + install the
+# argument specs (what the argument-specs workflow runs, in the image:
+# .github/ci/runtime.sh bash -c '…' with the same lines): build + install the
 # collection, render the role docs, check specs vs defaults and validation
 ansible-galaxy collection build --force --output-path /tmp/dist
 ansible-galaxy collection install /tmp/dist/git_cgallagher-windows-*.tar.gz -p /tmp/colls --force
