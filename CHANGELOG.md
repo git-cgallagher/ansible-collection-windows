@@ -36,6 +36,27 @@ Clustered file servers, and the first multi-node cluster lab.
 - `tests/argument_specs/check_role.yml` checks every entry point of a role's
   argument spec, not only `main`.
 
+## 0.7.1 — 2026-11-01
+
+Test-only: nothing shipped changes.
+
+- The domain lab's bootstrap (`tests/domain_lab/promote.yml`) is one
+  `include_role` of `git_cgallagher.molecule.ad_forest` (since the labs moved
+  onto the driver), and now runs the role a second time on the promoted DC
+  and asserts that it changed nothing: the forest, the SYSVOL wait and the
+  admin group membership.
+- The labs pin the molecule collection and driver at v0.3.1, whose
+  `ad_forest` is idempotent on a promoted DC (its DNS task listed only
+  `127.0.0.1`, which PR #33's second-run check caught), and the `wsfc` and
+  `iis` scenarios quiet their VM with its shared `quiet_vm` role instead of a
+  copied PowerShell block.
+- `setup_iis`, the IIS integration targets' setup, creates the test website
+  and application with `community.windows.win_iis_website` and
+  `community.windows.win_iis_webapplication` instead of a PowerShell script,
+  and the `iis` Molecule scenario runs it a second time and asserts that
+  nothing changed. `community.windows` is a test dependency only
+  (`tests/integration/requirements.yml`), not one of the collection's.
+
 ## 0.7.0 — 2026-11-01
 
 The `wsfc` role's cluster script is now a module.

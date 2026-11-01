@@ -103,7 +103,15 @@ role):
   `molecule test` limit is 120 minutes, the job's 150).
 
 They share the lab in `tests/domain_lab/` and the Molecule base config
-`.config/molecule/config.yml` (see Conventions). The lab first passed on
+`.config/molecule/config.yml` (see Conventions). The promotion is
+`git_cgallagher.molecule.ad_forest`, included once by
+`tests/domain_lab/promote.yml` with the lab's hooks (GPMC in the features and
+the readiness test, `Group Policy Creator Owners` in the admin groups, the
+SYSVOL path wait), then included again to assert the bootstrap changes nothing
+on a second run; lab-bootstrap bugs are fixed in that role, not here. The
+workgroup labs (`wsfc`, `iis`) quiet their VM with the same collection's
+`quiet_vm` role (`ad_forest` includes it itself), so no scenario carries its
+own copy of that step. The lab first passed on
 2026-10-28 (PR #1, the initial collection), which closed the lab-validation
 issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
 ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
@@ -117,7 +125,9 @@ installs IIS and runs `tests/integration/targets/iis_mime_type` and
 `iis_mime_type_info`: server, site and application levels, both
 `config_file` stores, check and diff mode, overriding and hiding inherited
 mappings, the refusal to override a level's own `web.config`, and the error
-messages. The job first ran on 0.4.0's pull request. Not covered: a section
+messages. The job first ran on 0.4.0's pull request. Its prepare step also
+runs `setup_iis` twice and asserts the second run changed nothing (the
+scenario has no idempotence step). Not covered: a section
 locked at a parent level, content directories on UNC paths, and a host with
 IIS but without its management tools (the lab installs them for the
 targets' independent reads).
@@ -276,6 +286,13 @@ lab to the scripts — and record the surprise below as a gotcha.
   molecule.yml points at `tests/integration/targets`), after the role's own
   checks; the target removes the role's cluster, builds its own and removes
   it. Its reads go through `setup_wsfc/files/cluster_state.ps1`.
+  `setup_iis` creates the test website and application with
+  `community.windows`'s IIS modules; that collection is a **test dependency**
+  in `tests/integration/requirements.yml` (installed by ansible-test and by
+  the `iis` scenario's dependency step; the lint image doesn't carry it and
+  ansible-lint passes without it), never a `galaxy.yml` dependency. Keep the targets' own reads (`read_mime_map.ps1`, the inline
+  reads) in PowerShell: the oracle must stay independent of the module under
+  test and of any other IIS module.
 - **Every module needs `validate-modules:missing-gplv3-license` ignores** in
   `tests/sanity/ignore-2.18.txt` through `ignore-2.23.txt`, for its `.ps1`
   and its `.yml`: the collection is MIT, and validate-modules demands a GPLv3
@@ -313,8 +330,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.1"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.1
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.3.1"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.3.1
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
@@ -428,8 +445,17 @@ ansible-galaxy collection build --force
   the SYSVOL share and `SysvolReady`. Group Policy Preferences cmdlets write
   through the domain's DFS path, which failed with "The network path was not
   found" in one lab run 6 seconds after the other checks passed.
-  `tests/domain_lab/promote.yml` polls
-  `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
+  `tests/domain_lab/promote.yml` sets `ad_forest_wait_sysvol_path`, and the
+  role polls `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
+- **The lab bootstrap's idempotence is only partly asserted.** `promote.yml`
+  runs `ad_forest` twice and asserts on the results the role registers (the
+  forest, the SYSVOL wait, the groups); its DNS client, feature and quiet
+  tasks aren't registered, so their `changed` shows only in the lab log. PR
+  #33's first lab runs (2026-11-01, driver v0.2.1) caught `win_dns_client`
+  changing on every run that way: promotion adds `::1` and the role listed
+  only `127.0.0.1`. Fixed in the molecule collection's 0.3.0 (its issue 11),
+  which the labs pin. A lab-bootstrap surprise is fixed in that role, then
+  the assert extended there, not patched around in promote.yml.
 - **The effective domain password policy** follows link order at the domain
   root after `gpupdate /target:computer /force` on the PDC (the first refresh
   after promotion took about 90 seconds in the lab).

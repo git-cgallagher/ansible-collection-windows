@@ -10,19 +10,11 @@
       ansible.builtin.wait_for_connection:
         timeout: 600
 
-    # As tests/domain_lab/promote.yml does for the domain labs.
+    # The shared step from the molecule collection (ad_forest includes it
+    # itself, so the domain labs don't).
     - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
-      ansible.windows.win_powershell:
-        script: |
-          $Ansible.Changed = $false
-          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
-          try {
-              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
-          }
-          catch {
-              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
-          }
+      ansible.builtin.include_role:
+        name: git_cgallagher.molecule.quiet_vm
 
     - name: Look for IIS
       ansible.windows.win_service_info:
@@ -38,3 +30,24 @@
     - name: Install IIS and create the test website
       ansible.builtin.include_role:
         name: setup_iis
+
+    # The targets depend on setup_iis, so it runs again under converge; it
+    # must change nothing then. The scenario has no idempotence step (the
+    # targets change mappings on purpose), so check the second run here, on
+    # the results setup_iis registers.
+    - name: Run setup_iis again (nothing to do)
+      ansible.builtin.include_role:
+        name: setup_iis
+
+    - name: Check the second setup_iis run changed nothing
+      ansible.builtin.assert:
+        that:
+          - not setup_iis_feature.changed
+          - not setup_iis_feature.reboot_required
+          - not setup_iis_dirs.changed
+          - not setup_iis_website.changed
+          - not setup_iis_application_result.changed
+        fail_msg: >-
+          The second setup_iis run reported changes:
+          feature {{ setup_iis_feature.changed }}, directories {{ setup_iis_dirs.changed }},
+          website {{ setup_iis_website.changed }}, application {{ setup_iis_application_result.changed }}
