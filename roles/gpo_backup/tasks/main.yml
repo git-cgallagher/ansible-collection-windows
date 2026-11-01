@@ -10,33 +10,30 @@
     quiet: true
 
 # Read-only against AD; writes only its working directory on the management
-# host. check_mode: false so a --check run still computes the would-ship
-# report (the script skips its state-file write in check mode).
+# host. The module supports check mode itself: it still computes what would
+# ship but writes neither the zip nor its state file.
 - name: Export GPOs and topology manifest
-  ansible.windows.win_powershell:
-    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/backup_gpos.ps1') }}"
-    parameters:
-      Domain: "{{ gpo_backup_domain }}"
-      Server: "{{ gpo_backup_server }}"
-      WorkDir: "{{ gpo_backup_workdir }}"
-      GpoNames: "{{ gpo_backup_gpos }}"
-      FullExport: "{{ gpo_backup_full_export | bool }}"
-      CheckMode: "{{ ansible_check_mode }}"
+  git_cgallagher.windows.gpo_export:
+    domain: "{{ gpo_backup_domain }}"
+    server: "{{ gpo_backup_server }}"
+    work_dir: "{{ gpo_backup_workdir }}"
+    gpo_names: "{{ gpo_backup_gpos }}"
+    full_export: "{{ gpo_backup_full_export | bool }}"
   register: gpo_backup_export
-  check_mode: false
 
 - name: Report what changed
   ansible.builtin.debug:
     msg: >-
-      {{ gpo_backup_export.result.gpo_count }} GPO(s) in {{ gpo_backup_domain }}:
-      shipping {{ gpo_backup_export.result.shipped | length }},
-      deleted {{ gpo_backup_export.result.deleted | length }},
-      manifest changed: {{ gpo_backup_export.result.manifest_changed }}
+      {{ gpo_backup_export.gpo_count }} GPO(s) in {{ gpo_backup_domain }}:
+      shipping {{ gpo_backup_export.shipped | length }},
+      deleted {{ gpo_backup_export.deleted | length }},
+      manifest changed: {{ gpo_backup_export.manifest_changed }}
 
+# The zip is null when the module ran in check mode (nothing was written).
 - name: Fetch and unpack the export on the controller
   when:
-    - gpo_backup_export.result.changed | bool or gpo_backup_full_export | bool
-    - not ansible_check_mode
+    - gpo_backup_export.changed | bool or gpo_backup_full_export | bool
+    - gpo_backup_export.zip is not none
   block:
     - name: Create a controller-side staging directory
       ansible.builtin.tempfile:
@@ -48,7 +45,7 @@
 
     - name: Fetch the export zip
       ansible.builtin.fetch:
-        src: "{{ gpo_backup_export.result.zip }}"
+        src: "{{ gpo_backup_export.zip }}"
         dest: "{{ gpo_backup_tmp.path }}/gpo-export.zip"
         flat: true
 
@@ -66,7 +63,7 @@
       ansible.builtin.file:
         path: "{{ gpo_backup_repo_dir }}/gpos/{{ item.backup_dir }}"
         state: absent
-      loop: "{{ gpo_backup_export.result.shipped }}"
+      loop: "{{ gpo_backup_export.shipped }}"
       loop_control:
         label: "{{ item.name }}"
       delegate_to: localhost
@@ -84,7 +81,7 @@
       ansible.builtin.file:
         path: "{{ gpo_backup_repo_dir }}/gpos/{{ item.backup_dir }}"
         state: absent
-      loop: "{{ gpo_backup_export.result.deleted if gpo_backup_prune_deleted else [] }}"
+      loop: "{{ gpo_backup_export.deleted if gpo_backup_prune_deleted else [] }}"
       loop_control:
         label: "{{ item.name }}"
       delegate_to: localhost

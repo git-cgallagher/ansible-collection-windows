@@ -12,4 +12,5 @@ from `roles/gpo_backup` with `molecule test`.
 | converge | `gpo_backup` exports the domain into an empty repo | — |
 | idempotence | Export again | No task reports a change: an unchanged domain ships nothing |
 | verify | Read the export | The manifest has the exact link order (domain root included), enforced and disabled links, block-inheritance, security filtering, the WMI filter and GPO status; every GPO has a backup folder |
-| | Change a setting in one GPO through GPMC, then export again | That GPO ships, and only it; the manifest doesn't change |
+| | Change a setting in one GPO through GPMC, then export in check mode | The run predicts that GPO, and only it, without writing the zip |
+| | Export again for real | That GPO ships, and only it (so check mode didn't consume the state); the manifest doesn't change |
