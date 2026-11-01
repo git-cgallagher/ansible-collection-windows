@@ -68,8 +68,8 @@ virtualization.
 ```bash
 # The driver and its collection come from one tag (the [windows] extra is pypsrp)
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.0"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.0
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.1"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.1
 ansible-galaxy collection install -r tests/domain_lab/requirements.yml
 mkdir -p .molecule-collections/ansible_collections/git_cgallagher
 ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows

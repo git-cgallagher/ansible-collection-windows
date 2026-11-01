@@ -236,8 +236,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.0"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.0
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.2.1"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.2.1
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
@@ -342,13 +342,16 @@ ansible-galaxy collection build --force
   holds the box cache and VM disk, and the scenarios' `lab_dir` reads the
   same variable, so the GPO exports sit next to them. `domain-lab.yml` pins
   the driver by commit in two `uses:` lines (`setup-molecule`,
-  `vm-screendump`); bump them together, along with the `@v0.2.0` install
+  `vm-screendump`); bump them together, along with the tag in the install
   lines above and in `tests/domain_lab/README.md`.
 - **A composite action's steps can't set `timeout-minutes`** (the runner's
   `action_yaml.json` schema has no such key), so the 10-minute guard the
   KVM/QEMU install step got after a stuck apt hung a run for two hours
   (2026-11-01) sits on the `setup-molecule` step in `domain-lab.yml`, as 15
   minutes because that step also installs pip packages and collections.
+  Since the driver's v0.2.1 the action also limits its own `apt-get` calls
+  (3 minutes for update, 8 for install) and fails with a message to re-run,
+  so the step limit is a backstop.
 - **Molecule's base config is implicit.** `.config/molecule/config.yml` at
   the repository root is merged under every scenario's `molecule.yml`
   because `--base-config` defaults to it (Molecule logs "Found config
