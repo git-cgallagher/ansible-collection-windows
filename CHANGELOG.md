@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.0 — 2026-11-01
+
+Clustered file servers, and the first multi-node cluster lab.
+
+- New role `wsfc_fileserver`: runs a general-purpose clustered file server on
+  a cluster built by `wsfc`. It installs the File Server role service on every
+  node, creates the role (`Add-ClusterFileServerRole`) on named cluster disks
+  or converges an existing one (disks it lacks, online state, preferred
+  owners), and converges SMB shares scoped to the file server's name: folder,
+  description, continuous availability, access-based enumeration, encryption
+  and exact share permissions. Check mode and `wsfc_fileserver_report_only`
+  report a plan.
+- Two more entry points for operations: `tasks_from: validate` writes, reads
+  back and deletes a probe file in every share from a client host, through
+  `\\<name>\<share>`; `tasks_from: failover` writes a marker into every
+  share, moves the role to another node (`Move-ClusterGroup`), waits for it to
+  come online, and proves from the client that the markers read back and each
+  share takes a new write. It reports how long the move took.
+- `wsfc`: `wsfc_disks` takes a `drive_letter` for the volume that `initialize`
+  creates, so shares and SQL Server paths can name it.
+- New Molecule scenario `roles/wsfc_fileserver/molecule/default` (the
+  `domain-lab` workflow's `molecule (wsfc_fileserver)` job, about an hour):
+  three VMs on a lab network, a domain controller that also serves two iSCSI
+  disks, and two domain-joined nodes. It builds a two-node cluster with an
+  Active Directory access point, a disk witness and both shared disks (the
+  `wsfc` paths issue #19 listed as untested), then the file server with two
+  shares, validates it from the DC, fails it over and back, and fixes
+  out-of-band drift.
+- `tests/argument_specs/check_role.yml` checks every entry point of a role's
+  argument spec, not only `main`.
+
 ## 0.4.0 — 2026-11-01
 
 A new area, IIS, with the collection's first modules.

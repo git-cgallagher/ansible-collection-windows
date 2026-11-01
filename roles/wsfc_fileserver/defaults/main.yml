@@ -1,0 +1,22 @@
+---
+# wsfc_fileserver_name is required (no default): the file server's client
+# access point.
+
+# --- tasks_from: main (create or converge) --------------------------------------
+wsfc_fileserver_static_addresses: []
+wsfc_fileserver_ignore_networks: []
+wsfc_fileserver_disks: []
+wsfc_fileserver_shares: []
+wsfc_fileserver_preferred_owners: []
+wsfc_fileserver_report_only: false
+
+# --- tasks_from: validate and tasks_from: failover ------------------------------
+wsfc_fileserver_validate_client: ''
+wsfc_fileserver_validate_shares: []
+wsfc_fileserver_failover_to: ''
+wsfc_fileserver_failover_timeout: 300
+
+# --- every entry point ------------------------------------------------------------
+wsfc_fileserver_manage_node: ''
+wsfc_fileserver_become_user: ''
+wsfc_fileserver_become_password: ''

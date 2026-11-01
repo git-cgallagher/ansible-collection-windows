@@ -11,7 +11,7 @@
   tasks:
     - name: Check one role
       ansible.builtin.include_tasks: check_role.yml
-      loop: [gpo_backup, gpo_import, wsfc]
+      loop: [gpo_backup, gpo_import, wsfc, wsfc_fileserver]
       loop_control:
         loop_var: spec_role
 
@@ -23,6 +23,7 @@
     spec_backup: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_backup/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
     spec_import: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_import/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
     spec_cluster: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+    spec_fileserver: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc_fileserver/meta/argument_specs.yml') | from_yaml).argument_specs }}"
   tasks:
     # --- valid input passes ---------------------------------------------------------
     - name: Accept a minimal gpo_backup call
@@ -77,6 +78,45 @@
           wsfc_become_password: example-not-secret
 
     # --- invalid input is rejected by the roles themselves --------------------------
+    - name: Accept a minimal wsfc_fileserver call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_fileserver.main.options }}"
+        provided_arguments:
+          wsfc_fileserver_name: FS01
+
+    - name: Accept a full wsfc_fileserver call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_fileserver.main.options }}"
+        provided_arguments:
+          wsfc_fileserver_name: FS01
+          wsfc_fileserver_static_addresses: [10.10.10.60, 10.20.20.60]
+          wsfc_fileserver_ignore_networks: [192.168.50.0/24]
+          wsfc_fileserver_disks: [FS Data]
+          wsfc_fileserver_shares:
+            - name: Projects
+              path: 'S:\Shares\Projects'
+              description: Team projects
+              full_access: ['EXAMPLE\File Admins']
+              change_access: ['EXAMPLE\Domain Users']
+              folder_enumeration_mode: AccessBased
+              encrypt_data: true
+            - {name: VMs, path: 'S:\Shares\VMs', continuously_available: true, read_access: [Everyone]}
+          wsfc_fileserver_preferred_owners: [NODE1, NODE2]
+          wsfc_fileserver_report_only: true
+          wsfc_fileserver_manage_node: node1
+          wsfc_fileserver_become_user: 'EXAMPLE\svc-cluster'
+          wsfc_fileserver_become_password: example-not-secret
+
+    - name: Accept a full wsfc_fileserver failover call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_fileserver.failover.options }}"
+        provided_arguments:
+          wsfc_fileserver_name: FS01
+          wsfc_fileserver_validate_client: client01
+          wsfc_fileserver_validate_shares: [Projects]
+          wsfc_fileserver_failover_to: NODE2
+          wsfc_fileserver_failover_timeout: 600
+
     # include_role runs the role's implicit "Validating arguments" task first; a
     # failure there carries argument_errors, which tells it apart from a later
     # task failing.
@@ -254,4 +294,105 @@
             that:
               - ansible_failed_result.argument_errors is not defined
               - ansible_failed_result.msg | default('') is search('at most 15 characters')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a wsfc_fileserver share without a path
+      block:
+        - name: Include wsfc_fileserver with a pathless share
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc_fileserver
+          vars:
+            wsfc_fileserver_name: FS01
+            wsfc_fileserver_shares:
+              - name: Projects
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc_fileserver accepted a share without a path
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('path')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject an unknown wsfc_fileserver folder enumeration mode
+      block:
+        - name: Include wsfc_fileserver with folder_enumeration_mode Hidden
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc_fileserver
+          vars:
+            wsfc_fileserver_name: FS01
+            wsfc_fileserver_shares:
+              - {name: Projects, path: 'S:\Shares\Projects', folder_enumeration_mode: Hidden}
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc_fileserver accepted folder_enumeration_mode Hidden
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('folder_enumeration_mode')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject two wsfc_fileserver shares with the same name
+      block:
+        - name: Include wsfc_fileserver with a duplicate share name
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc_fileserver
+          vars:
+            wsfc_fileserver_name: FS01
+            wsfc_fileserver_shares:
+              - {name: Projects, path: 'S:\Shares\Projects'}
+              - {name: Projects, path: 'T:\Projects'}
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: wsfc_fileserver accepted two shares named Projects
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('share names must be unique')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    # The failover entry point is validated against its own spec.
+    - name: Reject a non-integer wsfc_fileserver failover timeout
+      block:
+        - name: Include wsfc_fileserver's failover with a timeout of soon
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc_fileserver
+            tasks_from: failover
+          vars:
+            wsfc_fileserver_name: FS01
+            wsfc_fileserver_validate_shares: [Projects]
+            wsfc_fileserver_failover_timeout: soon
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc_fileserver failover accepted a timeout of soon
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_fileserver_failover_timeout')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a wsfc_fileserver failover with no shares to check
+      block:
+        - name: Include wsfc_fileserver's failover without shares
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc_fileserver
+            tasks_from: failover
+          vars:
+            wsfc_fileserver_name: FS01
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: wsfc_fileserver failover ran with no shares to check
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('shares to check')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"

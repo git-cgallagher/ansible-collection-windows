@@ -1,0 +1,169 @@
+---
+# Checks what converge built, then exercises the file server as an operator
+# would: validate it from a client, fail it over and back, and fix drift.
+- name: Verify the cluster and the file server
+  hosts: lab_nodes
+  gather_facts: false
+  vars:
+    lab_become: &lab_become
+      ansible_become_password: "{{ lab_admin_password }}"
+  tasks:
+    # 1. What converge built, read straight from the cluster.
+    - name: Read the cluster and the file server
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_state.ps1') }}"
+        parameters:
+          FileServer: "{{ lab_fileserver.name }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+      vars: *lab_become
+      run_once: true
+      register: lab_state
+
+    - name: Check the cluster matches wsfc's variables
+      ansible.builtin.assert:
+        that:
+          - lab_c.name == lab_cluster.name
+          - lab_c.nodes == ['NODE1', 'NODE2']
+          - lab_c.node_states == ['Up']
+          - lab_c.cluster_addresses == [lab_cluster.address]
+          - lab_c.witness == 'Witness'
+          - lab_c.disks | map(attribute='name') | sort == ['FS Data', 'Witness']
+          - lab_c.disks | map(attribute='state') | unique == ['Online']
+          - (lab_c.networks | selectattr('name', 'equalto', 'Management') | first).role == 0
+          - (lab_c.networks | selectattr('name', 'equalto', 'Lab') | first).role == 3
+        fail_msg: "Cluster state: {{ lab_c | to_nice_json }}"
+      vars:
+        lab_c: "{{ lab_state.result }}"
+      run_once: true
+
+    - name: Check the file server matches wsfc_fileserver's variables
+      ansible.builtin.assert:
+        that:
+          - lab_f.type == 'FileServer'
+          - lab_f.state == 'Online'
+          - lab_f.addresses == [lab_fileserver.address]
+          - lab_f.preferred_owners == ['NODE1', 'NODE2']
+          - (lab_c.disks | selectattr('name', 'equalto', 'FS Data') | first).group == lab_fileserver.name
+          - lab_f.shares | map(attribute='name') | sort == ['AppData', 'Projects']
+          - lab_projects.path == lab_fileserver.share_root ~ '\Projects'
+          - lab_projects.description == 'Team projects'
+          - lab_projects.folder_enumeration_mode == 'AccessBased'
+          - not lab_projects.continuously_available
+          - lab_projects.access == [lab_netbios ~ '\Domain Admins:Full', lab_netbios ~ '\Domain Users:Change']
+          - lab_appdata.continuously_available
+          - lab_appdata.access == [lab_netbios ~ '\Domain Admins:Full']
+        fail_msg: "File server state: {{ lab_f | to_nice_json }}"
+      vars:
+        lab_c: "{{ lab_state.result }}"
+        lab_f: "{{ lab_state.result.fileserver }}"
+        lab_projects: "{{ lab_f.shares | selectattr('name', 'equalto', 'Projects') | first }}"
+        lab_appdata: "{{ lab_f.shares | selectattr('name', 'equalto', 'AppData') | first }}"
+      run_once: true
+
+    # 2. The shares from a client (dc01), through \\FSLAB\<share>.
+    - name: Validate the file server from dc01
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
+        tasks_from: validate
+
+    # 3. Fail over to the other node and back, proving data written before
+    # each move reads back after it.
+    - name: Fail over to the other node
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
+        tasks_from: failover
+
+    - name: Check the file server moved
+      ansible.builtin.assert:
+        that:
+          - wsfc_fileserver_failover is changed
+          - wsfc_fileserver_failover.result.from == lab_state.result.fileserver.owner
+          - wsfc_fileserver_failover.result.to != lab_state.result.fileserver.owner
+          - wsfc_fileserver_failover.result.after.state == 'Online'
+          - wsfc_fileserver_validation.result.failed == []
+        fail_msg: "{{ wsfc_fileserver_failover.result | to_nice_json }}"
+      run_once: true
+
+    - name: Fail back to the first node
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
+        tasks_from: failover
+      vars:
+        wsfc_fileserver_failover_to: "{{ lab_state.result.fileserver.owner }}"
+
+    - name: Check the file server is back
+      ansible.builtin.assert:
+        that:
+          - wsfc_fileserver_failover.result.to == lab_state.result.fileserver.owner
+          - wsfc_fileserver_failover.result.after.owner == lab_state.result.fileserver.owner
+          - wsfc_fileserver_validation.result.failed == []
+        fail_msg: "{{ wsfc_fileserver_failover.result | to_nice_json }}"
+      run_once: true
+
+    # 4. Out-of-band drift: a report-only run plans the fix without making it.
+    - name: Drift a share out-of-band
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Scope)
+          Set-SmbShare -ScopeName $Scope -Name Projects -Description 'changed by hand' -Force
+        parameters:
+          Scope: "{{ lab_fileserver.name }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+        # A clustered share can only be changed on the node that owns it.
+        lab_owner_host: >-
+          {{ groups['lab_nodes'] | map('extract', hostvars) |
+             selectattr('lab_hostname', 'equalto', lab_state.result.fileserver.owner) |
+             map(attribute='inventory_hostname') | first }}
+      delegate_to: "{{ lab_owner_host }}"
+      run_once: true
+
+    - name: Plan the fix (report-only)
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
+      vars:
+        wsfc_fileserver_report_only: true
+
+    - name: Check the plan found exactly the drift and changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_fileserver_run.result.report_only
+          - wsfc_fileserver_run.result.actions | length == 1
+          - wsfc_fileserver_run.result.actions[0] is search('Description=Team projects')
+        fail_msg: "{{ wsfc_fileserver_run.result | to_nice_json }}"
+      run_once: true
+
+    - name: Fix the drift
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
+
+    - name: Check the fix
+      ansible.builtin.assert:
+        that:
+          - wsfc_fileserver_run is changed
+          - wsfc_fileserver_run.result.actions | length == 1
+        fail_msg: "{{ wsfc_fileserver_run.result | to_nice_json }}"
+      run_once: true
+
+    - name: Re-read the file server
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_state.ps1') }}"
+        parameters:
+          FileServer: "{{ lab_fileserver.name }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+      vars: *lab_become
+      run_once: true
+      register: lab_state_after
+
+    - name: Check the description is back
+      ansible.builtin.assert:
+        that: (lab_state_after.result.fileserver.shares | selectattr('name', 'equalto', 'Projects') | first).description == 'Team projects'
+        fail_msg: "{{ lab_state_after.result.fileserver | to_nice_json }}"
+      run_once: true

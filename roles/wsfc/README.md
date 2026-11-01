@@ -53,7 +53,7 @@ list item's keys, are in the argument spec.
 | `wsfc_quorum` | `{}` | `type` (`node_majority`, `disk_witness`, `file_share_witness`, `cloud_witness`) plus `disk`, `path`, or `account_name`/`access_key`/`endpoint`; empty = leave it |
 | `wsfc_networks` | `[]` | `subnet` (CIDR) plus `name`, `role` (`none`, `cluster`, `cluster_and_client`), `metric` |
 | `wsfc_properties` | `{}` | Cluster common properties, for example `SameSubnetThreshold` |
-| `wsfc_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label` |
+| `wsfc_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label`, `drive_letter` |
 | `wsfc_report_only` | `false` | Report every action without changing the cluster (`--check` implies it) |
 | `wsfc_become_user` | `''` | Run the cluster task as this account (`runas`); see below |
 | `wsfc_become_password` | `''` | Its password (vault it) |
@@ -84,7 +84,7 @@ or create availability groups. This is what each workload needs from it.
 
 | Workload | Access point | Storage | Typical variables |
 |---|---|---|---|
-| Clustered file server (general use) | `ActiveDirectoryAndDns` | shared disks | `wsfc_extra_features: [FS-FileServer]`, `wsfc_disks` (NTFS), disk or file share witness |
+| Clustered file server (general use) | `ActiveDirectoryAndDns` | shared disks | `wsfc_disks` (NTFS, with a `drive_letter`), disk or file share witness; then the [`wsfc_fileserver`](../wsfc_fileserver/README.md) role for the file server, its shares, failover and validation |
 | Scale-Out File Server | `ActiveDirectoryAndDns` | shared disks as CSV | `FS-FileServer`, `wsfc_disks` with `csv: true` (often ReFS) |
 | SQL Server FCI | `ActiveDirectoryAndDns` | shared disks | `wsfc_disks` with `initialize: true` and 64 KB units; SQL Server setup (`InstallFailoverCluster` / `AddNode`) picks the disks by these resource names |
 | SQL Server AG (domain) | `ActiveDirectoryAndDns` | none | `wsfc_validate_ignore: [Storage]`, file share or cloud witness |
@@ -142,15 +142,26 @@ More in [examples/cluster.yml](../../examples/cluster.yml).
 
 ## Tested, and not yet
 
-Its Molecule scenario,
+Its own Molecule scenario,
 [`molecule/default`](https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/wsfc/molecule/default),
 builds a **one-node workgroup cluster** (access point `None`) on a real
 Windows Server 2022 VM: feature install, validation, `New-Cluster`, network
 name, role and metric, common properties, node-majority quorum, an
 idempotent re-run, a report-only plan and a drift fix.
 
-The lab is one VM on QEMU user-mode networking, so these aren't lab-tested
-yet ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19), the multi-node lab): adding nodes, the
-`ActiveDirectoryAndDns` and `Dns` access points and static addresses, shared
-disks (formatting, CSV), disk, file share and cloud witnesses, a failing
-`Test-Cluster`, and the double hop. Try them in a lab of your own first.
+The multi-node paths are covered by `wsfc_fileserver`'s scenario,
+[`roles/wsfc_fileserver/molecule/default`](https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/wsfc_fileserver/molecule/default):
+three VMs on a lab network, a domain controller that serves two iSCSI disks
+and two domain-joined nodes. It runs this role with the
+`ActiveDirectoryAndDns` access point and a static address, `Test-Cluster`
+with storage tests, both nodes in one `New-Cluster`, a management network
+taken out of cluster use, two shared disks formatted on first use (one with
+a drive letter), a disk witness and the double hop through `runas` become,
+then an idempotent re-run.
+
+Still not lab-tested ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)):
+adding a node to an existing cluster, the `Dns` access point, multi-subnet
+clusters, Cluster Shared Volumes, file share and cloud witnesses, and a
+failing `Test-Cluster`. The lab ignores `Test-Cluster`'s network tests,
+because every lab VM's management NIC has the same address (QEMU user
+networking). Try those in a lab of your own first.

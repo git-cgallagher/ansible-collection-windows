@@ -6,14 +6,18 @@ Each area's roles and modules carry its prefix.
 | Area | Roles and modules | What they do |
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
-| [Failover clustering](#failover-clustering) | `wsfc` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups |
+| [Failover clustering](#failover-clustering) | `wsfc`, `wsfc_fileserver` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; run a clustered file server on it, fail it over between nodes and validate it from a client |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
 > Windows Server 2022 VM in CI, each by its own Molecule scenario
 > (`roles/<role>/molecule/default`): the GPO roles against a domain
-> controller, within one domain, and `wsfc` by building a one-node
-> workgroup cluster. Multi-node clusters aren't lab-tested yet
+> controller, within one domain; `wsfc` by building a one-node
+> workgroup cluster; and `wsfc_fileserver` (with `wsfc`'s multi-node paths) in
+> a three-VM lab: a domain controller that serves iSCSI disks and a two-node
+> cluster with a file server that it fails over and back. Multi-subnet
+> clusters, cloud and file share witnesses and Cluster Shared Volumes aren't
+> lab-tested yet
 > ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
 > and neither is importing GPOs into a *different* domain
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),
@@ -291,6 +295,32 @@ availability groups each need from it, and what isn't lab-tested yet;
         wsfc_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\AGCLU01'}
         wsfc_become_user: EXAMPLE\svc-cluster-build
         wsfc_become_password: "{{ vault_cluster_build_password }}"
+```
+
+`wsfc_fileserver` puts a general-purpose clustered file server on such a
+cluster: a client access point, its disks and SMB shares scoped to its name,
+with exact share permissions. Two more entry points make it something to
+operate, not just build: `tasks_from: validate` writes and reads a probe file
+in every share from a client, and `tasks_from: failover` moves the role to
+another node and proves the data written before the move reads back after it.
+The [role README](roles/wsfc_fileserver/README.md) has the details.
+
+```yaml
+- name: Move the file server off node 2 before patching it
+  hosts: fsclu01_nodes
+  gather_facts: false
+  tasks:
+    - name: Fail over and validate from a client
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
+        tasks_from: failover
+      vars:
+        wsfc_fileserver_name: FS01
+        wsfc_fileserver_validate_shares: [Projects, Home]
+        wsfc_fileserver_validate_client: client01
+        wsfc_fileserver_failover_to: FSNODE02
+        wsfc_fileserver_become_user: EXAMPLE\svc-cluster
+        wsfc_fileserver_become_password: "{{ vault_cluster_password }}"
 ```
 
 ## IIS

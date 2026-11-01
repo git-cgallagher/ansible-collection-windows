@@ -1,0 +1,165 @@
+---
+# Builds what a real two-node file server cluster stands on: a domain, two
+# domain-joined nodes and shared disks. converge.yml then builds the cluster
+# (wsfc) and the file server (wsfc_fileserver) on top.
+#
+# The shared disks are iSCSI: dc01 runs the iSCSI Target Server role service
+# and serves two virtual disks over the lab network, and both nodes connect to
+# them, so each disk shows up with the same UniqueId on both (what wsfc_disks
+# matches on). The driver needs no shared-disk support for that.
+- name: Prepare every VM
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the connection
+      ansible.builtin.wait_for_connection:
+        timeout: 1200
+
+    - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+          try {
+              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          }
+          catch {
+              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
+          }
+
+- name: Promote dc01 to the first DC of a new forest
+  hosts: lab_dc
+  gather_facts: false
+  tasks:
+    # Renames it, points DNS at itself, promotes, reboots, and makes the
+    # connection account (now a domain account) a Domain Admin.
+    - name: Promote
+      ansible.builtin.include_role:
+        name: git_cgallagher.molecule.ad_forest
+      vars:
+        ad_forest_domain: "{{ lab_domain }}"
+        ad_forest_netbios: "{{ lab_netbios }}"
+        ad_forest_dsrm_password: "{{ lab_dsrm_password }}"
+        ad_forest_hostname: "{{ lab_hostname }}"
+        ad_forest_admin_groups: [Domain Admins]
+
+    - name: Install the iSCSI Target Server role service
+      ansible.windows.win_feature:
+        name: FS-iSCSITarget-Server
+        include_management_tools: true
+        state: present
+
+    - name: Serve the shared disks to both nodes over the lab network
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Target, [string[]]$Initiators, [string]$DisksJson)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $dir = 'C:\iSCSIVirtualDisks'
+          if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir }
+          # Allow the initiators by their lab address, not their IQN.
+          $ids = @($Initiators | ForEach-Object { "IPAddress:$_" })
+          if (-not (Get-IscsiServerTarget -TargetName $Target -ErrorAction SilentlyContinue)) {
+              $null = New-IscsiServerTarget -TargetName $Target -InitiatorIds $ids
+              $Ansible.Changed = $true
+          }
+          foreach ($disk in ($DisksJson | ConvertFrom-Json)) {
+              $path = Join-Path $dir ($disk.label + '.vhdx')
+              if (-not (Get-IscsiVirtualDisk -Path $path -ErrorAction SilentlyContinue)) {
+                  $null = New-IscsiVirtualDisk -Path $path -SizeBytes ([int64]$disk.size_gb * 1GB)
+                  $Ansible.Changed = $true
+              }
+              $mapped = @((Get-IscsiServerTarget -TargetName $Target).LunMappings | ForEach-Object { $_.Path })
+              if ($mapped -notcontains $path) {
+                  Add-IscsiVirtualDiskTargetMapping -TargetName $Target -Path $path
+                  $Ansible.Changed = $true
+              }
+          }
+          if (-not (Get-NetFirewallRule -Name 'lab-iscsi-target' -ErrorAction SilentlyContinue)) {
+              $null = New-NetFirewallRule -Name 'lab-iscsi-target' -DisplayName 'Lab iSCSI target (TCP 3260)' `
+                  -Direction Inbound -Protocol TCP -LocalPort 3260 -Action Allow
+              $Ansible.Changed = $true
+          }
+          [ordered]@{
+              target = $Target
+              iqn = (Get-IscsiServerTarget -TargetName $Target).TargetIqn.ToString()
+              disks = @(Get-IscsiVirtualDisk | ForEach-Object { $_.Path })
+          }
+        parameters:
+          Target: "{{ lab_cluster.iscsi_target }}"
+          Initiators: "{{ groups['lab_nodes'] | map('extract', hostvars, 'lab_address') | list }}"
+          DisksJson: "{{ lab_cluster.disks | to_json }}"
+      register: lab_target
+
+    - name: Report the iSCSI target
+      ansible.builtin.debug:
+        var: lab_target.output
+
+- name: Join the nodes and connect them to the shared disks
+  hosts: lab_nodes
+  gather_facts: false
+  tasks:
+    # The management NIC's DHCP DNS (QEMU's) can't resolve the lab domain.
+    - name: Use dc01 for DNS on every adapter
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers: ["{{ lab_dc_address }}"]
+
+    - name: Rename the node and join the domain
+      microsoft.ad.membership:
+        dns_domain_name: "{{ lab_domain }}"
+        hostname: "{{ lab_hostname }}"
+        domain_admin_user: "{{ lab_admin_user }}"
+        domain_admin_password: "{{ lab_admin_password }}"
+        state: domain
+        reboot: true
+
+    # The cluster's own traffic, SMB to the file server and the cluster
+    # service's RPC; the box may already allow them.
+    - name: Allow file sharing and cluster traffic in
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          foreach ($group in 'File and Printer Sharing', 'Windows Management Instrumentation (WMI)', 'Remote Event Log Management') {
+              $rules = @(Get-NetFirewallRule -DisplayGroup $group -ErrorAction SilentlyContinue |
+                  Where-Object { [string]$_.Enabled -ne 'True' })
+              if ($rules.Count -gt 0) {
+                  $rules | Enable-NetFirewallRule
+                  $Ansible.Changed = $true
+              }
+          }
+
+    - name: Connect to the iSCSI target
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Portal, [string]$Local, [string]$Iqn)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $service = Get-Service -Name msiscsi
+          if ([string]$service.StartType -ne 'Automatic') { Set-Service -Name msiscsi -StartupType Automatic; $Ansible.Changed = $true }
+          if ([string]$service.Status -ne 'Running') { Start-Service -Name msiscsi; $Ansible.Changed = $true }
+          if (-not (Get-IscsiTargetPortal | Where-Object { $_.TargetPortalAddress -eq $Portal })) {
+              $null = New-IscsiTargetPortal -TargetPortalAddress $Portal -InitiatorPortalAddress $Local
+              $Ansible.Changed = $true
+          }
+          $target = Get-IscsiTarget | Where-Object { $_.NodeAddress -eq $Iqn }
+          if ($null -eq $target) { throw "The portal $Portal offers no target $Iqn" }
+          if (-not $target.IsConnected) {
+              $null = Connect-IscsiTarget -NodeAddress $Iqn -TargetPortalAddress $Portal -InitiatorPortalAddress $Local `
+                  -IsPersistent $true
+              $Ansible.Changed = $true
+          }
+          Update-HostStorageCache
+          @(Get-Disk | Where-Object { [string]$_.BusType -eq 'iSCSI' } |
+              ForEach-Object { [ordered]@{ number = $_.Number; size = $_.Size; unique_id = $_.UniqueId; style = [string]$_.PartitionStyle } })
+        parameters:
+          Portal: "{{ lab_dc_address }}"
+          Local: "{{ lab_address }}"
+          Iqn: "{{ hostvars[groups['lab_dc'][0]].lab_target.output[0].iqn }}"
+      register: lab_initiator
+
+    - name: Require both shared disks on every node
+      ansible.builtin.assert:
+        that: lab_initiator.output | length == lab_cluster.disks | length
+        fail_msg: "{{ inventory_hostname }} sees {{ lab_initiator.output | to_json }}"

@@ -16,7 +16,9 @@ VM is never promoted to a domain controller.
 | | Change a property out-of-band, then run the role report-only | The plan has exactly that one fix, and the cluster is unchanged |
 | | Run the role for real | It fixes only that property, and doesn't recreate the cluster |
 
-Not covered here (one VM, no shared network or storage): adding nodes, the
-`ActiveDirectoryAndDns` and `Dns` access points, static addresses, shared
-disks and CSVs, disk, file share and cloud witnesses, and the double hop
-([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)).
+Not covered here (one VM, no shared network or storage): two nodes, the
+`ActiveDirectoryAndDns` access point, static addresses, shared disks and a
+disk witness. The three-VM scenario in
+[roles/wsfc_fileserver/molecule/default](../../../wsfc_fileserver/molecule/default/README.md)
+covers those; what neither covers is listed in
+[issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19).

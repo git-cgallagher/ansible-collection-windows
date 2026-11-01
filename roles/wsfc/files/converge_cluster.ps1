@@ -344,11 +344,14 @@ function Invoke-Main {
                     $unitSize = [int](Get-Setting -Object $spec -Key 'allocation_unit_size' -Default 65536)
                     $volumeLabel = [string](Get-Setting -Object $spec -Key 'label' -Default '')
                     if (-not $volumeLabel) { $volumeLabel = $diskName }
+                    $driveLetter = [string](Get-Setting -Object $spec -Key 'drive_letter' -Default '')
+                    $partitionParams = @{ DiskNumber = $disk.Number; UseMaximumSize = $true }
+                    if ($driveLetter) { $partitionParams.DriveLetter = $driveLetter.TrimEnd(':').ToUpperInvariant() }
                     Invoke-Change "initialize disk $($disk.Number) ($diskName) as GPT and format it $fileSystem ($unitSize-byte units)" {
                         if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false }
                         if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false }
                         Initialize-Disk -Number $disk.Number -PartitionStyle GPT
-                        $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize
+                        $partition = New-Partition @partitionParams
                         $null = Format-Volume -Partition $partition -FileSystem $fileSystem -AllocationUnitSize $unitSize `
                             -NewFileSystemLabel $volumeLabel
                     }

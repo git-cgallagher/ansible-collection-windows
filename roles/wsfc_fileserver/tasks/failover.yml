@@ -1,0 +1,110 @@
+---
+# tasks_from: failover. A planned failover with proof: markers written through
+# the shares before the move must read back through them after it.
+- name: Require a file server, a client host and shares to check
+  ansible.builtin.assert:
+    that:
+      - wsfc_fileserver_name | default('') | length > 0
+      - wsfc_fileserver_manage_node | length == 0 or wsfc_fileserver_manage_node in ansible_play_hosts_all
+      - wsfc_fileserver_validate_client | length == 0 or wsfc_fileserver_validate_client in hostvars
+      - wsfc_fileserver_check_shares | length > 0
+      - wsfc_fileserver_failover_timeout | int > 0
+    fail_msg: >-
+      wsfc_fileserver_name must be set, wsfc_fileserver_manage_node must be a host in this play,
+      wsfc_fileserver_validate_client an inventory host, wsfc_fileserver_failover_timeout positive, and there must
+      be shares to check (wsfc_fileserver_validate_shares, or the names in wsfc_fileserver_shares)
+    quiet: true
+  vars:
+    wsfc_fileserver_check_shares: &check_shares >-
+      {{ wsfc_fileserver_validate_shares if wsfc_fileserver_validate_shares | length > 0 else
+         wsfc_fileserver_shares | map(attribute='name') | list }}
+
+- name: Read the file server's cluster group
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/failover_group.ps1') }}"
+    parameters:
+      Name: "{{ wsfc_fileserver_name }}"
+      Mode: state
+  vars: &become_vars
+    ansible_become_password: "{{ wsfc_fileserver_become_password }}"
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: &manage_node "{{ wsfc_fileserver_manage_node if wsfc_fileserver_manage_node | length > 0 else ansible_play_hosts[0] }}"
+  run_once: true
+  register: wsfc_fileserver_group
+  check_mode: false
+
+- name: Require the group to be online before moving it
+  ansible.builtin.assert:
+    that: wsfc_fileserver_group.result.before.state == 'Online'
+    fail_msg: "{{ wsfc_fileserver_name }} is not online: {{ wsfc_fileserver_group.result.before | to_json }}"
+    quiet: true
+  run_once: true
+
+- name: Choose a marker for this failover
+  ansible.builtin.set_fact:
+    wsfc_fileserver_marker: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_lowercase', 'digits'], length=16) }}"
+  run_once: true
+
+- name: Write a marker into every share from the client
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/probe_shares.ps1') }}"
+    parameters:
+      Server: "{{ wsfc_fileserver_name }}"
+      Shares: *check_shares
+      Mode: mark
+      Marker: "{{ wsfc_fileserver_marker }}"
+  vars: *become_vars
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: &client >-
+    {{ wsfc_fileserver_validate_client if wsfc_fileserver_validate_client | length > 0 else
+       wsfc_fileserver_manage_node if wsfc_fileserver_manage_node | length > 0 else ansible_play_hosts[0] }}
+  run_once: true
+  when: not ansible_check_mode
+
+- name: Move the file server to another node
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/failover_group.ps1') }}"
+    parameters:
+      Name: "{{ wsfc_fileserver_name }}"
+      Mode: move
+      TargetNode: "{{ wsfc_fileserver_failover_to }}"
+      TimeoutSeconds: "{{ wsfc_fileserver_failover_timeout | int }}"
+      ReportOnly: "{{ ansible_check_mode }}"
+  vars: *become_vars
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: *manage_node
+  run_once: true
+  register: wsfc_fileserver_failover
+  check_mode: false
+
+- name: Read the markers back and write again from the client
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/probe_shares.ps1') }}"
+    parameters:
+      Server: "{{ wsfc_fileserver_name }}"
+      Shares: *check_shares
+      Mode: check
+      Marker: "{{ wsfc_fileserver_marker }}"
+  vars: *become_vars
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: *client
+  run_once: true
+  register: wsfc_fileserver_validation
+  when: not ansible_check_mode
+
+- name: Report the failover
+  ansible.builtin.debug:
+    msg:
+      - "{{ wsfc_fileserver_name }}: {{ wsfc_fileserver_failover.result.from }} -> {{ wsfc_fileserver_failover.result.to }}{{
+          ' (check mode: not moved)' if ansible_check_mode else
+          ' in ' ~ wsfc_fileserver_failover.result.seconds ~ ' s' }}"
+      - "shares validated: {{ wsfc_fileserver_validation.result.shares | default([]) | map(attribute='share') | list }}"
+  run_once: true
