@@ -68,7 +68,9 @@ role):
 
 - `roles/gpo_backup/molecule/default`: the export, its manifest and backup
   folders, an unchanged domain shipping nothing, a check-mode run predicting
-  a changed GPO without writing, and that GPO then shipping alone.
+  a changed GPO while leaving the working directory byte-for-byte as it was
+  (and not creating a missing one), and that GPO then shipping alone, the
+  list check mode planned.
 - `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
   report-only plan (check mode: predicts the drift, writes nothing, no state
   file), the cpassword refusal, import, idempotence, verify (including a
@@ -176,6 +178,13 @@ lab to the scripts — and record the surprise below as a gotcha.
   (`check_mode: "{{ true if x | bool else omit }}"`: `omit` keeps the play's
   own check mode in force; a templated `false` would switch `--check` off
   for that task).
+- **Check mode writes nothing on the management host** (owner rule,
+  2026-11-01, issue #39): no working directory, no staging, no scratch
+  files, no temp path, however short-lived. A module that needs data a write
+  would produce reads the live source instead: `gpo_export` hashes each GPO's
+  Group Policy Template under `\\<dc>\SYSVOL\<domain>\Policies\{guid}`
+  (minus `gpt.ini`) in both modes, so check mode and the real run decide from
+  the same hash and `Backup-GPO` runs only for the GPOs that ship (0.8.0).
 - `wsfc` passes its structured variables (quorum, networks, properties,
   disks) to `wsfc_cluster` as the module's typed nested options. In the
   module, a list option left out is `$null` and `@($null).Count` is 1, so
@@ -458,7 +467,10 @@ ansible-galaxy collection build --force
 - `Import-GPO` **replaces the whole GPO** and bumps its version (clients
   reprocess). That's why both roles hash content and keep state files
   (`C:\ProgramData\gpo-iac\*-state-<domain>.json` on the management host) —
-  don't "simplify" that away.
+  don't "simplify" that away. `gpo_export`'s state hashes the live SYSVOL
+  template (`hash_basis: sysvol`, 0.8.0); a state file without that key came
+  from the backup-basis hash of 0.5.0–0.7.x and never matches, so the first
+  export after upgrading re-ships every GPO once.
 - Security filtering: never remove a trustee's last permission — downgrade
   Apply→Read (MS16-072). The import does this; keep it that way.
 - Trustee names in the manifest are domain-relative (source NetBIOS prefix
