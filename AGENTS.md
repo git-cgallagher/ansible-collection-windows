@@ -153,7 +153,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   mode, and stay Windows PowerShell 5.1-compatible and pslint-clean like the
   roles' scripts. The IIS modules use IIS's native configuration API
   (`Microsoft.ApplicationHost.AdminManager`/`WritableAdminManager`, what
-  `appcmd.exe` uses), which ships with the `Web-Server` feature itself.
+  `appcmd.exe` uses), which ships with the `Web-Server` feature itself, and
+  call it only through `_IisConfig.psm1`'s `Invoke-IisComMember` and
+  `Set-IisElementValue`, never as `$element.Method()` (see Gotchas).
 - **A module's tests are an ansible-test integration target named after
   it**, in `tests/integration/targets/<module>/`: `aliases` (`windows`),
   `meta/main.yml` (depends on the area's `setup_<area>` target) and `tasks/`.
@@ -309,6 +311,27 @@ ansible-galaxy collection build --force
   `try`/`catch` (probed in ansible-test's container), but a `catch` that did
   catch it would report a second failure. The IIS modules record a refusal
   inside the block and fail after it, and call `FailJson` in `catch` blocks.
+- **PowerShell's own COM binding can't call IIS's configuration API.** On
+  the lab VM (Windows Server 2022, Windows PowerShell 5.1), the first method
+  call on a `Microsoft.ApplicationHost.AdminManager` object threw `Object
+  reference not set to an instance of an object.` from PowerShell's binder
+  (`ComInterop.IDispatchComObject.EnsureScanDefinedMethods`) before IIS saw
+  the call, on MTA and STA threads alike, and `Get-Member` lists no members
+  (the class is registered `ThreadingModel=Both`, so it isn't an apartment
+  problem). `Type.InvokeMember` over IDispatch, the way VBScript calls these
+  objects, works, and so does Microsoft.Web.Administration.
+  `_IisConfig.psm1` sends every call through `Invoke-IisComMember` /
+  `Set-IisElementValue`, which also pass arguments as base objects (IIS
+  must get its own element back, not a PSObject) and rethrow IIS's
+  COMException rather than PowerShell's `Exception calling "InvokeMember"`
+  wrapper. Found on 0.4.0's pull request (#22), whose first lab runs failed
+  this way.
+- **ansible-core 2.19+ renders a template that is one expression as its
+  native type.** `fail_msg: "{{ result }}"` becomes a dict, and `assert`
+  checks that `fail_msg` is a string or a list of strings before it
+  evaluates `that`, so even a passing assertion fails with `argument
+  'fail_msg' is of type dict`. End such a `fail_msg` in `| string`, or put
+  text around the expression.
 - **`IsLocallyStored` can't tell a `<location>` entry from a server-level
   one.** Microsoft.Web.Administration documents it per file, and both live
   in `applicationHost.config`. `iis_mime_type_info` decides `inherited` from
