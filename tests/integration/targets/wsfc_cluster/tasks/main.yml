@@ -225,6 +225,7 @@
     - name: Drift a property and the network's name out-of-band
       ansible.windows.win_powershell:
         script: |
+          param([string]$Name)
           $ErrorActionPreference = 'Stop'
           Import-Module -Name FailoverClusters
           $cluster = Get-Cluster -Name $env:COMPUTERNAME
