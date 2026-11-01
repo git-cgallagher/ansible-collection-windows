@@ -46,20 +46,20 @@
           - lab_f.addresses == [lab_fileserver.address]
           - lab_f.preferred_owners == ['NODE1', 'NODE2']
           - (lab_c.disks | selectattr('name', 'equalto', 'FS Data') | first).group == lab_fileserver.name
-          - lab_f.shares | map(attribute='name') | sort == ['AppData', 'Projects']
+          - lab_state.result.shares | map(attribute='name') | sort == ['AppData', 'Projects']
           - lab_projects.path == lab_fileserver.share_root ~ '\Projects'
           - lab_projects.description == 'Team projects'
           - lab_projects.folder_enumeration_mode == 'AccessBased'
           - not lab_projects.continuously_available
-          - lab_projects.access == [lab_netbios ~ '\Domain Admins:Full', lab_netbios ~ '\Domain Users:Change']
+          - lab_projects.access == lab_netbios ~ '\Domain Admins:Full;' ~ lab_netbios ~ '\Domain Users:Change'
           - lab_appdata.continuously_available
-          - lab_appdata.access == [lab_netbios ~ '\Domain Admins:Full']
+          - lab_appdata.access == lab_netbios ~ '\Domain Admins:Full'
         fail_msg: "File server state: {{ lab_f | to_nice_json }}"
       vars:
         lab_c: "{{ lab_state.result }}"
         lab_f: "{{ lab_state.result.fileserver }}"
-        lab_projects: "{{ lab_f.shares | selectattr('name', 'equalto', 'Projects') | first }}"
-        lab_appdata: "{{ lab_f.shares | selectattr('name', 'equalto', 'AppData') | first }}"
+        lab_projects: "{{ lab_state.result.shares | selectattr('name', 'equalto', 'Projects') | first }}"
+        lab_appdata: "{{ lab_state.result.shares | selectattr('name', 'equalto', 'AppData') | first }}"
       run_once: true
 
     # 2. The shares from a client (dc01), through \\FSLAB\<share>.
@@ -164,6 +164,6 @@
 
     - name: Check the description is back
       ansible.builtin.assert:
-        that: (lab_state_after.result.fileserver.shares | selectattr('name', 'equalto', 'Projects') | first).description == 'Team projects'
-        fail_msg: "{{ lab_state_after.result.fileserver | to_nice_json }}"
+        that: (lab_state_after.result.shares | selectattr('name', 'equalto', 'Projects') | first).description == 'Team projects'
+        fail_msg: "{{ lab_state_after.result.shares | to_nice_json }}"
       run_once: true

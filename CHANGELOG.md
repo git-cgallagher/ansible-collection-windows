@@ -20,6 +20,13 @@ Clustered file servers, and the first multi-node cluster lab.
   share takes a new write. It reports how long the move took.
 - `wsfc`: `wsfc_disks` takes a `drive_letter` for the volume that `initialize`
   creates, so shares and SQL Server paths can name it.
+- `wsfc`: removes a cluster name address on a network in
+  `wsfc_ignore_networks` (never the name's last one). `New-Cluster` added one
+  there despite `-IgnoreNetwork` in the lab, and the name would register it
+  in DNS.
+- `wsfc`: a static address's network needs a default gateway when the cluster
+  is created (`New-Cluster` gives the client role only to such networks); the
+  variable's documentation now says so.
 - New Molecule scenario `roles/wsfc_fileserver/molecule/default` (the
   `domain-lab` workflow's `molecule (wsfc_fileserver)` job, about an hour):
   three VMs on a lab network, a domain controller that also serves two iSCSI

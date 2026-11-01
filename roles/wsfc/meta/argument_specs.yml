@@ -65,6 +65,8 @@ argument_specs:
         description:
           - Networks in CIDR form (V(10.10.20.0/24)) that C(New-Cluster) must not use for the cluster's IP address,
             such as storage or backup networks.
+          - C(New-Cluster) can still give the cluster name a DHCP address on one of them, which the name then registers
+            in DNS; the role removes such an address on every run, unless it's the name's only one.
       wsfc_extra_features:
         type: list
         elements: str

@@ -30,8 +30,9 @@ function Get-GroupState {
     [ordered]@{
         state = [string]$group.State
         owner = [string]$group.OwnerNode.Name
+        # Strings: win_powershell renders objects nested this deep as their type name.
         resources = @(Get-ClusterResource -Cluster $Conn | Where-Object { $_.OwnerGroup.Name -eq $Name } |
-                ForEach-Object { [ordered]@{ name = $_.Name; type = $_.ResourceType.Name; state = [string]$_.State } })
+                ForEach-Object { '{0} ({1}): {2}' -f $_.Name, $_.ResourceType.Name, $_.State })
     }
 }
 

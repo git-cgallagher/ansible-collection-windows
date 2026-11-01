@@ -341,6 +341,20 @@ ansible-galaxy collection build --force
   its role to none. If `New-Cluster` ever fails over it, the fix is per-VM
   user-network subnets in the driver, not here.
 
+- **`New-Cluster -IgnoreNetwork` doesn't always keep the cluster name off a
+  network.** The third three-VM run (2026-11-01, PR #36) built the cluster
+  with `-IgnoreNetwork 10.0.2.0/24`, and the cluster name still had two IP
+  Address resources: 10.42.0.100 and a DHCP 10.0.2.15 on the management
+  network (the file server's `Add-ClusterFileServerRole -IgnoreNetwork` was
+  fine). `converge_cluster.ps1` now removes a cluster name address on an
+  ignored network (step 3b), never the last one. The same run passed
+  create, prepare, converge (cluster and file server) and idempotence.
+
+- **`win_powershell` renders anything nested deeper than `Result.x[i]` as its
+  type name.** A list of hashtables inside a hashtable in `$Ansible.Result`
+  came back as `"System.Collections.Hashtable"` strings. Keep result lists of
+  objects at the top level, and nested lists as strings.
+
 - **`New-Cluster` puts a static address only on a network with a default
   gateway.** At creation, the client role (ClusterAndClient, the only one
   that can hold the cluster name's address) goes only to networks whose NICs

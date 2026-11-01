@@ -11,7 +11,8 @@
 #   2. Test-Cluster (optional) whenever nodes are about to join, then
 #      New-Cluster, or Add-ClusterNode for the nodes it is missing; extra
 #      nodes are reported, never evicted
-#   3. cluster networks: name, role and metric, matched by subnet
+#   3. cluster networks: name, role and metric, matched by subnet; then
+#      remove cluster name addresses on ignored networks (never the last)
 #   4. cluster common properties
 #   5. named shared disks: optional first-time format of RAW disks,
 #      Add-ClusterDisk, rename, optional Cluster Shared Volume
@@ -284,6 +285,44 @@ function Invoke-Main {
         if ($newName -and $net.Name -ne $newName) {
             Invoke-Change "rename network $label ($subnetText) to $newName" {
                 $net.Name = $newName
+            }
+        }
+    }
+
+    # --- 3b. cluster name addresses on ignored networks -------------------------
+    # New-Cluster -IgnoreNetwork still gave the cluster name a DHCP address on
+    # an ignored network in the lab (2026-11-01), which the name then
+    # registers in DNS. Remove such addresses; the name keeps its others.
+    if ($IgnoreNetworks.Count -gt 0 -and $AdministrativeAccessPoint -ne 'None') {
+        $nameAddresses = @(Get-ClusterResource -Cluster $conn | Where-Object {
+                (Get-ResourceTypeName $_) -eq 'IP Address' -and [string]$_.OwnerGroup.Name -eq 'Cluster Group' })
+        $remaining = $nameAddresses.Count
+        foreach ($ip in $nameAddresses) {
+            $netName = [string]($ip | Get-ClusterParameter -Name Network).Value
+            $ipNet = Get-ClusterNetwork -Cluster $conn | Where-Object { $_.Name -eq $netName } | Select-Object -First 1
+            if ($null -eq $ipNet) { continue }
+            $ignored = $false
+            foreach ($cidr in $IgnoreNetworks) {
+                if ($cidr -match '^(.+)/(\d+)$' -and (Test-NetworkMatch -Network $ipNet -Subnet $Matches[1] -Prefix ([int]$Matches[2]))) {
+                    $ignored = $true
+                }
+            }
+            if (-not $ignored) { continue }
+            if ($remaining -le 1) {
+                $warnings.Add("The cluster name's only address, $($ip.Name), is on ignored network $netName; it was left")
+                continue
+            }
+            $address = [string]($ip | Get-ClusterParameter -Name Address).Value
+            $remaining--
+            Invoke-Change "remove cluster name address $address ($($ip.Name)) on ignored network $netName" {
+                $nameResource = Get-ClusterResource -Cluster $conn | Where-Object {
+                    (Get-ResourceTypeName $_) -eq 'Network Name' -and [string]$_.OwnerGroup.Name -eq 'Cluster Group' } |
+                    Select-Object -First 1
+                $null = Stop-ClusterResource -Cluster $conn -Name $ip.Name
+                if ($null -ne $nameResource) {
+                    $null = Remove-ClusterResourceDependency -Cluster $conn -Resource $nameResource.Name -Provider $ip.Name
+                }
+                Remove-ClusterResource -Cluster $conn -Name $ip.Name -Force
             }
         }
     }

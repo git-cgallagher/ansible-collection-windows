@@ -22,7 +22,10 @@ it:
 Safety behaviour:
 
 - nodes, disks, networks and witnesses the variables don't list are never
-  removed; extra ones are reported as warnings;
+  removed; extra ones are reported as warnings. The one exception: a cluster
+  name address on a network in `wsfc_ignore_networks` is removed (never the
+  name's last address), because `New-Cluster` can add one there despite
+  `-IgnoreNetwork`, and the name would register it in DNS;
 - a disk is only formatted when `initialize` is set **and** it is still RAW;
 - a feature install that needs a reboot fails unless
   `wsfc_allow_reboot: true`;

@@ -28,7 +28,9 @@ $readShares = {
             description = [string]$share.Description
             continuously_available = [bool]$share.ContinuouslyAvailable
             folder_enumeration_mode = [string]$share.FolderEnumerationMode
-            access = @($access | Sort-Object)
+            # One string: win_powershell renders a list nested this deep as
+            # its type name.
+            access = (@($access | Sort-Object) -join ';')
         }
     }
 }
@@ -55,6 +57,8 @@ $Ansible.Result = @{
         addresses = @(Get-ClusterResource -Cluster $conn | Where-Object {
                 [string]$_.ResourceType -eq 'IP Address' -and [string]$_.OwnerGroup.Name -eq $FileServer } |
                 ForEach-Object { [string]($_ | Get-ClusterParameter -Name Address).Value })
-        shares = @($shares)
     }
+    # Top level: win_powershell renders objects nested deeper than this as
+    # their type name ("System.Collections.Hashtable").
+    shares = @($shares)
 }
