@@ -409,6 +409,18 @@ ansible-galaxy collection build --force
   ignored network (step 3b), never the last one. The same run passed
   create, prepare, converge (cluster and file server) and idempotence.
 
+- **Don't `Test-Path` a share root under `$ErrorActionPreference = 'Stop'`.**
+  `wsfc_fileserver`'s client probe checked `\\FSLAB\<share>` with
+  `Test-Path` first and failed every share with
+  `UnauthorizedAccessException: Access is denied` (four three-VM runs,
+  2026-11-01, PR #36). The same account in the same kind of logon wrote to
+  the same shares fine by name, FQDN and IP, with Kerberos tickets for
+  `cifs/FSLAB`, so the server, permissions and Kerberos weren't at fault.
+  The probe uses `[System.IO.Directory]::Exists` / `[System.IO.File]::Exists`
+  now, which return false instead of throwing. That `Test-Path` raised the
+  error is inferred from it being the only difference; confirmed only if the
+  next run passes.
+
 - **Don't take a node's computer name from `ansible_facts.hostname`.** On
   the three-VM lab's slow nodes, `ansible.windows.setup` (`min` subset)
   warned "Failed to collect platform due to timeout" and left the fact unset,
