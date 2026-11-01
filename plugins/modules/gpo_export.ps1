@@ -320,6 +320,16 @@ try {
     $safeSeen = @{}
     $shipped = New-Object System.Collections.ArrayList
     $newState = @{ gpos = @{}; manifest_hash = '' }
+    # A filtered run (gpo_names) keeps the unselected GPOs' recorded hashes, so
+    # the next full export doesn't re-ship them; the selected ones are rewritten
+    # below. An unfiltered run starts empty, which is how a deleted GPO shows.
+    if ($GpoNames.Count -gt 0) {
+        foreach ($name in $state.gpos.Keys) {
+            if ($GpoNames -notcontains $name) {
+                $newState.gpos[$name] = @{ hash = $state.gpos[$name].hash; dir = $state.gpos[$name].dir }
+            }
+        }
+    }
 
     foreach ($gpo in $live) {
         $safe = ConvertTo-SafeName -Name $gpo.DisplayName

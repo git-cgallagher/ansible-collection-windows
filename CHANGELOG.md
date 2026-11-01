@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.10.0 — 2026-11-01
+
+Every module has its own integration target (issue #44).
+
+- `gpo_export` and `gpo_import` get ansible-test integration targets
+  (`tests/integration/targets/gpo_export`, `gpo_import`, with the shared
+  `setup_gpo_lab`), run from the `gpo_backup` and `gpo_import` roles'
+  Molecule scenarios after the roles' own checks, the way `wsfc_cluster` runs
+  from `wsfc`'s. Each covers check mode (predicts, writes nothing, the
+  preflight facts), the real run and its documented result keys, the repeat
+  (`changed: false`), every documented failure path and the module's options:
+  for `gpo_export` the manifest against the fixture, a changed GPO shipping
+  alone, a new and a deleted GPO, `gpo_names`, an ACL-denied working
+  directory, one with no existing parent and two GPOs mapping to one folder
+  name; for `gpo_import` the fixture's drift, the plans against it, the forced
+  converge back, `remove_unmanaged_links`, `create_wmi_filters`, the migration
+  table, the cpassword refusal, an incomplete backup folder, a missing
+  manifest, a missing migration table, a GPO missing from both domain and
+  export, and an ACL-denied `state_dir`. The roles' scenarios keep role
+  behaviour (staging, fetch/unpack, variables, report-only) and leave the
+  module's to the targets; `new_migtable.ps1` moved to `setup_gpo_lab`.
+- The `hygiene` CI job fails when a `plugins/modules/<name>.ps1` has no
+  `tests/integration/targets/<name>/tasks/main.yml`. AGENTS.md records the
+  standard: what a module's target must cover and where it runs.
+- **Fix:** a `gpo_export` run with `gpo_names` keeps the unselected GPOs'
+  hashes in the state file. Before, it rewrote the state with the selected
+  GPOs only, so the next unfiltered export re-shipped every other GPO and
+  forgot which GPOs had been deleted. Found by the new target.
+
 ## 0.9.0 — 2026-11-01
 
 `gpo_import` proves a plan could run (issue #41).

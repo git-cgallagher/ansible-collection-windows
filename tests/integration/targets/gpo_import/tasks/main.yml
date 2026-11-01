@@ -1,0 +1,755 @@
+---
+# Integration tests for git_cgallagher.windows.gpo_import, on a domain
+# controller of the lab domain. setup_gpo_lab (meta/main.yml) has read the
+# domain's name and checked the fixture is seeded. Every check reads the domain
+# through setup_gpo_lab's read_domain.ps1 (GPMC, AD and SYSVOL), never through
+# the module under test.
+#
+# The export the tests import is the domain's own authored state, written by
+# gpo_export (the manifest is the two modules' contract) and unpacked on the
+# host from the documented zip. The tests then drift the domain with the lab
+# fixture's -Action Drift, the way the gpo_import role's scenario does, and
+# converge it back. Everything they write lives under setup_gpo_lab_dir, apart
+# from the role's defaults, and is removed at the end; the always block also
+# converges the domain back if a step failed with it drifted, so the target
+# runs twice on the same host.
+- name: Read the domain before the tests
+  ansible.windows.win_powershell:
+    script: "{{ setup_gpo_lab_read_script }}"
+    parameters:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+    depth: 6
+  register: gpo_import_authored
+
+- name: Test gpo_import, then clean up
+  vars:
+    gpo_import_fx: "{{ setup_gpo_lab_fixture }}"
+    gpo_import_dir: '{{ setup_gpo_lab_dir }}\import'
+    gpo_import_export_dir: '{{ gpo_import_dir }}\export'
+    gpo_import_source_dir: '{{ gpo_import_dir }}\source'
+    gpo_import_state_dir: '{{ gpo_import_dir }}\state'
+    gpo_import_state_file: '{{ gpo_import_state_dir }}\import-state-{{ setup_gpo_lab_domain | lower }}.json'
+    gpo_import_denied_state_dir: '{{ gpo_import_dir }}\state-denied'
+    gpo_import_cpassword_dir: '{{ gpo_import_dir }}\source-cpassword'
+    gpo_import_nofolder_dir: '{{ gpo_import_dir }}\source-nofolder'
+    gpo_import_incomplete_dir: '{{ gpo_import_dir }}\source-incomplete'
+    gpo_import_empty_dir: '{{ gpo_import_dir }}\source-empty'
+    gpo_import_migtable: migtables/helpdesk.migtable
+    gpo_import_migtable_path: '{{ gpo_import_source_dir }}\migtables\helpdesk.migtable'
+    gpo_import_servers_som: "OU=Servers,OU={{ gpo_import_fx.ou }},{{ setup_gpo_lab_root_dn }}"
+    gpo_import_workstations_som: "OU=Workstations,OU={{ gpo_import_fx.ou }},{{ setup_gpo_lab_root_dn }}"
+    gpo_import_result_keys: [preflight, actions, notices, errors, imported, gpo_count, som_count, server, state_file]
+    gpo_import_read_params:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+    # The module's options for a converge of the whole manifest.
+    gpo_import_converge: &gpo_import_converge
+      domain: "{{ setup_gpo_lab_domain }}"
+      source_dir: "{{ gpo_import_source_dir }}"
+      state_dir: "{{ gpo_import_state_dir }}"
+      create_wmi_filters: true
+      remove_unmanaged_links: true
+  block:
+    # --- the export to import: the authored state, unpacked from the zip -------------------
+    - name: Start from an empty test directory
+      ansible.windows.win_file:
+        path: "{{ gpo_import_dir }}"
+        state: "{{ item }}"
+      loop: [absent, directory]
+
+    - name: Export the authored state
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_import_export_dir }}"
+        full_export: true
+      register: gpo_import_export
+
+    - name: Unpack the export into the source directory
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Zip, [string]$Destination)
+          Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Destination)
+        parameters:
+          Zip: "{{ gpo_import_export.zip }}"
+          Destination: "{{ gpo_import_source_dir }}"
+
+    - name: Read the manifest
+      ansible.windows.slurp:
+        src: '{{ gpo_import_source_dir }}\gpo-manifest.json'
+      register: gpo_import_manifest_file
+
+    - name: Remember the manifest
+      ansible.builtin.set_fact:
+        gpo_import_manifest: "{{ gpo_import_manifest_file.content | b64decode | from_json }}"
+
+    - name: Check the export is the whole domain
+      ansible.builtin.assert:
+        that:
+          - gpo_import_export.shipped | length == gpo_import_authored.result.topology.gpos | length
+          - gpo_import_manifest.gpos.keys() | list | sort == gpo_import_authored.result.topology.gpos.keys() | list | sort
+        fail_msg: "{{ gpo_import_export }} / {{ gpo_import_manifest.gpos.keys() | list }}"
+
+    # --- the first import: check mode, real, repeat ------------------------------------------
+    # The domain already matches the export, but no import is recorded yet, so
+    # the first run imports every GPO once ("never imported by this pipeline")
+    # and plans nothing else.
+    - name: Plan the first import (check mode)
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+      check_mode: true
+      diff: true
+      register: gpo_import_first_check
+
+    - name: Look for the state file after the plan
+      ansible.windows.win_stat:
+        path: "{{ gpo_import_state_file }}"
+      register: gpo_import_state_after_plan
+
+    - name: Look for a leftover state_dir probe file
+      ansible.windows.win_find:
+        paths: "{{ gpo_import_dir }}"
+        patterns: ['.gpo-import-probe-*.tmp']
+        hidden: true
+        file_type: any
+      register: gpo_import_probe_files
+
+    - name: Read the domain after the plan
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_read
+
+    - name: Check check mode planned every import, proved the run could work and touched nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_result_keys | difference(gpo_import_first_check.keys() | list) == []
+          - gpo_import_first_check is changed
+          - gpo_import_first_check.gpo_count == gpo_import_manifest.gpos | length
+          - gpo_import_first_check.imported == gpo_import_first_check.gpo_count
+          - gpo_import_first_check.actions | length == gpo_import_first_check.gpo_count
+          - gpo_import_first_check.actions | reject('search', "^import GPO '.*' [(]never imported by this pipeline[)]$") | list == []
+          - gpo_import_first_check.notices == []
+          - gpo_import_first_check.errors == []
+          - gpo_import_first_check.som_count == gpo_import_manifest.soms | length
+          - gpo_import_first_check.server | lower == setup_gpo_lab_pdc | lower
+          - gpo_import_first_check.state_file | lower == gpo_import_state_file | lower
+          - gpo_import_first_check.diff.prepared.splitlines() == gpo_import_first_check.actions
+          - gpo_import_p.passed
+          - gpo_import_p.errors == []
+          - (gpo_import_p.manifest | lower).startswith(gpo_import_source_dir | lower)
+          - gpo_import_p.manifest | lower is search('gpo-manifest[.]json$')
+          - gpo_import_p.manifest_valid
+          - gpo_import_p.backup_folders == gpo_import_first_check.gpo_count
+          - gpo_import_p.backup_folders_incomplete == []
+          - gpo_import_p.cpassword_clean
+          - gpo_import_p.migration_table is none
+          - gpo_import_p.migration_table_valid is none
+          - gpo_import_p.state_dir | lower == gpo_import_state_dir | lower
+          - not gpo_import_p.state_dir_exists
+          - gpo_import_p.state_dir_probe | lower == gpo_import_dir | lower
+          - gpo_import_p.state_dir_writable
+          - gpo_import_p.domain_reachable
+          - gpo_import_p.server | lower == setup_gpo_lab_pdc | lower
+          - gpo_import_p.gpmc_reachable
+          - gpo_import_p.live_gpo_count == gpo_import_first_check.gpo_count
+          - gpo_import_p.links_readable
+          - gpo_import_p.wmi_filters_readable
+          - gpo_import_p.live_wmi_filter_count == gpo_import_authored.result.topology.wmi_filters | length
+          - not gpo_import_state_after_plan.stat.exists
+          - gpo_import_probe_files.matched == 0
+          - gpo_import_read.result.topology == gpo_import_authored.result.topology
+          - gpo_import_read.result.versions == gpo_import_authored.result.versions
+          - gpo_import_read.result.settings == gpo_import_authored.result.settings
+        fail_msg: "{{ gpo_import_first_check }} / {{ gpo_import_read.result }}"
+      vars:
+        gpo_import_p: "{{ gpo_import_first_check.preflight }}"
+
+    - name: Import the export
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+      diff: true
+      register: gpo_import_first
+
+    - name: Read the state file after the import
+      ansible.windows.slurp:
+        src: "{{ gpo_import_state_file }}"
+      register: gpo_import_state_file_read
+
+    - name: Read the domain after the import
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_read
+
+    # Import-GPO replaces each GPO (its version bumps) with the same settings.
+    - name: Check the import did what the plan said and recorded it
+      ansible.builtin.assert:
+        that:
+          - gpo_import_first is changed
+          - gpo_import_first.actions == gpo_import_first_check.actions
+          - gpo_import_first.imported == gpo_import_first_check.imported
+          - gpo_import_first.errors == []
+          - gpo_import_first.notices == []
+          - gpo_import_first.diff.prepared.splitlines() == gpo_import_first.actions
+          - gpo_import_first.preflight.passed
+          - gpo_import_state.gpos.keys() | list | sort == gpo_import_manifest.gpos.keys() | list | sort
+          - gpo_import_read.result.topology == gpo_import_authored.result.topology
+          - gpo_import_read.result.settings == gpo_import_authored.result.settings
+          - gpo_import_read.result.versions != gpo_import_authored.result.versions
+        fail_msg: "{{ gpo_import_first }} / {{ gpo_import_read.result }}"
+      vars:
+        gpo_import_state: "{{ gpo_import_state_file_read.content | b64decode | from_json }}"
+
+    - name: Import the export again
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+      diff: true
+      register: gpo_import_again
+
+    - name: Plan the import again (check mode)
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+      check_mode: true
+      register: gpo_import_again_check
+
+    - name: Check a converged domain needs nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_again is not changed
+          - gpo_import_again.actions == []
+          - gpo_import_again.imported == 0
+          - gpo_import_again.diff.prepared == ''
+          - gpo_import_again.notices == []
+          - gpo_import_again_check is not changed
+          - gpo_import_again_check.actions == []
+        fail_msg: "{{ gpo_import_again }} / {{ gpo_import_again_check }}"
+
+    # --- out-of-band drift: the plans, then the converge ------------------------------------
+    - name: Drift the domain out-of-band
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_fixture_script }}"
+        parameters:
+          Action: Drift
+          Domain: "{{ setup_gpo_lab_domain }}"
+          FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+
+    - name: Read the drifted domain
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_drifted
+
+    - name: Check the drift took
+      ansible.builtin.assert:
+        that:
+          - gpo_import_fx.gpo_rdp not in gpo_import_drifted.result.topology.gpos
+          - gpo_import_fx.wmi_filter not in gpo_import_drifted.result.topology.wmi_filters
+          - gpo_import_drifted.result.settings.password_min_length == 8
+        fail_msg: "{{ gpo_import_drifted.result | to_nice_json }}"
+
+    # With the defaults, a WMI filter the manifest names but the domain lacks is
+    # a warning, and the GPO that needs it is an error; an unmanaged link is a
+    # warning and stays. Check mode fails the same way a real run would.
+    - name: Plan with the defaults (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+      check_mode: true
+      register: gpo_import_defaults_check
+      failed_when: "'finished with 1 error' not in (gpo_import_defaults_check.msg | default(''))"
+
+    - name: Check the plan reported the missing filter and the unmanaged link
+      ansible.builtin.assert:
+        that:
+          - gpo_import_defaults_check.errors | length == 1
+          - gpo_import_defaults_check.errors[0] is search("WMI filter '" ~ gpo_import_fx.wmi_filter ~ "' not found in " ~ setup_gpo_lab_domain)
+          - gpo_import_defaults_check.notices | select('search', "WMI filter '" ~ gpo_import_fx.wmi_filter ~ "' does not exist") | list | length == 1
+          - gpo_import_defaults_check.notices | select('search', "unmanaged link '" ~ gpo_import_fx.gpo_password ~ "' left in place") | list | length == 1
+          - gpo_import_defaults_check.actions | select('search', 'create WMI filter') | list == []
+          - gpo_import_defaults_check.actions | select('search', 'remove unmanaged link') | list == []
+        fail_msg: "{{ gpo_import_defaults_check | string }}"
+
+    # Imports are keyed on the backup's content, not the live GPO's: the drift
+    # inside the password and local-admins GPOs isn't re-imported (force does
+    # that below); the deleted GPO is, because it's missing.
+    - name: Plan the converge (check mode)
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+      check_mode: true
+      diff: true
+      register: gpo_import_drift_check
+
+    - name: Read the domain after the plan of the converge
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_read
+
+    - name: Check the plan covers the drift and touched nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_drift_check is changed
+          - gpo_import_drift_check.errors == []
+          - gpo_import_drift_check.notices == []
+          - gpo_import_drift_check.imported == 1
+          - gpo_import_a | select('search', "^import GPO '" ~ gpo_import_fx.gpo_rdp ~ "' [(]GPO missing in target[)]$") | list | length == 1
+          - gpo_import_a | select('search', "^import GPO '" ~ gpo_import_fx.gpo_password ~ "'") | list == []
+          - gpo_import_a | select('search', "^create WMI filter '" ~ gpo_import_fx.wmi_filter ~ "'$") | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^GPO '" ~ gpo_import_fx.gpo_baseline ~ "': status AllSettingsDisabled -> AllSettingsEnabled$")
+            | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^GPO '" ~ gpo_import_fx.gpo_baseline ~ "': grant Apply to Group '" ~ gpo_import_fx.group ~ "'$")
+            | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^GPO '" ~ gpo_import_fx.gpo_baseline ~ "': downgrade 'Authenticated Users' from Apply to Read$")
+            | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^GPO '" ~ gpo_import_fx.gpo_baseline ~ "': link WMI filter '" ~ gpo_import_fx.wmi_filter ~ "' [(]after create[)]$")
+            | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^SOM '" ~ gpo_import_servers_som ~ "': remove unmanaged link '" ~ gpo_import_fx.gpo_password ~ "'$")
+            | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^SOM '" ~ gpo_import_servers_som ~ "': set link '" ~ gpo_import_fx.gpo_baseline ~ "' order 1 ")
+            | select('search', "[(]enforced=True, enabled=True[)]$") | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^SOM '" ~ gpo_import_workstations_som ~ "': block inheritance -> True$") | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^SOM '" ~ gpo_import_workstations_som ~ "': link '" ~ gpo_import_fx.gpo_ws_admins ~ "' at order 2")
+            | list | length == 1
+          - >-
+            gpo_import_a | select('search', "^SOM '" ~ setup_gpo_lab_root_dn ~ "': set link '" ~ gpo_import_fx.gpo_password ~ "' order 1") | list | length == 1
+          - gpo_import_drift_check.diff.prepared.splitlines() == gpo_import_a
+          - gpo_import_read.result.topology == gpo_import_drifted.result.topology
+          - gpo_import_read.result.versions == gpo_import_drifted.result.versions
+          - gpo_import_read.result.settings == gpo_import_drifted.result.settings
+        fail_msg: "{{ gpo_import_drift_check }} / {{ gpo_import_read.result }}"
+      vars:
+        gpo_import_a: "{{ gpo_import_drift_check.actions }}"
+
+    # A GPO that is missing from the domain and has no backup folder in the
+    # export can't be created: an error, with the rest of the plan intact.
+    - name: Copy the export without the deleted GPO's backup folder
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Source, [string]$Destination, [string]$Folder)
+          Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
+          Remove-Item -LiteralPath (Join-Path (Join-Path $Destination 'gpos') $Folder) -Recurse -Force
+        parameters:
+          Source: "{{ gpo_import_source_dir }}"
+          Destination: "{{ gpo_import_nofolder_dir }}"
+          Folder: "{{ gpo_import_manifest.gpos[gpo_import_fx.gpo_rdp].backup_dir }}"
+
+    - name: Plan from the export without the backup folder (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_nofolder_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+      check_mode: true
+      register: gpo_import_nofolder
+      failed_when: "'finished with 1 error' not in (gpo_import_nofolder.msg | default(''))"
+
+    - name: Check the missing backup folder was the one error
+      ansible.builtin.assert:
+        that:
+          - gpo_import_nofolder.preflight.passed
+          - gpo_import_nofolder.preflight.backup_folders == gpo_import_manifest.gpos | length - 1
+          - gpo_import_nofolder.errors | length == 1
+          - >-
+            gpo_import_nofolder.errors[0] is search("GPO '" ~ gpo_import_fx.gpo_rdp ~ "': does not exist in " ~ setup_gpo_lab_domain
+            ~ " and the export has no backup folder")
+          - gpo_import_nofolder.actions | select('search', "^import GPO '" ~ gpo_import_fx.gpo_rdp ~ "'") | list == []
+        fail_msg: "{{ gpo_import_nofolder | string }}"
+
+    - name: Converge the drifted domain, re-importing every GPO
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        force: true
+      diff: true
+      register: gpo_import_converged
+
+    - name: Converge again
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+      diff: true
+      register: gpo_import_converged_again
+
+    - name: Read the domain after the converge
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_read
+
+    - name: Check the domain is back to the authored state, and stays there
+      ansible.builtin.assert:
+        that:
+          - gpo_import_converged is changed
+          - gpo_import_converged.errors == []
+          - gpo_import_converged.notices == []
+          - gpo_import_converged.imported == gpo_import_manifest.gpos | length
+          - gpo_import_converged.actions | select('search', "[(]forced[)]$") | list | length == gpo_import_converged.imported
+          - gpo_import_converged.actions | select('search', "^create WMI filter '" ~ gpo_import_fx.wmi_filter ~ "'$") | list | length == 1
+          - gpo_import_converged.actions | select('search', "remove unmanaged link '" ~ gpo_import_fx.gpo_password ~ "'") | list | length == 1
+          - gpo_import_converged.diff.prepared.splitlines() == gpo_import_converged.actions
+          - gpo_import_converged_again is not changed
+          - gpo_import_converged_again.actions == []
+          - gpo_import_read.result.topology == gpo_import_authored.result.topology
+          - gpo_import_read.result.settings == gpo_import_authored.result.settings
+        fail_msg: "{{ gpo_import_converged }} / {{ gpo_import_converged_again }} / {{ gpo_import_read.result | to_nice_json }}"
+
+    # --- a migration table ----------------------------------------------------------------
+    # Restricted Groups members are SIDs in a security setting, so Import-GPO
+    # translates them through a migration table. Mapping the workstation admins
+    # group onto the helpdesk group inside one domain exercises the mechanism
+    # that maps lab groups onto production ones. The table is part of the GPO's
+    # recorded import key, so giving or dropping it re-imports the GPO.
+    - name: Build a migration table from the Workstation Local Admins GPO (GPMC API)
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_migtable_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          GpoName: "{{ gpo_import_fx.gpo_ws_admins }}"
+          SourceName: "{{ gpo_import_fx.ws_admins_group }}"
+          DestinationName: "{{ gpo_import_fx.helpdesk_group }}"
+          Path: "{{ gpo_import_migtable_path }}"
+
+    - name: Plan the import of one GPO through the migration table (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        gpo_names: ["{{ gpo_import_fx.gpo_ws_admins }}"]
+        migration_table_path: "{{ gpo_import_migtable }}"
+      check_mode: true
+      register: gpo_import_mapped_check
+
+    - name: Import one GPO through the migration table
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        gpo_names: ["{{ gpo_import_fx.gpo_ws_admins }}"]
+        migration_table_path: "{{ gpo_import_migtable }}"
+      register: gpo_import_mapped
+
+    - name: Import it through the migration table again
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        gpo_names: ["{{ gpo_import_fx.gpo_ws_admins }}"]
+        migration_table_path: "{{ gpo_import_migtable }}"
+      register: gpo_import_mapped_again
+
+    - name: Read the domain after the mapped import
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_read_mapped
+
+    - name: Check the migration table translated the member, once
+      ansible.builtin.assert:
+        that:
+          - gpo_import_mapped_check is changed
+          - gpo_import_mapped_check.gpo_count == 1
+          - gpo_import_mapped_check.imported == 1
+          - gpo_import_mapped_check.actions == [gpo_import_mapped_action]
+          - (gpo_import_mapped_check.preflight.migration_table | lower).startswith(gpo_import_source_dir | lower)
+          - gpo_import_mapped_check.preflight.migration_table | lower is search('helpdesk[.]migtable$')
+          - gpo_import_mapped_check.preflight.migration_table_valid
+          - gpo_import_mapped is changed
+          - gpo_import_mapped.actions == gpo_import_mapped_check.actions
+          - gpo_import_mapped_again is not changed
+          - gpo_import_mapped_again.actions == []
+          - gpo_import_sids[gpo_import_fx.helpdesk_group] in gpo_import_read_mapped.result.settings.ws_admins_members
+          - gpo_import_sids[gpo_import_fx.ws_admins_group] not in gpo_import_read_mapped.result.settings.ws_admins_members
+          - gpo_import_read_mapped.result.topology == gpo_import_authored.result.topology
+        fail_msg: "{{ gpo_import_mapped_check }} / {{ gpo_import_mapped }} / {{ gpo_import_read_mapped.result.settings }}"
+      vars:
+        gpo_import_sids: "{{ gpo_import_read_mapped.result.group_sids }}"
+        gpo_import_mapped_action: "import GPO '{{ gpo_import_fx.gpo_ws_admins }}' (backup content or migration table changed) [migration table]"
+
+    - name: Import it again without the migration table
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        gpo_names: ["{{ gpo_import_fx.gpo_ws_admins }}"]
+      register: gpo_import_unmapped
+
+    - name: Read the domain after the unmapped import
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_read
+
+    - name: Check the original member is back
+      ansible.builtin.assert:
+        that:
+          - gpo_import_unmapped is changed
+          - "gpo_import_unmapped.actions == [\"import GPO '\" ~ gpo_import_fx.gpo_ws_admins ~ \"' (backup content or migration table changed)\"]"
+          - gpo_import_read.result.settings == gpo_import_authored.result.settings
+          - gpo_import_read.result.topology == gpo_import_authored.result.topology
+        fail_msg: "{{ gpo_import_unmapped }} / {{ gpo_import_read.result.settings }}"
+
+    # --- failures: each fails in the preflight or before, and touches nothing ----------------
+    - name: Read the domain before the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_before_errors
+
+    - name: Read the state file before the failures
+      ansible.windows.win_stat:
+        path: "{{ gpo_import_state_file }}"
+        get_checksum: true
+      register: gpo_import_state_before_errors
+
+    - name: Leave the source directory out
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+      register: gpo_import_no_source
+      failed_when: "'missing required arguments: source_dir' not in (gpo_import_no_source.msg | default(''))"
+
+    - name: Name a migration table that doesn't exist
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        migration_table_path: migtables/missing.migtable
+      register: gpo_import_no_migtable
+      failed_when: "'migration table not found' not in (gpo_import_no_migtable.msg | default(''))"
+
+    # GPP cpassword is a decryptable secret; the module refuses an export that
+    # carries one, before touching the domain.
+    - name: Copy the export and plant a Groups.xml carrying a cpassword in it
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Source, [string]$Destination, [string]$Folder)
+          Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
+          $file = Join-Path (Join-Path (Join-Path $Destination 'gpos') $Folder) 'Groups.xml'
+          [System.IO.File]::WriteAllText($file, '<Groups><User name="x"><Properties cpassword="example-not-secret"/></User></Groups>')
+        parameters:
+          Source: "{{ gpo_import_source_dir }}"
+          Destination: "{{ gpo_import_cpassword_dir }}"
+          Folder: "{{ gpo_import_manifest.gpos[gpo_import_fx.gpo_baseline].backup_dir }}"
+
+    - name: Import the poisoned export (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_cpassword_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+      check_mode: true
+      register: gpo_import_cpassword
+      failed_when: "'Refusing to import' not in (gpo_import_cpassword.msg | default(''))"
+
+    - name: Copy the export and break one backup folder
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Source, [string]$Destination, [string]$Folder)
+          Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
+          $wrapper = Join-Path (Join-Path $Destination 'gpos') $Folder
+          $guidDir = Get-ChildItem -LiteralPath $wrapper -Directory | Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
+          Remove-Item -LiteralPath (Join-Path $guidDir.FullName 'Backup.xml') -Force
+        parameters:
+          Source: "{{ gpo_import_source_dir }}"
+          Destination: "{{ gpo_import_incomplete_dir }}"
+          Folder: "{{ gpo_import_manifest.gpos[gpo_import_fx.gpo_rdp].backup_dir }}"
+
+    - name: Import the export with the broken backup folder (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_incomplete_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+      check_mode: true
+      register: gpo_import_incomplete
+      failed_when: "'preflight failed' not in (gpo_import_incomplete.msg | default(''))"
+
+    - name: Create an empty source directory
+      ansible.windows.win_file:
+        path: "{{ gpo_import_empty_dir }}"
+        state: directory
+
+    - name: Import from the empty directory (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_empty_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+      check_mode: true
+      register: gpo_import_no_manifest
+      failed_when: "'manifest not found' not in (gpo_import_no_manifest.msg | default(''))"
+
+    # An unwritable state_dir fails check mode in the preflight, before anything
+    # is planned: the real run could not record the import.
+    - name: Create a state_dir the connection account may not write to
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Path, [string]$User)
+          New-Item -ItemType Directory -Path $Path -Force | Out-Null
+          & icacls.exe $Path /deny "${User}:(W)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "icacls failed with $LASTEXITCODE" }
+        parameters:
+          Path: "{{ gpo_import_denied_state_dir }}"
+          User: "{{ ansible_user }}"
+
+    - name: Plan against the unwritable state_dir (check mode)
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_denied_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+      check_mode: true
+      register: gpo_import_denied
+      failed_when: "'preflight failed' not in (gpo_import_denied.msg | default(''))"
+
+    - name: Read the domain after the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 6
+      register: gpo_import_after_errors
+
+    - name: Read the state file after the failures
+      ansible.windows.win_stat:
+        path: "{{ gpo_import_state_file }}"
+        get_checksum: true
+      register: gpo_import_state_after_errors
+
+    - name: Check each failure named its reason and nothing was planned or changed
+      ansible.builtin.assert:
+        that:
+          - gpo_import_no_migtable is not changed
+          - "'preflight failed' in gpo_import_no_migtable.msg"
+          - not gpo_import_no_migtable.preflight.passed
+          - not gpo_import_no_migtable.preflight.migration_table_valid
+          - (gpo_import_no_migtable.preflight.migration_table | lower).startswith(gpo_import_source_dir | lower)
+          - gpo_import_no_migtable.preflight.migration_table | lower is search('missing[.]migtable$')
+          - gpo_import_no_migtable.actions is not defined
+          - gpo_import_cpassword is not changed
+          - gpo_import_cpassword.cpassword_files | length == 1
+          - gpo_import_cpassword.cpassword_files[0] | lower is search('groups[.]xml$')
+          - not gpo_import_cpassword.preflight.cpassword_clean
+          - gpo_import_cpassword.actions is not defined
+          - gpo_import_incomplete is not changed
+          - not gpo_import_incomplete.preflight.passed
+          - gpo_import_incomplete.preflight.backup_folders_incomplete | length == 1
+          - >-
+            gpo_import_incomplete.preflight.backup_folders_incomplete[0]
+            is search("GPO '" ~ gpo_import_fx.gpo_rdp ~ "': backup folder .* is incomplete [(]no Backup.xml")
+          - gpo_import_incomplete.preflight.errors == gpo_import_incomplete.preflight.backup_folders_incomplete
+          - gpo_import_incomplete.actions is not defined
+          - gpo_import_no_manifest is not changed
+          - not gpo_import_no_manifest.preflight.passed
+          - not gpo_import_no_manifest.preflight.manifest_valid
+          - gpo_import_no_manifest.preflight.backup_folders == 0
+          - gpo_import_no_manifest.actions is not defined
+          - gpo_import_denied is not changed
+          - gpo_import_denied.msg is search('state_dir .* is not writable')
+          - not gpo_import_denied.preflight.passed
+          - not gpo_import_denied.preflight.state_dir_writable
+          - gpo_import_denied.preflight.state_dir_exists
+          - gpo_import_denied.preflight.manifest_valid
+          - gpo_import_denied.preflight.cpassword_clean
+          - gpo_import_denied.actions is not defined
+          - gpo_import_after_errors.result.topology == gpo_import_before_errors.result.topology
+          - gpo_import_after_errors.result.versions == gpo_import_before_errors.result.versions
+          - gpo_import_after_errors.result.settings == gpo_import_before_errors.result.settings
+          - gpo_import_state_after_errors.stat.checksum == gpo_import_state_before_errors.stat.checksum
+        fail_msg: >-
+          {{ gpo_import_no_migtable }} / {{ gpo_import_cpassword }} / {{ gpo_import_incomplete }} /
+          {{ gpo_import_no_manifest }} / {{ gpo_import_denied }} / {{ gpo_import_after_errors.result }}
+  always:
+    # A step that failed with the domain drifted must not leave it that way
+    # (the role's scenario and a second run of this target start from the
+    # authored state): converge it back from the export, if there is one.
+    - name: Look for the export to restore from
+      ansible.windows.win_stat:
+        path: '{{ gpo_import_source_dir }}\gpo-manifest.json'
+      register: gpo_import_restore_source
+
+    - name: Converge the domain back on the export
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        source_dir: "{{ gpo_import_source_dir }}"
+        state_dir: "{{ gpo_import_state_dir }}"
+        create_wmi_filters: true
+        remove_unmanaged_links: true
+        force: true
+      when: gpo_import_restore_source.stat.exists
+      register: gpo_import_restore
+      failed_when: false
+
+    - name: Reset the denied state_dir's ACL
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Path)
+          if (Test-Path -LiteralPath $Path) {
+              & icacls.exe $Path /reset | Out-Null
+          }
+          else {
+              $Ansible.Changed = $false
+          }
+        parameters:
+          Path: "{{ gpo_import_denied_state_dir }}"
+
+    - name: Remove the test directory
+      ansible.windows.win_file:
+        path: "{{ gpo_import_dir }}"
+        state: absent
+
+- name: Read the domain after the tests
+  ansible.windows.win_powershell:
+    script: "{{ setup_gpo_lab_read_script }}"
+    parameters:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+    depth: 6
+  register: gpo_import_domain_after
+
+- name: Look for the test directory after the cleanup
+  ansible.windows.win_stat:
+    path: '{{ setup_gpo_lab_dir }}\import'
+  register: gpo_import_dir_after
+
+- name: Check the tests left the domain in the authored state and the host clean
+  ansible.builtin.assert:
+    that:
+      - gpo_import_domain_after.result.topology == gpo_import_authored.result.topology
+      - gpo_import_domain_after.result.settings == gpo_import_authored.result.settings
+      - not gpo_import_dir_after.stat.exists
+    fail_msg: "{{ gpo_import_domain_after.result | to_nice_json }}"

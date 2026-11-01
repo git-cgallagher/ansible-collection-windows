@@ -156,3 +156,22 @@ jobs:
             exit 1
           fi
           echo "No cpassword in committed XML."
+      # Every module this collection ships has its own tests (owner rule,
+      # 2026-11-01, issue #44): an ansible-test integration target named after
+      # it. A role's Molecule scenario that happens to call the module doesn't
+      # count, so a module without a target can't merge.
+      - name: Require an integration target for every module
+        run: |
+          missing=''
+          for module in plugins/modules/*.ps1; do
+            name=$(basename "$module" .ps1)
+            if [ ! -f "tests/integration/targets/$name/tasks/main.yml" ]; then
+              echo "::error file=$module::No integration target: add tests/integration/targets/$name/ (aliases, meta/main.yml, tasks/main.yml), see AGENTS.md"
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "Modules without an integration target:$missing"
+            exit 1
+          fi
+          echo "Every module has an integration target."
