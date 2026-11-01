@@ -18,14 +18,20 @@ Safety behaviour:
 - `--check` predicts every action without touching the domain or the
   module's state file, and `--diff` lists them; `gpo_import_report_only:
   true` does the same for this role alone, inside a play that otherwise
-  applies.
+  applies;
+- before planning, in check mode too, the module's preflight proves the run
+  could work: the manifest matches the staged backup folders, the migration
+  table parses, no `cpassword`, `gpo_import_state_dir` is writable (a probe
+  file, removed again), and the domain, GPMC, links and WMI filters can be
+  read. A failing check fails the task with the reason instead of reporting a
+  plan the real run could not complete.
 
 The role reports a change only when the module changed the domain, so a
 second run on a converged domain changes nothing. The module's result is
 registered as `gpo_import_run`: `actions` (performed, or predicted in check
 mode), `notices` (what was left alone, also shown as task warnings),
-`errors`, `imported`, `gpo_count`, `som_count`, `server` and `state_file`
-(`ansible-doc git_cgallagher.windows.gpo_import`).
+`errors`, `imported`, `gpo_count`, `som_count`, `server`, `state_file` and
+the `preflight` facts (`ansible-doc git_cgallagher.windows.gpo_import`).
 
 Runs against the domain's PDC emulator unless `gpo_import_server` is set.
 Requires RSAT (GroupPolicy + ActiveDirectory modules) and rights to write

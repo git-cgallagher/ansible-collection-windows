@@ -23,6 +23,13 @@
 #      block-inheritance; unmanaged links reported, removed only with
 #      remove_unmanaged_links
 #
+# Before planning, a preflight proves the run could work and reports what it
+# found in `preflight`: the manifest parses and matches the staged backup
+# folders, the migration table parses, no cpassword, state_dir is writable
+# (a probe file is created and removed), the domain, GPMC, links and WMI
+# filters can be read. Any preflight failure fails the module, in check mode
+# too, before anything is planned or touched.
+#
 # Check mode plans every action (returned in `actions` and the diff) without
 # touching the domain or the state file; `changed` is true whenever there is
 # something to do, in both modes.
@@ -267,69 +274,222 @@ function Add-Warning {
     $module.Warn($Message)
 }
 
-# --- load manifest + guardrails (nothing here touches the domain) ---------------
-$manifestFile = Join-Path $SourceDir $ManifestPath
-if (-not (Test-Path -LiteralPath $manifestFile)) {
-    $module.FailJson("Manifest not found: $manifestFile")
-}
-try {
-    $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
-}
-catch {
-    $module.FailJson("Cannot read the manifest $($manifestFile): $($_.Exception.Message)", $_)
+# --- preflight: prove the run could work, before planning anything -------------
+# Every check records a fact in $preflight; a failing one adds to
+# $preflightErrors. Nothing here changes the domain; the only write is the
+# state_dir probe file, created and removed again.
+$preflight = [ordered]@{}
+$preflightErrors = New-Object System.Collections.ArrayList
+
+function Add-PreflightError {
+    param([string]$Message)
+    [void]$script:preflightErrors.Add($Message)
 }
 
+# -- manifest --
+$manifestFile = Join-Path $SourceDir $ManifestPath
+$preflight.manifest = $manifestFile
+$preflight.manifest_valid = $false
+$manifest = $null
+if (-not (Test-Path -LiteralPath $manifestFile)) {
+    Add-PreflightError "manifest not found: $manifestFile"
+}
+else {
+    try {
+        $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $manifest.PSObject.Properties['gpos'] -or $null -eq $manifest.gpos) {
+            Add-PreflightError "manifest $manifestFile has no 'gpos' object"
+            $manifest = $null
+        }
+        else {
+            $preflight.manifest_valid = $true
+        }
+    }
+    catch {
+        Add-PreflightError "manifest $manifestFile does not parse as JSON: $($_.Exception.Message)"
+    }
+}
+
+# -- backup folders: every one the manifest names and the export carries must be
+#    a complete Backup-GPO folder (one {GUID} subfolder with Backup.xml and
+#    gpreport.xml). A GPO whose folder is absent is handled per GPO below, as
+#    before (properties only, or an error if the GPO is missing too). --
 $gposRoot = Join-Path $SourceDir 'gpos'
+$preflight.backup_folders = 0
+$preflight.backup_folders_incomplete = @()
+if ($manifest) {
+    $incomplete = New-Object System.Collections.ArrayList
+    foreach ($p in $manifest.gpos.PSObject.Properties) {
+        $dir = [string]$p.Value.backup_dir
+        if (-not $dir) { $dir = ConvertTo-SafeName -Name $p.Name }
+        $wrapper = Join-Path $gposRoot $dir
+        if (-not (Test-Path -LiteralPath $wrapper)) { continue }
+        $preflight.backup_folders++
+        $guidDirs = @(Get-ChildItem -LiteralPath $wrapper -Directory | Where-Object { $_.Name -match '^\{.+\}$' })
+        $problem = ''
+        if ($guidDirs.Count -ne 1) {
+            $problem = "expected one {GUID} subfolder, found $($guidDirs.Count)"
+        }
+        else {
+            foreach ($f in 'Backup.xml', 'gpreport.xml') {
+                if (-not (Test-Path -LiteralPath (Join-Path $guidDirs[0].FullName $f))) { $problem = "no $f in $($guidDirs[0].Name)" }
+            }
+        }
+        if ($problem) {
+            [void]$incomplete.Add("GPO '$($p.Name)': backup folder '$dir' is incomplete ($problem)")
+        }
+    }
+    $preflight.backup_folders_incomplete = @($incomplete)
+    foreach ($i in $incomplete) { Add-PreflightError $i }
+}
+
+# -- cpassword: GPP cpassword is deprecated, trivially decryptable, and a secret
+#    in Git. Only a non-empty value is one: GPP writes cpassword="" on items that
+#    set no password (renaming the built-in Administrator, for example). --
+$preflight.cpassword_clean = $true
 if (Test-Path -LiteralPath $gposRoot) {
-    # GPP cpassword is deprecated, trivially decryptable, and a secret in Git.
-    # Only a non-empty value is one: GPP writes cpassword="" on items that set
-    # no password (renaming the built-in Administrator, for example).
     $hits = @(
         Get-ChildItem -LiteralPath $gposRoot -Recurse -Filter '*.xml' -File |
             Select-String -Pattern 'cpassword="[^"]+"' -List
     )
     if ($hits.Count -gt 0) {
         $paths = ($hits | ForEach-Object { $_.Path }) -join '; '
+        $preflight.cpassword_clean = $false
         $module.Result.cpassword_files = @($hits | ForEach-Object { $_.Path })
+        $module.Result.preflight = $preflight
         $module.FailJson("Refusing to import: GPP cpassword found in: $paths. Remove the preference (use LAPS/gMSA instead) and re-export.")
     }
 }
 
+# -- migration table --
 $migTable = ''
+$preflight.migration_table = $null
+$preflight.migration_table_valid = $null
 if ($MigrationTablePath) {
     $migTable = $MigrationTablePath
     if (-not [System.IO.Path]::IsPathRooted($migTable)) {
         $migTable = Join-Path $SourceDir $MigrationTablePath
     }
+    $preflight.migration_table = $migTable
+    $preflight.migration_table_valid = $false
     if (-not (Test-Path -LiteralPath $migTable)) {
-        $module.FailJson("Migration table not found: $migTable")
+        Add-PreflightError "migration table not found: $migTable"
+    }
+    else {
+        try {
+            $migXml = New-Object System.Xml.XmlDocument
+            $migXml.Load($migTable)
+            if ($migXml.DocumentElement.LocalName -ne 'MigrationTable') {
+                Add-PreflightError "migration table $migTable is XML but its root is <$($migXml.DocumentElement.LocalName)>, not <MigrationTable>"
+            }
+            else {
+                $preflight.migration_table_valid = $true
+            }
+        }
+        catch {
+            Add-PreflightError "migration table $migTable does not parse as XML: $($_.Exception.Message)"
+        }
     }
 }
 # Part of each GPO's recorded import key: editing the migration table (say,
 # to map a principal that was missing) must re-import what it applies to.
 $migTableHash = ''
-if ($migTable) { $migTableHash = (Get-FileHash -LiteralPath $migTable -Algorithm SHA256).Hash }
+if ($migTable -and $preflight.migration_table_valid) { $migTableHash = (Get-FileHash -LiteralPath $migTable -Algorithm SHA256).Hash }
 
-# --- domain context + state ---------------------------------------------------
+# -- state_dir: the real run writes the state file there, so prove it can. The
+#    nearest existing ancestor stands in for a directory that doesn't exist yet
+#    (New-Item creates the rest). The probe file is removed again. --
+$probeDir = $StateDir
+while ($probeDir -and -not (Test-Path -LiteralPath $probeDir -PathType Container)) {
+    $probeDir = [System.IO.Path]::GetDirectoryName($probeDir)
+}
+$preflight.state_dir = $StateDir
+$preflight.state_dir_exists = [bool](Test-Path -LiteralPath $StateDir -PathType Container)
+$preflight.state_dir_probe = $probeDir
+$preflight.state_dir_writable = $false
+if (-not $probeDir) {
+    Add-PreflightError "state_dir $StateDir has no existing parent directory to create it under"
+}
+else {
+    $probeFile = Join-Path $probeDir ('.gpo-import-probe-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.File]::WriteAllText($probeFile, 'gpo_import preflight')
+        $preflight.state_dir_writable = $true
+    }
+    catch {
+        Add-PreflightError "state_dir $StateDir is not writable (probed $probeDir): $($_.Exception.Message)"
+    }
+    finally {
+        if (Test-Path -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
+    }
+}
+
+# -- domain, GPMC, links, WMI filters: what the plan reads and the run writes --
 try {
     Import-Module GroupPolicy, ActiveDirectory
 }
 catch {
+    $module.Result.preflight = $preflight
     $module.FailJson("The GroupPolicy and ActiveDirectory PowerShell modules are required (install RSAT): $($_.Exception.Message)", $_)
 }
 
+$preflight.domain_reachable = $false
+$adDomain = $null
 try {
     $adDomain = Get-ADDomain -Identity $Domain
+    $preflight.domain_reachable = $true
 }
 catch {
-    $module.FailJson("Cannot read domain $($Domain): $($_.Exception.Message)", $_)
+    Add-PreflightError "cannot read domain $($Domain): $($_.Exception.Message)"
 }
 $pdc = $Server
-if (-not $pdc) { $pdc = $adDomain.PDCEmulator }
-$rootDn = $adDomain.DistinguishedName
-$netbios = $adDomain.NetBIOSName
-$module.Result.server = $pdc
+$rootDn = $null
+$netbios = $null
+$somContainer = $null
+$preflight.gpmc_reachable = $false
+$preflight.links_readable = $false
+$preflight.wmi_filters_readable = $false
+if ($adDomain) {
+    if (-not $pdc) { $pdc = $adDomain.PDCEmulator }
+    $rootDn = $adDomain.DistinguishedName
+    $netbios = $adDomain.NetBIOSName
+    $somContainer = "CN=SOM,CN=WMIPolicy,CN=System,$rootDn"
+    $module.Result.server = $pdc
+    $preflight.server = $pdc
+    try {
+        $preflight.live_gpo_count = @(Get-GPO -All -Domain $Domain -Server $pdc).Count
+        $preflight.gpmc_reachable = $true
+    }
+    catch {
+        Add-PreflightError "GPMC cannot read the GPOs of $Domain on $($pdc): $($_.Exception.Message)"
+    }
+    try {
+        Get-GPInheritance -Target $rootDn -Domain $Domain -Server $pdc | Out-Null
+        $preflight.links_readable = $true
+    }
+    catch {
+        Add-PreflightError "cannot read the links on $($rootDn): $($_.Exception.Message)"
+    }
+    try {
+        $preflight.live_wmi_filter_count = @(
+            Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
+                -LDAPFilter '(objectClass=msWMI-Som)' -Properties msWMI-Name
+        ).Count
+        $preflight.wmi_filters_readable = $true
+    }
+    catch {
+        Add-PreflightError "cannot read the WMI filters in $($somContainer): $($_.Exception.Message)"
+    }
+}
 
+$preflight.passed = ($preflightErrors.Count -eq 0)
+$preflight.errors = @($preflightErrors)
+$module.Result.preflight = $preflight
+if ($preflightErrors.Count -gt 0) {
+    $module.FailJson("gpo_import preflight failed, nothing was planned or changed: " + ($preflightErrors -join '; '))
+}
+
+# --- state ------------------------------------------------------------------
 $stateFile = Join-Path $StateDir ("import-state-{0}.json" -f $Domain.ToLowerInvariant())
 $state = @{}
 if (Test-Path -LiteralPath $stateFile) {
@@ -346,11 +506,10 @@ $newState = @{}
 foreach ($k in $state.Keys) { $newState[$k] = $state[$k] }
 
 # --- 1. WMI filters ------------------------------------------------------------
-$somContainer = "CN=SOM,CN=WMIPolicy,CN=System,$rootDn"
 $liveFilters = @{}
 foreach ($f in @(
         Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
-            -LDAPFilter '(objectClass=msWMI-Som)' -Properties msWMI-Name -ErrorAction SilentlyContinue
+            -LDAPFilter '(objectClass=msWMI-Som)' -Properties msWMI-Name
     )) {
     $liveFilters[[string]$f.'msWMI-Name'] = $f
 }
