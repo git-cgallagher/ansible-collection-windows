@@ -14,7 +14,7 @@ nodes (`hosts` = the nodes), with the cluster work done once, on one node:
 | Entry point | What it does | Changes |
 |---|---|---|
 | `main` (default) | Installs the File Server role service on every node; creates the file server (`Add-ClusterFileServerRole`) on named cluster disks, or converges an existing one: disks it lacks, online state, preferred owners; converges SMB shares scoped to its name | Yes; check mode and `wsfc_fileserver_report_only` only report |
-| `validate` | Checks the role is online, then from a client host writes, reads back and deletes a probe file in every share through `\\<name>\<share>` | No |
+| `validate` | Checks the role is online, then from a client host writes, reads back and deletes a probe file in every share through `\\<name>\<share>`, retrying each share for up to three minutes (a just-created file server can refuse writes at first) | No |
 | `failover` | Writes a marker into every share from the client, moves the role to another node (`Move-ClusterGroup`), waits for it to come online, then proves from the client that every marker reads back and each share takes a new write; reports how long the move took | Moves the role; check mode only reports |
 
 `failover` is a planned move, as for patching or maintenance; it doesn't

@@ -420,7 +420,12 @@ ansible-galaxy collection build --force
   `[System.IO.Directory]::Exists` returned false (the fifth), while the same
   account in the same kind of logon wrote, read and deleted files in the
   share by name, FQDN and IP, with Kerberos tickets for `cifs/FSLAB`
-  (2026-11-01, PR #36). Why the root query is refused is unknown.
+  (2026-11-01, PR #36). The next run dropped the root check and the
+  probe's own write was refused too, while the diagnostics' identical writes
+  about a minute later worked, so the likelier cause is time: the client
+  first reached the file server about two minutes after converge created it.
+  Unconfirmed; the probe now retries each share for up to three minutes and
+  reports `attempts`, which will show it.
   `wsfc_fileserver`'s probe now just writes, reads back and deletes, and
   reports the write's error.
 

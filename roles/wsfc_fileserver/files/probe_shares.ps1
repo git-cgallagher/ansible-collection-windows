@@ -8,6 +8,10 @@
 #
 # Run by the validate and failover entry points on the client host. Changes
 # nothing that outlives it except the markers, which check removes.
+#
+# Each share is retried for up to -RetrySeconds: in the lab, writes from the
+# client to a file server created two minutes earlier were refused with
+# "Access is denied" and the same writes a minute later succeeded.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -19,7 +23,9 @@ param(
     [ValidateSet('roundtrip', 'mark', 'check')]
     [string]$Mode = 'roundtrip',
 
-    [string]$Marker = ''
+    [string]$Marker = '',
+
+    [int]$RetrySeconds = 180
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,37 +51,50 @@ if ($Mode -ne 'roundtrip' -and -not $Marker) { throw "Mode $Mode needs a Marker"
 $results = [System.Collections.Generic.List[object]]::new()
 foreach ($share in $Shares) {
     $unc = "\\$Server\$share"
-    $entry = [ordered]@{ share = $share; unc = $unc; ok = $false; error = ''; error_type = '' }
-    try {
-        # No existence check on the share root: in the lab, querying
-        # \\<name>\<share> itself failed (Test-Path "Access is denied",
-        # Directory.Exists false) while writing files into it worked. The
-        # write is the check; its error says why a share is unreachable.
-        $markerFile = Join-Path $unc ".wsfc_fileserver-failover-$Marker.txt"
-        switch ($Mode) {
-            'mark' {
-                Set-Content -LiteralPath $markerFile -Value $Marker -Encoding ASCII
-            }
-            'check' {
-                try {
-                    $back = (Get-Content -LiteralPath $markerFile -Raw).Trim()
+    $entry = [ordered]@{ share = $share; unc = $unc; ok = $false; error = ''; error_type = ''; attempts = 0 }
+    # No existence check on the share root: in the lab, querying
+    # \\<name>\<share> itself failed (Test-Path "Access is denied",
+    # Directory.Exists false) while writing files into it worked. The write
+    # is the check; its error says why a share is unreachable.
+    $markerFile = Join-Path $unc ".wsfc_fileserver-failover-$Marker.txt"
+    $markerChecked = $false
+    $deadline = (Get-Date).AddSeconds($RetrySeconds)
+    while ($true) {
+        $entry.attempts++
+        try {
+            switch ($Mode) {
+                'mark' {
+                    Set-Content -LiteralPath $markerFile -Value $Marker -Encoding ASCII
                 }
-                catch [System.Management.Automation.ItemNotFoundException] {
-                    throw 'the marker written before the failover is gone'
+                'check' {
+                    if (-not $markerChecked) {
+                        try {
+                            $back = (Get-Content -LiteralPath $markerFile -Raw).Trim()
+                        }
+                        catch [System.Management.Automation.ItemNotFoundException] {
+                            throw 'the marker written before the failover is gone'
+                        }
+                        if ($back -ne $Marker) { throw "the marker reads '$back', expected '$Marker'" }
+                        Remove-Item -LiteralPath $markerFile -Force
+                        $markerChecked = $true
+                    }
+                    Test-RoundTrip -Unc $unc
                 }
-                Remove-Item -LiteralPath $markerFile -Force
-                if ($back -ne $Marker) { throw "the marker reads '$back', expected '$Marker'" }
-                Test-RoundTrip -Unc $unc
+                default {
+                    Test-RoundTrip -Unc $unc
+                }
             }
-            default {
-                Test-RoundTrip -Unc $unc
-            }
+            $entry.ok = $true
+            $entry.error = ''
+            $entry.error_type = ''
+            break
         }
-        $entry.ok = $true
-    }
-    catch {
-        $entry.error = $_.Exception.Message
-        $entry.error_type = $_.Exception.GetType().FullName
+        catch {
+            $entry.error = $_.Exception.Message
+            $entry.error_type = $_.Exception.GetType().FullName
+            if ((Get-Date) -ge $deadline) { break }
+            Start-Sleep -Seconds 10
+        }
     }
     $results.Add([pscustomobject]$entry)
 }
