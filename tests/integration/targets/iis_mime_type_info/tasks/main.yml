@@ -140,7 +140,7 @@
             in iis_mime_type_info_site.mime_types"
         fail_msg: >-
           {{ iis_mime_type_info_site.mime_types
-             | selectattr('extension', 'in', ['.ansibleinfo', '.ansibleinfoweb', '.css', '.html', '.png']) | list }}
+             | selectattr('extension', 'in', ['.ansibleinfo', '.ansibleinfoweb', '.css', '.html', '.png']) | list | string }}
 
     - name: Check the application inherits all of them from the website
       ansible.builtin.assert:
@@ -156,7 +156,7 @@
             in iis_mime_type_info_app.mime_types"
         fail_msg: >-
           {{ iis_mime_type_info_app.mime_types
-             | selectattr('extension', 'in', ['.ansibleinfo', '.ansibleinfoweb', '.css', '.png']) | list }}
+             | selectattr('extension', 'in', ['.ansibleinfo', '.ansibleinfoweb', '.css', '.png']) | list | string }}
 
     - name: Read the test website's mappings in check mode
       git_cgallagher.windows.iis_mime_type_info:
