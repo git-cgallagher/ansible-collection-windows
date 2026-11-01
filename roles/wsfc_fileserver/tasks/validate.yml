@@ -1,0 +1,69 @@
+---
+# tasks_from: validate. Checks the file server's group is online, then reaches
+# every share from the client. Changes nothing (the probe files are removed).
+- name: Require a file server, a client host and shares to check
+  ansible.builtin.assert:
+    that:
+      - wsfc_fileserver_name | default('') | length > 0
+      - wsfc_fileserver_manage_node | length == 0 or wsfc_fileserver_manage_node in ansible_play_hosts_all
+      - wsfc_fileserver_validate_client | length == 0 or wsfc_fileserver_validate_client in hostvars
+      - wsfc_fileserver_check_shares | length > 0
+    fail_msg: >-
+      wsfc_fileserver_name must be set, wsfc_fileserver_manage_node must be a host in this play,
+      wsfc_fileserver_validate_client an inventory host, and there must be shares to check
+      (wsfc_fileserver_validate_shares, or the names in wsfc_fileserver_shares)
+    quiet: true
+  vars:
+    wsfc_fileserver_check_shares: &check_shares >-
+      {{ wsfc_fileserver_validate_shares if wsfc_fileserver_validate_shares | length > 0 else
+         wsfc_fileserver_shares | map(attribute='name') | list }}
+
+- name: Read the file server's cluster group
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/failover_group.ps1') }}"
+    parameters:
+      Name: "{{ wsfc_fileserver_name }}"
+      Mode: state
+  vars: &become_vars
+    ansible_become_password: "{{ wsfc_fileserver_become_password }}"
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: &manage_node "{{ wsfc_fileserver_manage_node if wsfc_fileserver_manage_node | length > 0 else ansible_play_hosts[0] }}"
+  run_once: true
+  register: wsfc_fileserver_group
+  check_mode: false
+
+- name: Require the group to be online
+  ansible.builtin.assert:
+    that: wsfc_fileserver_group.result.before.state == 'Online'
+    fail_msg: "{{ wsfc_fileserver_name }} is not online: {{ wsfc_fileserver_group.result.before | to_json }}"
+    quiet: true
+  run_once: true
+
+- name: Reach every share from the client
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/probe_shares.ps1') }}"
+    parameters:
+      Server: "{{ wsfc_fileserver_name }}"
+      Shares: *check_shares
+      Mode: roundtrip
+  vars: *become_vars
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: &client >-
+    {{ wsfc_fileserver_validate_client if wsfc_fileserver_validate_client | length > 0 else
+       wsfc_fileserver_manage_node if wsfc_fileserver_manage_node | length > 0 else ansible_play_hosts[0] }}
+  run_once: true
+  register: wsfc_fileserver_validation
+  check_mode: false
+
+- name: Report the validation
+  ansible.builtin.debug:
+    msg:
+      - "{{ wsfc_fileserver_name }} is online on {{ wsfc_fileserver_group.result.before.owner }}"
+      - "shares checked from {{ wsfc_fileserver_validation_client }}: {{ wsfc_fileserver_validation.result.shares | map(attribute='share') | list }}"
+  vars:
+    wsfc_fileserver_validation_client: *client
+  run_once: true

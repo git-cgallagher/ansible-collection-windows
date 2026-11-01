@@ -17,7 +17,9 @@ VM is never promoted to a domain controller.
 | | Run the role for real | It fixes only that property, and doesn't recreate the cluster |
 | | Run the `wsfc_cluster` module's integration target ([tests/integration/targets/wsfc_cluster](../../../../tests/integration/targets/wsfc_cluster)) | It removes the cluster above, plans and creates its own, converges its network, properties and quorum, plans and fixes out-of-band drift (check mode before each change, a repeat that changes nothing), fails clearly on bad input, and leaves no cluster behind |
 
-Not covered here (one VM, no shared network or storage): adding nodes, the
-`ActiveDirectoryAndDns` and `Dns` access points, static addresses, shared
-disks and CSVs, disk, file share and cloud witnesses, and the double hop
-([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)).
+Not covered here (one VM, no shared network or storage): two nodes, the
+`ActiveDirectoryAndDns` access point, static addresses, shared disks and a
+disk witness. The three-VM scenario in
+[roles/wsfc_fileserver/molecule/default](../../../wsfc_fileserver/molecule/default/README.md)
+covers those; what neither covers is listed in
+[issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19).

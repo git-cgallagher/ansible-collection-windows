@@ -1,0 +1,118 @@
+---
+# wsfc_fileserver's scenario, and the wsfc role's multi-node coverage: three
+# VMs on one lab network (see README.md).
+#
+#   dc01   the domain controller, the iSCSI target that serves the shared
+#          disks, and the file server's client
+#   node1  cluster node
+#   node2  cluster node
+#
+# The driver, box and provisioner come from the repository's Molecule base
+# config, .config/molecule/config.yml, which Molecule merges under this file;
+# this file replaces its one-VM platform list.
+scenario:
+  name: default
+driver:
+  options:
+    platform_defaults:
+      # Three VMs on GitHub's 16 GB runner. At 3 GB each, one run lost dc01's
+      # QEMU process during first boot (2026-11-01; an OOM kill, unconfirmed),
+      # so 2.5 GB, which the DC and the nodes run in.
+      memory_mb: 2560
+platforms:
+  - name: dc01
+    groups: [lab_dc]
+    winrm_port: 15985
+    lab_networks:
+      - {name: cluster, ipv4_address: 10.42.0.10}
+  - name: node1
+    groups: [lab_nodes]
+    winrm_port: 15986
+    lab_networks:
+      - {name: cluster, ipv4_address: 10.42.0.11}
+  - name: node2
+    groups: [lab_nodes]
+    winrm_port: 15987
+    lab_networks:
+      - {name: cluster, ipv4_address: 10.42.0.12}
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # Three VMs share the runner's 4 vCPUs during their first boot (the
+        # driver's two-VM self-test allows 120; one VM needs fewer).
+        windows_vm_first_boot_retries: 180
+        lab_dc_address: 10.42.0.10
+        # The domain account every cluster command runs as (runas become):
+        # the box's vagrant account became a domain admin when dc01 was
+        # promoted.
+        lab_admin_user: "vagrant@{{ lab_domain }}"
+        lab_admin_password: vagrant
+        lab_cluster:
+          name: FSCLU
+          address: 10.42.0.100
+          # The lab network carries the cluster; the management network
+          # (QEMU user networking, 10.0.2.15 on every VM) carries only WinRM.
+          subnet: 10.42.0.0/24
+          # A default gateway on the lab network, which New-Cluster needs to
+          # put the static address there (prepare.yml). Nothing answers at it.
+          gateway: 10.42.0.1
+          management_subnet: 10.0.2.0/24
+          # The iSCSI target's virtual disks, by cluster disk name.
+          disks:
+            - {name: Witness, size_gb: 1, label: Witness}
+            - {name: FS Data, size_gb: 4, label: FSData, drive_letter: S}
+          iscsi_target: fsclu
+        lab_fileserver:
+          name: FSLAB
+          address: 10.42.0.101
+          share_root: 'S:\Shares'
+      # The roles' variables, used by converge.yml and verify.yml.
+      lab_nodes:
+        wsfc_name: "{{ lab_cluster.name }}"
+        # The default access point, ActiveDirectoryAndDns: a CNO in the lab
+        # domain, as a file server needs.
+        wsfc_static_addresses: ["{{ lab_cluster.address }}"]
+        wsfc_ignore_networks: ["{{ lab_cluster.management_subnet }}"]
+        wsfc_allow_reboot: true
+        # Every VM's management NIC has the same address (10.0.2.15, QEMU user
+        # networking), which the network tests flag; storage is tested.
+        wsfc_validate_ignore: [Network]
+        wsfc_networks:
+          - subnet: "{{ lab_cluster.management_subnet }}"
+            name: Management
+            role: none
+          - subnet: "{{ lab_cluster.subnet }}"
+            name: Lab
+            role: cluster_and_client
+        # converge.yml reads the UniqueIds and builds the list.
+        wsfc_disks: "{{ lab_wsfc_disks }}"
+        wsfc_quorum:
+          type: disk_witness
+          disk: Witness
+        wsfc_become_user: "{{ lab_admin_user }}"
+        wsfc_become_password: "{{ lab_admin_password }}"
+        wsfc_fileserver_name: "{{ lab_fileserver.name }}"
+        wsfc_fileserver_static_addresses: ["{{ lab_fileserver.address }}"]
+        wsfc_fileserver_ignore_networks: ["{{ lab_cluster.management_subnet }}"]
+        wsfc_fileserver_disks: [FS Data]
+        wsfc_fileserver_preferred_owners: ["{{ hostvars['node1'].lab_hostname }}", "{{ hostvars['node2'].lab_hostname }}"]
+        wsfc_fileserver_shares:
+          - name: Projects
+            path: "{{ lab_fileserver.share_root }}\\Projects"
+            description: Team projects
+            full_access: ["{{ lab_netbios }}\\Domain Admins"]
+            change_access: ["{{ lab_netbios }}\\Domain Users"]
+            folder_enumeration_mode: AccessBased
+          - name: AppData
+            path: "{{ lab_fileserver.share_root }}\\AppData"
+            description: Application data (transparent failover)
+            full_access: ["{{ lab_netbios }}\\Domain Admins"]
+            continuously_available: true
+        wsfc_fileserver_validate_client: dc01
+        wsfc_fileserver_become_user: "{{ lab_admin_user }}"
+        wsfc_fileserver_become_password: "{{ lab_admin_password }}"
+    host_vars:
+      dc01: {lab_address: 10.42.0.10, lab_hostname: DC01}
+      node1: {lab_address: 10.42.0.11, lab_hostname: NODE1}
+      node2: {lab_address: 10.42.0.12, lab_hostname: NODE2}

@@ -39,6 +39,17 @@ Its second area is **failover clustering** (0.3.0):
   are `wsfc_*`. A later role in this area, say `wsfc_fileserver`, gets
   variables `wsfc_fileserver_*`: don't add a `wsfc_` variable whose name
   starts with another role's suffix (`wsfc_fileserver_…`).
+- `roles/wsfc_fileserver` (0.10.0) — a general-purpose clustered file server
+  on a `wsfc` cluster: File Server role service on every node, then
+  `Add-ClusterFileServerRole` (or converge: disks, online, preferred owners)
+  and SMB shares scoped to its name, with exact share permissions
+  (`files/converge_fileserver.ps1`; the shares are converged on the owner
+  node, through `Invoke-Command` when that isn't the managing node). It has
+  three entry points: `main`, `validate` (probe every share from a client)
+  and `failover` (`files/failover_group.ps1` moves the group;
+  `files/probe_shares.ps1` writes markers before and checks them after).
+  `defaults/main.yml` holds every entry point's defaults, and
+  `tests/argument_specs/check_role.yml` checks each entry point's options.
 
 A new area joins as roles (or plugins) named with that area's prefix, the
 way `gpo_*` and `wsfc` are, each role with its own Molecule scenario.
@@ -86,6 +97,14 @@ role):
   (`tests/integration/targets/wsfc_cluster`, with `setup_wsfc`): its own
   cluster planned in check mode, created, converged and drifted, with the
   repeat-changes-nothing check after each change, and the error messages.
+- `roles/wsfc_fileserver/molecule/default`: **three VMs** on a lab network
+  (dc01 = DC + iSCSI target + client, node1/node2 joined): `wsfc` builds a
+  two-node cluster (AD access point, static address, storage validation, two
+  formatted iSCSI disks, disk witness, management network role 0), then
+  `wsfc_fileserver` a file server with two shares; idempotence, `validate`
+  from dc01, `failover` there and back, and a report-only plan and drift fix.
+  It's `wsfc`'s multi-node coverage and the slowest job (about an hour; its
+  `molecule test` limit is 120 minutes, the job's 150).
 
 They share the lab in `tests/domain_lab/` and the Molecule base config
 `.config/molecule/config.yml` (see Conventions). The promotion is
@@ -131,20 +150,19 @@ Not covered by the lab yet (issue #16 unless noted):
   Users, and Deny entries (the lab's GPOs have none)
 - a member-server management host and a least-privilege account (#15);
   multi-query WMI filters aren't supported (#13)
-- `wsfc` (#19, the multi-node lab): adding nodes, the
-  `ActiveDirectoryAndDns`/`Dns` access points and static addresses, shared
-  disks (format, CSV), disk/file share/cloud witnesses, a failing
-  `Test-Cluster` (its failure detection matches `ClusterNotApproved` in the
-  warning stream, unconfirmed) and the double hop. Each lab VM has its own
-  QEMU user-mode network, but the driver's `lab_networks` puts several
-  `windows_vm` platforms on one shared segment (its `windows_cluster`
-  scenario boots two), so what's missing first is an iSCSI target for the
-  shared disks.
+- `wsfc` (#19): adding a node to an existing cluster (the lab creates both
+  in one `New-Cluster`), the `Dns` access point, multi-subnet clusters, CSVs,
+  file share and cloud witnesses, and a failing `Test-Cluster` (its failure
+  detection matches `ClusterNotApproved` in the warning stream, unconfirmed).
+  The three-VM scenario covers the rest of what #19 listed.
+- `wsfc_fileserver`: Scale-Out File Server (not built), adding a disk to an
+  existing file server, a multi-subnet client access point, encrypted shares.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
 third-party box download. Promote its jobs, `molecule (gpo_backup)`,
-`molecule (gpo_import)`, `molecule (wsfc)` and `molecule (iis)`, after four
+`molecule (gpo_import)`, `molecule (wsfc)`, `molecule (iis)` and
+`molecule (wsfc_fileserver)`, after four
 consecutive green weekly runs each, and replace the path filter with a job that always reports and skips the lab
 when nothing relevant changed.
 
@@ -370,6 +388,75 @@ ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **A cluster lab's shared disks come from an iSCSI target on the DC**, not
+  from the driver: `FS-iSCSITarget-Server` on dc01 serves VHDX virtual disks,
+  allowed by the nodes' lab addresses (`IPAddress:10.42.0.11`), and each
+  node connects persistently. A LUN has the same UniqueId on every node (what
+  `wsfc_disks` matches), and Windows' target supports the persistent
+  reservations `Test-Cluster`'s storage tests need (confirmed by the first
+  run, 2026-11-01: both nodes saw both disks and storage validation passed).
+
+- **Every lab VM's management NIC is 10.0.2.15** (QEMU user networking,
+  which carries WinRM and can't reach the other VMs). In a cluster lab it
+  shows up as a cluster network on every node with duplicate addresses: the
+  scenario skips `Test-Cluster`'s network tests (`wsfc_validate_ignore:
+  [Network]`), keeps the cluster names off it (`*_ignore_networks`) and sets
+  its role to none. If `New-Cluster` ever fails over it, the fix is per-VM
+  user-network subnets in the driver, not here.
+
+- **`New-Cluster -IgnoreNetwork` doesn't always keep the cluster name off a
+  network.** The third three-VM run (2026-11-01, PR #36) built the cluster
+  with `-IgnoreNetwork 10.0.2.0/24`, and the cluster name still had two IP
+  Address resources: 10.42.0.100 and a DHCP 10.0.2.15 on the management
+  network (the file server's `Add-ClusterFileServerRole -IgnoreNetwork` was
+  fine). The `wsfc_cluster` module now removes a cluster name address on an
+  ignored network (step 3b), never the last one. The same run passed
+  create, prepare, converge (cluster and file server) and idempotence.
+
+- **Don't check a clustered share's root before using it.** From the lab's
+  client, querying `\\FSLAB\<share>` itself failed: `Test-Path` threw
+  `UnauthorizedAccessException: Access is denied` (four three-VM runs) and
+  `[System.IO.Directory]::Exists` returned false (the fifth), while the same
+  account in the same kind of logon wrote, read and deleted files in the
+  share by name, FQDN and IP, with Kerberos tickets for `cifs/FSLAB`
+  (2026-11-01, PR #36). The next run dropped the root check and the
+  probe's own write was refused too, while the diagnostics' identical writes
+  about a minute later worked, so the likelier cause is time: the client
+  first reached the file server about two minutes after converge created it.
+  Ruled out by the run after: four and five retries over three minutes were
+  all refused, and the diagnostics' writes right after still worked. What
+  differed was that the probe read the file back with `Get-Content`, and the
+  failing calls so far (`Test-Path`, `Directory.Exists`, `Get-Content`) are
+  all reads. The probe now uses `[System.IO.File]` calls, names the failing
+  step in its error, and keeps the retries; the diagnostics try each step
+  (provider and .NET reads, a listing, the root `Test-Path`) separately.
+  `wsfc_fileserver`'s probe now just writes, reads back and deletes, and
+  reports the write's error.
+
+- **Don't take a node's computer name from `ansible_facts.hostname`.** On
+  the three-VM lab's slow nodes, `ansible.windows.setup` (`min` subset)
+  warned "Failed to collect platform due to timeout" and left the fact unset,
+  and `wsfc` failed with "object of type 'dict' has no attribute 'hostname'"
+  (2026-11-01, PR #36). The role reads `$env:COMPUTERNAME` with
+  `win_powershell` instead, which has no collector timeout.
+
+- **`win_powershell` renders anything nested deeper than `Result.x[i]` as its
+  type name.** A list of hashtables inside a hashtable in `$Ansible.Result`
+  came back as `"System.Collections.Hashtable"` strings. Keep result lists of
+  objects at the top level, and nested lists as strings.
+
+- **`New-Cluster` puts a static address only on a network with a default
+  gateway.** At creation, the client role (ClusterAndClient, the only one
+  that can hold the cluster name's address) goes only to networks whose NICs
+  have a gateway; the lab network had none, and the first three-VM run
+  (2026-11-01, PR #36) failed with "Static address '10.42.0.100' was given
+  for the Cluster Name but no appropriate ClusterandClient network was
+  found". The scenario's prepare gives each node's lab NIC a default route
+  to an unused 10.42.0.1 at metric 5000 (management traffic keeps its own
+  gateway). The same run confirmed the rest of prepare: the domain, the
+  joins, the iSCSI disks, `Test-Cluster` with storage tests and the `runas`
+  double hop as `GPOLAB\vagrant`.
 
 - **`wsfc`'s cluster task sets `become` itself** (from
   `wsfc_become_user`), which overrides a play-level `become` for that

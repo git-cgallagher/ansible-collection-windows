@@ -1,0 +1,53 @@
+---
+# meta/argument_specs.yml makes Ansible check types and required variables
+# before this runs; a spec can't express these, so check them here.
+- name: Require a usable file server name, managing node and shares
+  ansible.builtin.assert:
+    that:
+      - wsfc_fileserver_name | default('') | length > 0
+      - wsfc_fileserver_name | length <= 15
+      - wsfc_fileserver_manage_node | length == 0 or wsfc_fileserver_manage_node in ansible_play_hosts_all
+      - wsfc_fileserver_shares | map(attribute='name') | unique | list | length == wsfc_fileserver_shares | length
+    fail_msg: >-
+      wsfc_fileserver_name must be non-empty and at most 15 characters (a NetBIOS name),
+      wsfc_fileserver_manage_node, when set, must be a host in this play, and share names must be unique
+    quiet: true
+
+# --- every node ------------------------------------------------------------------
+# Every node that may own the role serves its shares, so every node needs the
+# File Server role service. It needs no reboot.
+- name: Install the File Server role service
+  ansible.windows.win_feature:
+    name: FS-FileServer
+    state: present
+
+# --- once, on the managing node --------------------------------------------------
+- name: Create or converge the file server
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/converge_fileserver.ps1') }}"
+    parameters:
+      Name: "{{ wsfc_fileserver_name }}"
+      StaticAddresses: "{{ wsfc_fileserver_static_addresses }}"
+      IgnoreNetworks: "{{ wsfc_fileserver_ignore_networks }}"
+      Disks: "{{ wsfc_fileserver_disks }}"
+      SharesJson: "{{ wsfc_fileserver_shares | to_json }}"
+      PreferredOwners: "{{ wsfc_fileserver_preferred_owners }}"
+      ReportOnly: "{{ wsfc_fileserver_report_only | bool or ansible_check_mode }}"
+  vars:
+    ansible_become_password: "{{ wsfc_fileserver_become_password }}"
+  become: "{{ wsfc_fileserver_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_fileserver_become_user }}"
+  delegate_to: "{{ wsfc_fileserver_manage_node if wsfc_fileserver_manage_node | length > 0 else ansible_play_hosts[0] }}"
+  run_once: true
+  register: wsfc_fileserver_run
+  check_mode: false
+
+- name: Report actions and warnings
+  ansible.builtin.debug:
+    msg:
+      - "report_only: {{ wsfc_fileserver_run.result.report_only }}"
+      - "owner: {{ wsfc_fileserver_run.result.owner }}"
+      - "actions: {{ wsfc_fileserver_run.result.actions }}"
+      - "warnings: {{ wsfc_fileserver_run.result.warnings }}"
+  run_once: true

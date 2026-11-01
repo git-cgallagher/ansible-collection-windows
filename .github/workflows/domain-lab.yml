@@ -7,7 +7,9 @@ name: domain-lab
 # against it. The lab the scenarios share is tests/domain_lab/ plus the
 # Molecule base config, .config/molecule/config.yml.
 # About 14 min, the roles in parallel. wsfc's VM stays a workgroup
-# server (a one-node cluster), never a DC.
+# server (a one-node cluster), never a DC. wsfc_fileserver's scenario boots
+# three VMs on a lab network (a DC that serves iSCSI disks, two cluster nodes)
+# and takes about an hour: it's wsfc's multi-node coverage too.
 #
 # Not a required check: it is path-filtered (a required check that doesn't run
 # blocks merges forever) and depends on a third-party box download. Promote
@@ -65,18 +67,20 @@ jobs:
   molecule:
     name: molecule (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     strategy:
       # One job's failure must not cancel the others' 14-minute runs.
       fail-fast: false
       # name: the job's name and diagnostics artifact; workdir: the scenario's
-      # project directory; vm: the scenario's platform name.
+      # project directory; vm: the scenario's platform names (space-separated);
+      # timeout: minutes for molecule test, when 75 isn't enough.
       matrix:
         include:
           - {name: gpo_backup, workdir: roles/gpo_backup, scenario: default, vm: dc01}
           - {name: gpo_import, workdir: roles/gpo_import, scenario: default, vm: dc01}
           - {name: wsfc, workdir: roles/wsfc, scenario: default, vm: dc01}
           - {name: iis, workdir: tests/integration, scenario: iis, vm: iis01}
+          - {name: wsfc_fileserver, workdir: roles/wsfc_fileserver, scenario: default, vm: dc01 node1 node2, timeout: 120}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -120,7 +124,7 @@ jobs:
       # destroys it either way.
       # A hang must become a failure, so the screen capture below runs.
       - name: molecule test
-        timeout-minutes: 75
+        timeout-minutes: ${{ matrix.timeout || 75 }}
         working-directory: ${{ matrix.workdir }}
         env:
           SCENARIO: ${{ matrix.scenario }}
@@ -134,6 +138,16 @@ jobs:
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}
+
+      # A VM whose QEMU process vanished leaves no screen to capture; say
+      # whether the kernel killed it for memory, and which QEMUs still run.
+      - name: Show host memory and OOM kills
+        if: failure()
+        timeout-minutes: 2
+        run: |
+          free -m
+          ps -o pid,rss,args -C qemu-system-x86_64 || true
+          sudo dmesg | grep -iE 'out of memory|oom-kill|killed process' | tail -20 || true
 
       - name: Upload diagnostics
         if: failure()

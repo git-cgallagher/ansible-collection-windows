@@ -46,13 +46,17 @@ DOCUMENTATION:
         - Static IP addresses for the cluster name, one per subnet the nodes span (multi-subnet clusters list one per subnet).
         - Leave it out for DHCP. Ignored, with a warning, when O(administrative_access_point=None).
         - Only used when the cluster is created.
+        - Each address's network needs a default gateway on the nodes when the cluster is created. C(New-Cluster) gives
+          the client role, the only one that can hold the address, only to networks with a gateway, and otherwise fails
+          with "no appropriate ClusterandClient network was found".
       type: list
       elements: str
     ignore_networks:
       description:
         - Networks in CIDR form (V(10.10.20.0/24)) that C(New-Cluster) must not use for the cluster's IP address, such as
           storage or backup networks.
-        - Only used when the cluster is created.
+        - C(New-Cluster) can still give the cluster name a DHCP address on one of them, which the name then registers in
+          DNS. The module removes such an address on every run, unless it's the name's only one.
       type: list
       elements: str
     validate:
