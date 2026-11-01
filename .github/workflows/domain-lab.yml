@@ -88,10 +88,12 @@ jobs:
       # checkout as git_cgallagher.windows in .molecule-collections, KVM, QEMU,
       # pypsrp and the lab directory.
       # Normally a few minutes; a stuck apt hung a run until the 120-minute job
-      # limit (2026-11-01), so fail fast and re-run instead. The limit is on
-      # this step because a composite action's own steps can't set one.
+      # limit (2026-11-01), so fail fast and re-run instead. Since v0.2.1 the
+      # action limits its own apt-get calls (3 and 8 minutes); this step's
+      # limit is the backstop for the rest, because a composite action's own
+      # steps can't set one.
       - name: Set up Molecule, the driver, KVM and QEMU
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@b2601b3f376da3e03f99c18ebc79d9d7a37e9c7f  # v0.2.0
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@0a21eb793e3e5b50fe25c06fcbf76a7d202c634f  # v0.2.1
         timeout-minutes: 15
         with:
           collection: git_cgallagher.windows
@@ -116,7 +118,7 @@ jobs:
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@b2601b3f376da3e03f99c18ebc79d9d7a37e9c7f  # v0.2.0
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@0a21eb793e3e5b50fe25c06fcbf76a7d202c634f  # v0.2.1
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}
