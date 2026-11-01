@@ -15,7 +15,7 @@ DOCUMENTATION:
     - Every action is listed in RV(actions), and in diff mode as the diff. In check mode the actions are planned and nothing
       is changed; a cluster that doesn't exist yet stops the plan after its creation, because its networks, properties,
       disks and quorum can't be read before it exists.
-  version_added: 0.5.0
+  version_added: 0.7.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:

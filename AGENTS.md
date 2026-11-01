@@ -32,7 +32,7 @@ Its second area is **failover clustering** (0.3.0):
   missing nodes) and converge networks, common properties, named shared
   disks and the quorum witness, through the `wsfc_cluster` module
   (`plugins/modules/wsfc_cluster.ps1`, which was the role's
-  `files/converge_cluster.ps1` until 0.5.0). It's the base
+  `files/converge_cluster.ps1` until 0.7.0). It's the base
   for file servers, SQL Server FCIs and AGs; it doesn't install SQL Server or
   create shares or AGs. The role is plain `wsfc` (owner's choice,
   2026-10-31; it was `wsfc_cluster` before PR #20 merged), so its variables
