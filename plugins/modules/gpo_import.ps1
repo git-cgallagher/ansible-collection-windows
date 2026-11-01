@@ -192,7 +192,10 @@ function Add-PreflightError {
 }
 
 # -- manifest --
-$manifestFile = Join-Path $SourceDir $ManifestPath
+# [IO.Path]::Combine, not Join-Path, for paths under source_dir and state_dir:
+# Windows PowerShell's Join-Path throws "Cannot find drive" for a directory on
+# a drive that doesn't exist, before the preflight could report it.
+$manifestFile = [System.IO.Path]::Combine($SourceDir, $ManifestPath)
 $preflight.manifest = $manifestFile
 $preflight.manifest_valid = $false
 $manifest = $null
@@ -219,7 +222,7 @@ else {
 #    a complete Backup-GPO folder (one {GUID} subfolder with Backup.xml and
 #    gpreport.xml). A GPO whose folder is absent is handled per GPO below, as
 #    before (properties only, or an error if the GPO is missing too). --
-$gposRoot = Join-Path $SourceDir 'gpos'
+$gposRoot = [System.IO.Path]::Combine($SourceDir, 'gpos')
 $preflight.backup_folders = 0
 $preflight.backup_folders_incomplete = @()
 if ($manifest) {
@@ -227,7 +230,7 @@ if ($manifest) {
     foreach ($p in $manifest.gpos.PSObject.Properties) {
         $dir = [string]$p.Value.backup_dir
         if (-not $dir) { $dir = ConvertTo-SafeName -Name $p.Name }
-        $wrapper = Join-Path $gposRoot $dir
+        $wrapper = [System.IO.Path]::Combine($gposRoot, $dir)
         if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $wrapper)) { continue }
         $preflight.backup_folders++
         $problem = Test-GpoBackupFolder -Path $wrapper
@@ -380,7 +383,7 @@ if ($preflightErrors.Count -gt 0) {
 }
 
 # --- state ------------------------------------------------------------------
-$stateFile = Join-Path $StateDir ("import-state-{0}.json" -f $Domain.ToLowerInvariant())
+$stateFile = [System.IO.Path]::Combine($StateDir, ("import-state-{0}.json" -f $Domain.ToLowerInvariant()))
 $state = @{}
 if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stateFile) {
     $rawState = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -463,7 +466,7 @@ foreach ($name in $gpoOrder) {
         $entry = $manifestGpos[$name]
         $backupDir = [string]$entry.backup_dir
         if (-not $backupDir) { $backupDir = ConvertTo-SafeName -Name $name }
-        $wrapper = Join-Path $gposRoot $backupDir
+        $wrapper = [System.IO.Path]::Combine($gposRoot, $backupDir)
 
         $liveGpo = Get-GpoOrNull -Name $name
         $existed = $null -ne $liveGpo

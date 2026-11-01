@@ -51,6 +51,15 @@ Describe 'gpo_export''s wiring' {
         @($own | Where-Object { $util -contains $_ }) | Should -BeNullOrEmpty
     }
 
+    It 'never builds a path under a user-supplied directory with Join-Path (it resolves the drive)' {
+        $roots = @('WorkDir')
+        $isJoin = { param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Join-Path' }
+        $joins = @($script:ast.FindAll($isJoin, $true) |
+                Where-Object { $_.CommandElements.Count -gt 1 -and $roots -contains ($_.CommandElements[1].Extent.Text -replace '^[$]', '') } |
+                ForEach-Object { $_.Extent.Text })
+        $joins | Should -BeNullOrEmpty
+    }
+
     It 'calls nothing but its own functions, the util, PowerShell and the GroupPolicy/ActiveDirectory cmdlets' {
         $own = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
                 ForEach-Object { $_.Name })

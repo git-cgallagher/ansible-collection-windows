@@ -117,7 +117,10 @@ try {
 
     # --- state --------------------------------------------------------------
     # Read-only here: check mode must not create work_dir either.
-    $stateFile = Join-Path $WorkDir ("backup-state-{0}.json" -f $Domain.ToLowerInvariant())
+    # [IO.Path]::Combine, not Join-Path: Windows PowerShell's Join-Path throws
+    # "Cannot find drive" for a work_dir on a drive that doesn't exist, before
+    # the preflight could report it.
+    $stateFile = [System.IO.Path]::Combine($WorkDir, ("backup-state-{0}.json" -f $Domain.ToLowerInvariant()))
     $state = @{ gpos = @{}; manifest_hash = '' }
     if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stateFile) {
         $rawState = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -279,7 +282,7 @@ try {
         if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $WorkDir)) {
             New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
         }
-        $stage = Join-Path $WorkDir 'stage'
+        $stage = [System.IO.Path]::Combine($WorkDir, 'stage')
         if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
         $exportRoot = Join-Path $stage 'export'
         $exportGpos = Join-Path $exportRoot 'gpos'
@@ -301,7 +304,7 @@ try {
 
         Write-Utf8File -Path (Join-Path $exportRoot 'gpo-manifest.json') -Content $manifestJson
 
-        $zipPath = Join-Path $WorkDir 'gpo-export.zip'
+        $zipPath = [System.IO.Path]::Combine($WorkDir, 'gpo-export.zip')
         if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
         New-ZipFromDirectory -Source $exportRoot -Destination $zipPath
         $module.Result.zip = $zipPath

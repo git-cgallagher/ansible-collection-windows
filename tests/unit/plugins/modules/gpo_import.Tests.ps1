@@ -69,6 +69,15 @@ Describe 'gpo_import''s wiring' {
         @($own | Where-Object { $util -contains $_ }) | Should -BeNullOrEmpty
     }
 
+    It 'never builds a path under a user-supplied directory with Join-Path (it resolves the drive)' {
+        $roots = @('SourceDir', 'StateDir', 'gposRoot')
+        $isJoin = { param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Join-Path' }
+        $joins = @($script:ast.FindAll($isJoin, $true) |
+                Where-Object { $_.CommandElements.Count -gt 1 -and $roots -contains ($_.CommandElements[1].Extent.Text -replace '^[$]', '') } |
+                ForEach-Object { $_.Extent.Text })
+        $joins | Should -BeNullOrEmpty
+    }
+
     It 'calls nothing but its own functions, the util, PowerShell and the GroupPolicy/ActiveDirectory cmdlets' {
         $own = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
                 ForEach-Object { $_.Name })
@@ -152,6 +161,12 @@ Describe 'Resolve-GpoMigrationTablePath' {
     It 'resolves a relative path under the source directory' {
         Resolve-GpoMigrationTablePath -Path 'migtables/prod.migtable' -SourceDir $TestDrive |
             Should -Be (Join-Path $TestDrive 'migtables/prod.migtable')
+    }
+
+    It 'doesn''t resolve the drive of a source directory on a drive that doesn''t exist' {
+        $ErrorActionPreference = 'Stop'
+        Resolve-GpoMigrationTablePath -Path 'migtables/prod.migtable' -SourceDir 'NoSuchGpoDrive:\stage' |
+            Should -BeExactly ([System.IO.Path]::Combine('NoSuchGpoDrive:\stage', 'migtables/prod.migtable'))
     }
 
     It 'keeps a rooted path as given' {

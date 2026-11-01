@@ -387,14 +387,16 @@ Function Resolve-GpoMigrationTablePath {
     <#
     .SYNOPSIS
     Returns the migration table's path: as given when rooted, else under the
-    source directory; '' when none was given.
+    source directory; '' when none was given. Never resolves a drive (unlike
+    Join-Path in Windows PowerShell), so a source directory on a drive that
+    doesn't exist reaches the preflight's "not found".
     #>
     [CmdletBinding()]
     param ([string]$Path, [string]$SourceDir)
 
     if (-not $Path) { return '' }
     if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
-    Join-Path $SourceDir $Path
+    [System.IO.Path]::Combine($SourceDir, $Path)
 }
 
 Function Get-GpoImportReason {

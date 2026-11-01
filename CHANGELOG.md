@@ -44,8 +44,11 @@ Every module has its own integration target (issue #44).
 - **Fix:** `gpo_export` and `gpo_import` given a `work_dir`, `state_dir` or
   `source_dir` on a drive that doesn't exist fail in the preflight with its
   message (`none of its parents exist`, `no existing parent directory`,
-  `manifest not found`) instead of PowerShell's "Cannot find drive". Found
-  by the new `gpo_export` target.
+  `manifest not found`) instead of PowerShell's "Cannot find drive": their
+  existence checks no longer let `Test-Path` stop the run, and paths under
+  those directories are built with `[IO.Path]::Combine`, because Windows
+  PowerShell's `Join-Path` resolves the drive. Found by the new `gpo_export`
+  target.
 - **Fix:** a `gpo_export` run with `gpo_names` keeps the unselected GPOs'
   hashes in the state file. Before, it rewrote the state with the selected
   GPOs only, so the next unfiltered export re-shipped every other GPO and
