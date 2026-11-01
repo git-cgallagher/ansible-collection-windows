@@ -1,0 +1,66 @@
+---
+# Three failover clusters built with wsfc. Run each with --check (or
+# -e wsfc_report_only=true) first and read the action list.
+# Every name, address and disk ID here is a placeholder.
+
+# A two-node file server cluster with shared disks and a disk witness.
+- name: Build the file server cluster
+  hosts: fsclu01_nodes
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.windows.wsfc
+      vars:
+        wsfc_name: FSCLU01
+        wsfc_static_addresses: [10.10.10.40]
+        wsfc_extra_features: [FS-FileServer, Multipath-IO]
+        wsfc_allow_reboot: true
+        wsfc_networks:
+          - {subnet: 10.10.10.0/24, name: Client, role: cluster_and_client}
+          - {subnet: 10.10.30.0/24, name: Storage, role: none}
+        wsfc_disks:
+          - {name: Data, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9C01, initialize: true, allocation_unit_size: 4096}
+          - {name: Witness, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9C02, initialize: true}
+        wsfc_quorum: {type: disk_witness, disk: Witness}
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
+
+# A SQL Server FCI's cluster: 64 KB-formatted data and log disks, named the
+# way SQL Server setup will ask for them.
+- name: Build the SQL Server FCI cluster
+  hosts: sqlclu01_nodes
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.windows.wsfc
+      vars:
+        wsfc_name: SQLCLU01
+        wsfc_static_addresses: [10.10.10.50]
+        wsfc_ignore_networks: [10.10.30.0/24]
+        wsfc_disks:
+          - {name: SQL Data, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9B01, initialize: true}
+          - {name: SQL Log, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9B02, initialize: true}
+          - {name: SQL TempDB, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9B03, initialize: true}
+        wsfc_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\SQLCLU01'}
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
+
+# An availability group's cluster across two subnets: no shared storage, one
+# address per subnet, relaxed cross-subnet heartbeats and a cloud witness.
+- name: Build the availability group cluster
+  hosts: agclu01_nodes
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.windows.wsfc
+      vars:
+        wsfc_name: AGCLU01
+        wsfc_static_addresses: [10.10.10.60, 10.20.10.60]
+        wsfc_validate_ignore: [Storage]
+        wsfc_properties:
+          CrossSubnetThreshold: 40
+          CrossSubnetDelay: 1000
+          SameSubnetThreshold: 20
+        wsfc_quorum:
+          type: cloud_witness
+          account_name: examplewitness
+          access_key: "{{ vault_witness_access_key }}"
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"

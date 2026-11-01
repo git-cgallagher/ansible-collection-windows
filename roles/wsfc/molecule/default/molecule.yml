@@ -1,0 +1,25 @@
+---
+# wsfc's scenario: a one-node workgroup cluster on the shared lab VM
+# (see README.md). The platform, provisioner, inventory and the shared
+# create/destroy playbooks come from the repository's Molecule base config,
+# .config/molecule/config.yml, which Molecule merges under this file.
+#
+# The platform keeps the base config's name, dc01, so the workflow's screen
+# capture finds its monitor socket, but prepare.yml never promotes it: it
+# stays a workgroup server.
+scenario:
+  name: default
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        lab_cluster:
+          name: WSFCLAB
+          # A workgroup node's primary DNS suffix (prepare.yml).
+          dns_suffix: wsfclab.test
+          network_name: Lab
+          # QEMU user-mode networking's only subnet.
+          subnet: 10.0.2.0/24
+          metric: 30000
+          same_subnet_threshold: 15
+          cross_subnet_threshold: 25

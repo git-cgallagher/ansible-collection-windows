@@ -20,8 +20,21 @@ status. Problem statement + decisions: `docs/design.md`. Two roles:
 - `roles/gpo_import` — converge a target domain on the repo (import +
   reconcile topology; migration-table aware; report-only mode).
 
+Its second area is **failover clustering** (0.3.0):
+
+- `roles/wsfc` — install Failover Clustering on every host in the
+  play, then from one managing node validate, create the cluster (or add
+  missing nodes) and converge networks, common properties, named shared
+  disks and the quorum witness (`files/converge_cluster.ps1`). It's the base
+  for file servers, SQL Server FCIs and AGs; it doesn't install SQL Server or
+  create shares or AGs. The role is plain `wsfc` (owner's choice,
+  2026-10-31; it was `wsfc_cluster` before PR #20 merged), so its variables
+  are `wsfc_*`. A later role in this area, say `wsfc_fileserver`, gets
+  variables `wsfc_fileserver_*`: don't add a `wsfc_` variable whose name
+  starts with another role's suffix (`wsfc_fileserver_…`).
+
 A new area joins as roles (or plugins) named with that area's prefix, the
-way `gpo_*` is, each role with its own Molecule scenario.
+way `gpo_*` and `wsfc` are, each role with its own Molecule scenario.
 
 ## ⚠️ Maturity — read before relying on it
 
@@ -36,6 +49,11 @@ role):
 - `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
   report-only plan, import, verify, re-export round trip, and an import
   through a migration table.
+- `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
+  (access point `None`) on the same VM, never promoted: feature install,
+  `Test-Cluster`, `New-Cluster`, network name/role/metric, common
+  properties, node-majority quorum, idempotence, a report-only plan and a
+  drift fix.
 
 Both share the lab in `tests/domain_lab/` and the Molecule base config
 `.config/molecule/config.yml` (see Conventions). The lab first passed on
@@ -56,6 +74,13 @@ Not covered by the lab yet (issue #16 unless noted):
   Users, and Deny entries (the lab's GPOs have none)
 - a member-server management host and a least-privilege account (#15);
   multi-query WMI filters aren't supported (#13)
+- `wsfc` (#19, the multi-node lab): adding nodes, the
+  `ActiveDirectoryAndDns`/`Dns` access points and static addresses, shared
+  disks (format, CSV), disk/file share/cloud witnesses, a failing
+  `Test-Cluster` (its failure detection matches `ClusterNotApproved` in the
+  warning stream, unconfirmed) and the double hop. The lab VMs sit on
+  separate QEMU user-mode networks and can't reach each other, so this needs
+  a shared network (QEMU socket netdev) and an iSCSI target first.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
@@ -73,8 +98,16 @@ lab to the scripts — and record the surprise below as a gotcha.
   `ansible.windows.win_powershell` with `parameters:`; scripts must stay
   **Windows PowerShell 5.1-compatible** (no `??`, no ternary, no
   `ConvertFrom-Json -AsHashtable`).
-- Both scripts duplicate a small `# region common` helper block — keep the
-  copies in sync.
+- Both GPO scripts duplicate a small `# region common` helper block — keep
+  the copies in sync. `converge_cluster.ps1` shares nothing with them.
+- `wsfc` passes its structured variables (quorum, networks,
+  properties, disks) to PowerShell as JSON strings. Windows PowerShell 5.1's
+  `ConvertFrom-Json` emits a JSON array as one object, so enumerate it
+  (`ConvertFrom-JsonArray`) instead of wrapping it in `@()`, which turns `[]`
+  into a one-element array.
+- `wsfc` reaches the cluster through a **node name**
+  (`-Cluster <node>`), never the cluster name: a cluster with access point
+  `None` has no name to resolve.
 - The manifest (`gpo-manifest.json`) is the contract between the roles.
   Round-trip symmetry is the invariant: whatever `gpo_backup` writes,
   `gpo_import` consumes verbatim. Change both sides and the README together.
@@ -144,6 +177,27 @@ ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **`wsfc`'s cluster task sets `become` itself** (from
+  `wsfc_become_user`), which overrides a play-level `become` for that
+  task. `New-Cluster` and friends hit the WinRM double hop on multi-node
+  clusters; `runas` become gives a local logon with credentials. The lab uses
+  it too (as `vagrant`).
+
+- **The FailoverClusters cmdlets have no `-Confirm`, and `New-Cluster` still
+  prompts.** Learned in the wsfc lab runs of 2026-10-31 (PR #20): `New-Cluster`
+  failed with "PowerShell is in NonInteractive mode" after validation passed,
+  and adding `-Confirm:$false` failed with "A parameter cannot be found that
+  matches parameter name 'Confirm'" (the cmdlets don't implement
+  ShouldProcess). The fix is `New-Cluster -Force`, but `-Force` also wipes
+  stale cluster configuration off the nodes, so `converge_cluster.ps1` first
+  refuses if any node still has `Cluster\CLUSDB` with no cluster answering
+  (`Assert-NoClusterDatabase`).
+
+- **A passing `Test-Cluster` reports `ClusterConditionallyApproved`**, not a
+  plain "approved", when tests are skipped (the lab skips Storage). The role
+  fails only on `ClusterNotApproved`; that failure string isn't confirmed in
+  a lab yet.
 
 - **Write GPO AD objects through GPMC (or LDAP), never `Set-ADObject`.**
   Confirmed in the domain_lab runs of 2026-10-28: `Set-ADObject` (AD Web
