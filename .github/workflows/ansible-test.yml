@@ -109,8 +109,8 @@ jobs:
   powershell:
     # The roles' and modules' PowerShell runs on Windows hosts CI doesn't
     # have, so at minimum: parse every script and module util (a syntax error
-    # must not ship green) and gate on PSScriptAnalyzer errors; warnings are
-    # printed for review.
+    # must not ship green), gate on PSScriptAnalyzer errors (warnings are
+    # printed for review), and run the modules' Pester unit tests.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -136,6 +136,18 @@ jobs:
           $findings = 'roles', 'tests', 'plugins' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
           $findings | Format-Table -AutoSize | Out-String -Width 400 | Write-Host
           if ($findings | Where-Object Severity -eq 'Error') { exit 1 }
+      # The modules' unit tests (tests/unit/plugins/), Pester 5: the pure logic
+      # in plugins/module_utils, without Windows or a domain.
+      - name: Run the unit tests
+        shell: pwsh
+        run: |
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests/unit'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
 
   hygiene:
     # GPO backups are XML; a committed backup fixture carrying a GPP
@@ -156,22 +168,41 @@ jobs:
             exit 1
           fi
           echo "No cpassword in committed XML."
-      # Every module this collection ships has its own tests (owner rule,
-      # 2026-11-01, issue #44): an ansible-test integration target named after
-      # it. A role's Molecule scenario that happens to call the module doesn't
-      # count, so a module without a target can't merge.
-      - name: Require an integration target for every module
+      # Every role has a Molecule scenario, and every module has an ansible-test
+      # integration target and Pester unit tests (owner rules, 2026-11-01,
+      # issue #44). A role's scenario that happens to call a module doesn't
+      # count for the module, so nothing can merge untested.
+      - name: Require tests for every role and module
+        env:
+          # Modules whose unit tests are still owed, each with its tracking
+          # issue (see the PR that closes #44). Only ever shrinks: a new module
+          # can't be added here.
+          UNIT_TESTS_PENDING: wsfc_cluster iis_mime_type iis_mime_type_info
         run: |
-          missing=''
+          missing=0
+          for role in roles/*/; do
+            role=${role%/}
+            if ! compgen -G "$role/molecule/*/molecule.yml" > /dev/null; then
+              echo "::error file=$role::No Molecule scenario: add $role/molecule/<scenario>/molecule.yml, see AGENTS.md"
+              missing=1
+            fi
+          done
           for module in plugins/modules/*.ps1; do
             name=$(basename "$module" .ps1)
             if [ ! -f "tests/integration/targets/$name/tasks/main.yml" ]; then
               echo "::error file=$module::No integration target: add tests/integration/targets/$name/ (aliases, meta/main.yml, tasks/main.yml), see AGENTS.md"
-              missing="$missing $name"
+              missing=1
+            fi
+            if [ ! -f "tests/unit/plugins/modules/$name.Tests.ps1" ]; then
+              case " $UNIT_TESTS_PENDING " in
+                *" $name "*) echo "::warning file=$module::No unit tests yet (pending, tracked from issue #44)" ;;
+                *) echo "::error file=$module::No unit tests: add tests/unit/plugins/modules/$name.Tests.ps1 (Pester), see AGENTS.md"
+                   missing=1 ;;
+              esac
+            elif case " $UNIT_TESTS_PENDING " in *" $name "*) true ;; *) false ;; esac; then
+              echo "::error file=$module::$name has unit tests now: remove it from UNIT_TESTS_PENDING"
+              missing=1
             fi
           done
-          if [ -n "$missing" ]; then
-            echo "Modules without an integration target:$missing"
-            exit 1
-          fi
-          echo "Every module has an integration target."
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "Every role has a Molecule scenario; every module has an integration target and, apart from the pending ($UNIT_TESTS_PENDING), unit tests."

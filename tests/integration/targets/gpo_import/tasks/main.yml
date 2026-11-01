@@ -19,7 +19,7 @@
     parameters:
       Domain: "{{ setup_gpo_lab_domain }}"
       FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-    depth: 6
+    depth: 8
   register: gpo_import_authored
 
 - name: Test gpo_import, then clean up
@@ -119,7 +119,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_read
 
     - name: Check check mode planned every import, proved the run could work and touched nothing
@@ -182,7 +182,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_read
 
     # Import-GPO replaces each GPO (its version bumps) with the same settings.
@@ -241,7 +241,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_drifted
 
     - name: Check the drift took
@@ -289,7 +289,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_read
 
     - name: Check the plan covers the drift and touched nothing
@@ -392,7 +392,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_read
 
     - name: Check the domain is back to the authored state, and stays there
@@ -466,7 +466,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_read_mapped
 
     - name: Check the migration table translated the member, once
@@ -505,7 +505,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_read
 
     - name: Check the original member is back
@@ -522,7 +522,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_before_errors
 
     - name: Read the state file before the failures
@@ -641,7 +641,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_script }}"
         parameters: "{{ gpo_import_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_import_after_errors
 
     - name: Read the state file after the failures
@@ -693,14 +693,20 @@
         fail_msg: >-
           {{ gpo_import_no_migtable }} / {{ gpo_import_cpassword }} / {{ gpo_import_incomplete }} /
           {{ gpo_import_no_manifest }} / {{ gpo_import_denied }} / {{ gpo_import_after_errors.result }}
+
+    - name: Note that the tests ran to the end
+      ansible.builtin.set_fact:
+        gpo_import_tests_done: true
   always:
     # A step that failed with the domain drifted must not leave it that way
     # (the role's scenario and a second run of this target start from the
-    # authored state): converge it back from the export, if there is one.
+    # authored state): converge it back from the export, if there is one. A
+    # run that reached the end has already converged it.
     - name: Look for the export to restore from
       ansible.windows.win_stat:
         path: '{{ gpo_import_source_dir }}\gpo-manifest.json'
       register: gpo_import_restore_source
+      when: not gpo_import_tests_done | default(false)
 
     - name: Converge the domain back on the export
       git_cgallagher.windows.gpo_import:
@@ -710,7 +716,7 @@
         create_wmi_filters: true
         remove_unmanaged_links: true
         force: true
-      when: gpo_import_restore_source.stat.exists
+      when: gpo_import_restore_source.stat.exists | default(false)
       register: gpo_import_restore
       failed_when: false
 
@@ -738,7 +744,7 @@
     parameters:
       Domain: "{{ setup_gpo_lab_domain }}"
       FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-    depth: 6
+    depth: 8
   register: gpo_import_domain_after
 
 - name: Look for the test directory after the cleanup

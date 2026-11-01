@@ -4,6 +4,7 @@
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
 #AnsibleRequires -CSharpUtil Ansible.Basic
+#AnsibleRequires -PowerShell ..module_utils._GpoCommon
 
 # gpo_import — converge a domain on a git_cgallagher.windows export.
 #
@@ -34,9 +35,11 @@
 # touching the domain or the state file; `changed` is true whenever there is
 # something to do, in both modes.
 #
-# Windows PowerShell 5.1-compatible. The '# region common' block is a copy of
-# the one in plugins/modules/gpo_export.ps1: the two must stay identical
-# (hashing decides what re-imports, and the manifest is the roles' contract).
+# Windows PowerShell 5.1-compatible. The pure logic (hashing, the manifest's
+# encodings, the import decision, the link plan) lives in
+# plugins/module_utils/_GpoCommon.psm1, shared with gpo_export (hashing decides
+# what re-imports, and the manifest is the two modules' contract) and
+# unit-tested with Pester (tests/unit/plugins/).
 
 # The argument spec and Create come first: ansible-test's validate-modules runs
 # this file under pwsh on Linux up to Create to read the spec.
@@ -73,89 +76,6 @@ $checkMode = $module.CheckMode
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# region common — keep in sync with gpo_export.ps1
-function ConvertTo-SafeName {
-    param([string]$Name)
-    $safe = $Name -replace '[\\/:*?"<>|]', '_'
-    $safe = $safe.TrimEnd('.', ' ')
-    if (-not $safe) { $safe = '_' }
-    $safe
-}
-
-function Get-DirContentHash {
-    # Deterministic hash of a directory tree: relative paths (case-folded) +
-    # per-file SHA256. Empty directories count, so a GPO gaining or losing an
-    # empty User/ folder still registers.
-    param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
-    $base = (Get-Item -LiteralPath $Path).FullName
-    $sb = New-Object System.Text.StringBuilder
-    $items = Get-ChildItem -LiteralPath $base -Recurse -Force |
-        Sort-Object { $_.FullName.Substring($base.Length).ToLowerInvariant() }
-    foreach ($it in $items) {
-        $rel = $it.FullName.Substring($base.Length).TrimStart('\').ToLowerInvariant()
-        if ($it.PSIsContainer) {
-            [void]$sb.AppendLine("dir|$rel")
-        }
-        else {
-            $h = (Get-FileHash -LiteralPath $it.FullName -Algorithm SHA256).Hash
-            [void]$sb.AppendLine("file|$rel|$h")
-        }
-    }
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
-        ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    }
-    finally { $sha.Dispose() }
-}
-
-function Get-StringHash {
-    param([string]$Text)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
-        ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    }
-    finally { $sha.Dispose() }
-}
-
-function Get-GpoSysvolPath {
-    # Inside a Backup-GPO folder, the settings payload lives under
-    # {backup-guid}\DomainSysvol. Hashing only that subtree keeps the hash
-    # stable across re-backups (Backup.xml / bkupInfo.xml / gpreport.xml
-    # carry timestamps and a fresh backup GUID every time). A GPO with no
-    # settings has no DomainSysvol: return $null (hashes as '') rather than
-    # fall back to those volatile files, or it would re-ship on every run.
-    param([string]$BackupDir)
-    $guidDir = Get-ChildItem -LiteralPath $BackupDir -Directory |
-        Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
-    if ($null -eq $guidDir) { return $null }
-    $sysvol = Join-Path $guidDir.FullName 'DomainSysvol'
-    if (Test-Path -LiteralPath $sysvol) { return $sysvol }
-    return $null
-}
-
-function Write-Utf8File {
-    param([string]$Path, [string]$Content)
-    $enc = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($Path, $Content, $enc)
-}
-# endregion common
-
-function Get-YesNo { param([bool]$Value) if ($Value) { 'Yes' } else { 'No' } }
-
-function ConvertTo-WmiFilterParm2 {
-    # Single-query encoder; inverse of the parser in gpo_export.ps1.
-    param([string]$Namespace, [string]$Query)
-    '1;3;{0};{1};WQL;{2};{3};' -f $Namespace.Length, $Query.Length, $Namespace, $Query
-}
-
-function ConvertTo-LdapFilterValue {
-    # RFC 4515 escaping for a value inside an LDAP filter (backslash first).
-    param([string]$Value)
-    $Value.Replace('\', '\5c').Replace('*', '\2a').Replace('(', '\28').Replace(')', '\29')
-}
 
 function Get-GpoOrNull {
     # Get-GPO raises GpoWithNameNotFound for a missing display name. Anything
@@ -178,21 +98,6 @@ function Get-GpmcWmiFilter {
     $gpDomain = New-Object -TypeName Microsoft.GroupPolicy.GPDomain -ArgumentList $Domain, $pdc
     $criteria = New-Object -TypeName Microsoft.GroupPolicy.GPSearchCriteria
     $gpDomain.SearchWmiFilters($criteria) | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
-}
-
-function Test-Denied {
-    # A Deny entry (typically "Deny Apply group policy" to exclude admins).
-    param($Permission)
-    [bool]($Permission.PSObject.Properties['Denied'] -and $Permission.Denied)
-}
-
-function Get-RelativeTrusteeName {
-    param([string]$Name, [string]$NetBiosName)
-    if ($Name -and $Name.Contains('\')) {
-        $parts = $Name.Split('\', 2)
-        if ($parts[0] -eq $NetBiosName) { return $parts[1] }
-    }
-    $Name
 }
 
 function Sync-GpoSecurity {
@@ -325,16 +230,7 @@ if ($manifest) {
         $wrapper = Join-Path $gposRoot $dir
         if (-not (Test-Path -LiteralPath $wrapper)) { continue }
         $preflight.backup_folders++
-        $guidDirs = @(Get-ChildItem -LiteralPath $wrapper -Directory | Where-Object { $_.Name -match '^\{.+\}$' })
-        $problem = ''
-        if ($guidDirs.Count -ne 1) {
-            $problem = "expected one {GUID} subfolder, found $($guidDirs.Count)"
-        }
-        else {
-            foreach ($f in 'Backup.xml', 'gpreport.xml') {
-                if (-not (Test-Path -LiteralPath (Join-Path $guidDirs[0].FullName $f))) { $problem = "no $f in $($guidDirs[0].Name)" }
-            }
-        }
+        $problem = Test-GpoBackupFolder -Path $wrapper
         if ($problem) {
             [void]$incomplete.Add("GPO '$($p.Name)': backup folder '$dir' is incomplete ($problem)")
         }
@@ -366,10 +262,7 @@ $migTable = ''
 $preflight.migration_table = $null
 $preflight.migration_table_valid = $null
 if ($MigrationTablePath) {
-    $migTable = $MigrationTablePath
-    if (-not [System.IO.Path]::IsPathRooted($migTable)) {
-        $migTable = Join-Path $SourceDir $MigrationTablePath
-    }
+    $migTable = Resolve-GpoMigrationTablePath -Path $MigrationTablePath -SourceDir $SourceDir
     $preflight.migration_table = $migTable
     $preflight.migration_table_valid = $false
     if (-not (Test-Path -LiteralPath $migTable)) {
@@ -399,10 +292,7 @@ if ($migTable -and $preflight.migration_table_valid) { $migTableHash = (Get-File
 # -- state_dir: the real run writes the state file there, so prove it can. The
 #    nearest existing ancestor stands in for a directory that doesn't exist yet
 #    (New-Item creates the rest). The probe file is removed again. --
-$probeDir = $StateDir
-while ($probeDir -and -not (Test-Path -LiteralPath $probeDir -PathType Container)) {
-    $probeDir = [System.IO.Path]::GetDirectoryName($probeDir)
-}
+$probeDir = Get-NearestExistingDirectory -Path $StateDir
 $preflight.state_dir = $StateDir
 $preflight.state_dir_exists = [bool](Test-Path -LiteralPath $StateDir -PathType Container)
 $preflight.state_dir_probe = $probeDir
@@ -595,11 +485,8 @@ foreach ($name in $gpoOrder) {
         else {
             $backupHash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $wrapper)
             $importKey = Get-StringHash -Text ($backupHash + '|' + $migTableHash)
-            $reason = ''
-            if ($ForceImport) { $reason = 'forced' }
-            elseif (-not $liveGpo) { $reason = 'GPO missing in target' }
-            elseif (-not $state.ContainsKey($name)) { $reason = 'never imported by this pipeline' }
-            elseif ($state[$name] -ne $importKey) { $reason = 'backup content or migration table changed' }
+            $reason = Get-GpoImportReason -Force $ForceImport -LiveExists ($null -ne $liveGpo) `
+                -Recorded $state.ContainsKey($name) -RecordedKey ([string]$state[$name]) -ImportKey $importKey
             if ($reason) {
                 $desc = "import GPO '$name' ($reason)"
                 if ($migTable) { $desc += ' [migration table]' }
@@ -701,60 +588,49 @@ foreach ($som in $soms) {
             }
         }
 
-        # Reconcile the whole ordered list against a simulated work-list:
-        # Set-GPLink -Order renumbers neighbours, so per-link checks against a
-        # stale snapshot don't converge — tracking positions locally does.
-        $work = New-Object System.Collections.ArrayList
-        foreach ($l in @($inh.GpoLinks | Sort-Object Order)) {
-            [void]$work.Add(@{ name = $l.DisplayName; enforced = [bool]$l.Enforced; enabled = [bool]$l.Enabled })
-        }
-        $desired = @($som.links)
-        for ($i = 0; $i -lt $desired.Count; $i++) {
-            $d = $desired[$i]
-            $dName = [string]$d.gpo
-            $dEnf = [bool]$d.enforced
-            $dEna = [bool]$d.enabled
-            $pos = $i + 1
-            $idx = -1
-            for ($j = 0; $j -lt $work.Count; $j++) {
-                if ([string]$work[$j].name -ieq $dName) { $idx = $j; break }
-            }
-            try {
-                if ($idx -lt 0) {
-                    Invoke-Change -Description "SOM '$target': link '$dName' at order $pos (enforced=$dEnf, enabled=$dEna)" -Action {
-                        New-GPLink -Name $dName -Target $target -Domain $Domain -Server $pdc `
-                            -LinkEnabled (Get-YesNo $dEna) -Enforced (Get-YesNo $dEnf) -Order $pos | Out-Null
-                    }
-                    $work.Insert([Math]::Min($i, $work.Count), @{ name = $dName; enforced = $dEnf; enabled = $dEna })
-                }
-                else {
-                    $cur = $work[$idx]
-                    if (($idx -ne $i) -or ($cur.enforced -ne $dEnf) -or ($cur.enabled -ne $dEna)) {
-                        Invoke-Change -Description "SOM '$target': set link '$dName' order $pos (enforced=$dEnf, enabled=$dEna)" -Action {
-                            Set-GPLink -Name $dName -Target $target -Domain $Domain -Server $pdc `
-                                -LinkEnabled (Get-YesNo $dEna) -Enforced (Get-YesNo $dEnf) -Order $pos | Out-Null
+        # Reconcile the whole ordered list (Get-GpoLinkPlan: Set-GPLink -Order
+        # renumbers neighbours, so the plan tracks positions in a simulated
+        # work list rather than checking each link against a stale snapshot).
+        $currentLinks = @($inh.GpoLinks | Sort-Object Order | ForEach-Object {
+                @{ name = $_.DisplayName; enforced = [bool]$_.Enforced; enabled = [bool]$_.Enabled }
+            })
+        $plan = @(Get-GpoLinkPlan -Current $currentLinks -Desired @($som.links) -RemoveUnmanaged ([bool]$RemoveUnmanagedLinks))
+        foreach ($op in $plan) {
+            $opName = [string]$op.name
+            $opOrder = $op.order
+            $opEnf = [bool]$op.enforced
+            $opEna = [bool]$op.enabled
+            switch ($op.action) {
+                'new' {
+                    try {
+                        Invoke-Change -Description "SOM '$target': link '$opName' at order $opOrder (enforced=$opEnf, enabled=$opEna)" -Action {
+                            New-GPLink -Name $opName -Target $target -Domain $Domain -Server $pdc `
+                                -LinkEnabled (Get-YesNo $opEna) -Enforced (Get-YesNo $opEnf) -Order $opOrder | Out-Null
                         }
-                        $work.RemoveAt($idx)
-                        $work.Insert([Math]::Min($i, $work.Count), @{ name = $dName; enforced = $dEnf; enabled = $dEna })
+                    }
+                    catch {
+                        [void]$errors.Add("SOM '$target', link '$opName': $($_.Exception.Message)")
                     }
                 }
-            }
-            catch {
-                [void]$errors.Add("SOM '$target', link '$dName': $($_.Exception.Message)")
-            }
-        }
-
-        $desiredNames = @($desired | ForEach-Object { ([string]$_.gpo).ToLowerInvariant() })
-        foreach ($w in @($work)) {
-            if ($desiredNames -contains ([string]$w.name).ToLowerInvariant()) { continue }
-            if ($RemoveUnmanagedLinks) {
-                $wName = [string]$w.name
-                Invoke-Change -Description "SOM '$target': remove unmanaged link '$wName'" -Action {
-                    Remove-GPLink -Name $wName -Target $target -Domain $Domain -Server $pdc | Out-Null
+                'set' {
+                    try {
+                        Invoke-Change -Description "SOM '$target': set link '$opName' order $opOrder (enforced=$opEnf, enabled=$opEna)" -Action {
+                            Set-GPLink -Name $opName -Target $target -Domain $Domain -Server $pdc `
+                                -LinkEnabled (Get-YesNo $opEna) -Enforced (Get-YesNo $opEnf) -Order $opOrder | Out-Null
+                        }
+                    }
+                    catch {
+                        [void]$errors.Add("SOM '$target', link '$opName': $($_.Exception.Message)")
+                    }
                 }
-            }
-            else {
-                Add-Warning "SOM '$target': unmanaged link '$($w.name)' left in place (remove_unmanaged_links not set)"
+                'remove' {
+                    Invoke-Change -Description "SOM '$target': remove unmanaged link '$opName'" -Action {
+                        Remove-GPLink -Name $opName -Target $target -Domain $Domain -Server $pdc | Out-Null
+                    }
+                }
+                default {
+                    Add-Warning "SOM '$target': unmanaged link '$opName' left in place (remove_unmanaged_links not set)"
+                }
             }
         }
     }

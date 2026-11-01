@@ -15,7 +15,8 @@ Each area's roles and modules carry its prefix.
 > controller, within one domain, and `wsfc` by building a one-node
 > workgroup cluster. Every module has an integration target of its own
 > (`tests/integration/targets/<module>`), run from those scenarios: check
-> mode, the real change, the repeat, and every documented failure. Multi-node clusters aren't lab-tested yet
+> mode, the real change, the repeat, and every documented failure. The GPO
+> modules' logic also has Pester unit tests (`tests/unit`). Multi-node clusters aren't lab-tested yet
 > ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
 > and neither is importing GPOs into a *different* domain
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),

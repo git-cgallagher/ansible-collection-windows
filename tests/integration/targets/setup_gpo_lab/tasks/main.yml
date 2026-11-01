@@ -29,7 +29,7 @@
     parameters:
       Domain: "{{ setup_gpo_lab_domain }}"
       FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-    depth: 6
+    depth: 8
   register: setup_gpo_lab_domain_read
 
 - name: Check the fixture is seeded

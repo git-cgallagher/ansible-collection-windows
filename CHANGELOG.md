@@ -21,9 +21,28 @@ Every module has its own integration target (issue #44).
   export, and an ACL-denied `state_dir`. The roles' scenarios keep role
   behaviour (staging, fetch/unpack, variables, report-only) and leave the
   module's to the targets; `new_migtable.ps1` moved to `setup_gpo_lab`.
-- The `hygiene` CI job fails when a `plugins/modules/<name>.ps1` has no
-  `tests/integration/targets/<name>/tasks/main.yml`. AGENTS.md records the
-  standard: what a module's target must cover and where it runs.
+- `gpo_export` and `gpo_import` share `plugins/module_utils/_GpoCommon.psm1`
+  instead of each carrying a copy of the common helpers. It holds their pure
+  logic: hashing, the zip, the manifest's encodings, the export's state
+  decisions, the import decision and the link plan, now separate functions
+  (`Get-GpoImportReason`, `Get-GpoLinkPlan` and others). Behaviour is
+  unchanged: the hash format is pinned by a unit test, so recorded state
+  still matches. Small differences: `deleted` is sorted by name, and after a
+  failed link change in a run that fails anyway, the remaining links are
+  planned as if it had succeeded.
+- Pester unit tests (`tests/unit/plugins/`) for the util and both GPO
+  modules, run by the `powershell` CI job: the pinned hash formats,
+  `gpt.ini` left out of the live hash, the zip's entries, the WMI filter
+  encoding round trip, relative DNs and trustee names, the state carry-over
+  and deleted-GPO detection, the import reasons, the link plan (including
+  that it converges in one pass and a re-plan is empty), the migration table
+  path, the backup folder check and each module's wiring to the util.
+- The `hygiene` CI job fails when a role has no Molecule scenario, or a
+  module has no integration target or no unit tests (`wsfc_cluster` and the
+  IIS modules' unit tests are a follow-up; the job lists them as pending).
+  AGENTS.md records the standard: roles have Molecule scenarios; modules
+  have an integration target (what it must cover, where it runs) and Pester
+  unit tests.
 - **Fix:** a `gpo_export` run with `gpo_names` keeps the unselected GPOs'
   hashes in the state file. Before, it rewrote the state with the selected
   GPOs only, so the next unfiltered export re-shipped every other GPO and

@@ -1,4 +1,4 @@
-# read_domain.ps1 — the GPO targets' view of the lab domain, read through
+# read_domain.ps1 - the GPO targets' view of the lab domain, read through
 # GPMC and AD directly (never through the modules under test).
 #
 # Returns:

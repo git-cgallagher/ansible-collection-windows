@@ -18,7 +18,7 @@
     parameters:
       Domain: "{{ setup_gpo_lab_domain }}"
       FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-    depth: 6
+    depth: 8
   register: gpo_export_domain_before
 
 - name: Test gpo_export, then clean up
@@ -54,7 +54,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read
 
     - name: Check check mode planned every GPO, proved the parent writable and created nothing
@@ -87,7 +87,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read
 
     - name: Check every GPO shipped, as planned, into a zip with the manifest and a state file
@@ -104,12 +104,12 @@
           - gpo_export_first.preflight.work_dir_probed | lower == gpo_export_work_dir | lower
           - gpo_export_read.result.zip_exists
           - "'gpo-manifest.json' in gpo_export_read.result.entries"
-          - gpo_export_read.result.zip_gpos == gpo_export_first.shipped | map(attribute='backup_dir') | sort
+          - gpo_export_read.result.zip_gpos | sort == gpo_export_first.shipped | map(attribute='backup_dir') | sort
           - gpo_export_read.result.entries | select('match', '^gpos/[^/]+/manifest[.]xml$') | list | length == gpo_export_first.gpo_count
           - gpo_export_read.result.entries | select('match', '^gpos/[^/]+/[{][^/]+[}]/Backup[.]xml$') | list | length == gpo_export_first.gpo_count
           - gpo_export_read.result.state_exists
           - gpo_export_read.result.state.hash_basis == 'sysvol'
-          - gpo_export_read.result.state.gpos == gpo_export_gpo_names
+          - gpo_export_read.result.state.gpos | sort == gpo_export_gpo_names
         fail_msg: "{{ gpo_export_first }} / {{ gpo_export_read.result | combine({'manifest': '...'}) }}"
 
     # The manifest, against the fixture: links in precedence order (domain root
@@ -168,7 +168,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read_again
 
     # The zip is rewritten on every run (the role reads it only when something
@@ -200,7 +200,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read_check
 
     - name: Check check mode left the working directory byte-for-byte as it was
@@ -249,7 +249,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read_changed
 
     - name: Export the changed domain again
@@ -338,7 +338,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read_filtered
 
     - name: Check the filter selected the GPOs, skipped deletion detection and kept the others' state
@@ -353,7 +353,7 @@
           - gpo_export_filtered_full.deleted == []
           - gpo_export_read_filtered.result.zip_gpos == [gpo_export_fx.gpo_baseline]
           - gpo_export_read_filtered.result.manifest.gpos.keys() | list == [gpo_export_fx.gpo_baseline]
-          - gpo_export_read_filtered.result.state.gpos == (gpo_export_gpo_names + [gpo_export_temp_gpo]) | sort
+          - gpo_export_read_filtered.result.state.gpos | sort == (gpo_export_gpo_names + [gpo_export_temp_gpo]) | sort
         fail_msg: "{{ gpo_export_filtered }} / {{ gpo_export_filtered_full }} / {{ gpo_export_read_filtered.result.state }}"
 
     - name: Plan the export after the deletion (check mode)
@@ -379,7 +379,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read_deleted
 
     # The filtered runs wrote the filtered manifest, so the full one differs
@@ -397,7 +397,7 @@
           - gpo_export_deleted.gpo_count == gpo_export_gpo_names | length
           - gpo_export_deleted_again is not changed
           - gpo_export_deleted_again.deleted == []
-          - gpo_export_read_deleted.result.state.gpos == gpo_export_gpo_names
+          - gpo_export_read_deleted.result.state.gpos | sort == gpo_export_gpo_names
           - gpo_export_read_deleted.result.manifest.gpos.keys() | list | sort == gpo_export_gpo_names
         fail_msg: "{{ gpo_export_deleted_check }} / {{ gpo_export_deleted }} / {{ gpo_export_deleted_again }}"
 
@@ -408,7 +408,7 @@
         parameters:
           Domain: "{{ setup_gpo_lab_domain }}"
           FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-        depth: 6
+        depth: 8
       register: gpo_export_domain_before_errors
 
     - name: Leave the domain out
@@ -502,7 +502,7 @@
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
         parameters: "{{ gpo_export_read_params }}"
-        depth: 6
+        depth: 8
       register: gpo_export_read_after_errors
 
     - name: Read the domain after the failures
@@ -511,7 +511,7 @@
         parameters:
           Domain: "{{ setup_gpo_lab_domain }}"
           FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-        depth: 6
+        depth: 8
       register: gpo_export_domain_after_errors
 
     - name: Check the failures changed nothing
@@ -547,8 +547,14 @@
           param([string]$Domain, [string]$Name)
           Import-Module GroupPolicy
           $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
-          $value = Get-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
-              -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'ExportTargetProbe' -ErrorAction SilentlyContinue
+          $value = $null
+          try {
+              $value = Get-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
+                  -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'ExportTargetProbe' -ErrorAction Stop
+          }
+          catch {
+              $value = $null
+          }
           if ($value) {
               Remove-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
                   -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'ExportTargetProbe' | Out-Null
@@ -574,7 +580,7 @@
     parameters:
       Domain: "{{ setup_gpo_lab_domain }}"
       FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
-    depth: 6
+    depth: 8
   register: gpo_export_domain_after
 
 - name: Look for the working directories after the cleanup

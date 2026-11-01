@@ -1,4 +1,4 @@
-# read_export.ps1 — the gpo_export target's view of a working directory, read
+# read_export.ps1 - the gpo_export target's view of a working directory, read
 # from the file system and the zip (never through the module under test).
 #
 # Returns:
