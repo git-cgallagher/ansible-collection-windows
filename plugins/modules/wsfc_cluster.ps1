@@ -1,9 +1,13 @@
-# converge_cluster.ps1 — create a Windows Server Failover Cluster, or bring
-# an existing one in line with the role's variables.
-#
-# Runs on one of the cluster's nodes (the managing node) with the
-# FailoverClusters module. Invoked by roles/wsfc via
-# ansible.windows.win_powershell; also runnable standalone for debugging.
+#!powershell
+
+# Copyright: (c) 2026, Chris Gallagher (@git-cgallagher)
+# MIT License (see LICENSE or https://opensource.org/licenses/MIT)
+
+#AnsibleRequires -CSharpUtil Ansible.Basic
+
+# Create a Windows Server Failover Cluster, or bring an existing one in line
+# with the options. Runs on one of the cluster's nodes (the managing node)
+# with the FailoverClusters module.
 #
 # Order of operations:
 #   1. find the cluster through any node; refuse a node that belongs to a
@@ -17,50 +21,112 @@
 #      Add-ClusterDisk, rename, optional Cluster Shared Volume
 #   6. quorum witness (after the disks, so a disk witness can be one of them)
 #
-# -ReportOnly (and Ansible check mode) reports every action without changing
-# anything; on a cluster that doesn't exist yet it stops after step 2.
+# Check mode reports every action without changing anything; on a cluster
+# that doesn't exist yet it stops after step 2.
 #
-# Windows PowerShell 5.1-compatible.
+# The argument spec and Create come first: ansible-test's validate-modules
+# runs this file under pwsh on Linux up to Create to read the spec.
+$spec = @{
+    options = @{
+        name = @{ type = 'str'; required = $true }
+        nodes = @{ type = 'list'; elements = 'str'; required = $true }
+        administrative_access_point = @{
+            type = 'str'
+            default = 'ActiveDirectoryAndDns'
+            choices = 'ActiveDirectoryAndDns', 'Dns', 'None'
+        }
+        static_addresses = @{ type = 'list'; elements = 'str' }
+        ignore_networks = @{ type = 'list'; elements = 'str' }
+        validate = @{ type = 'bool'; default = $true }
+        validate_ignore = @{ type = 'list'; elements = 'str' }
+        report_dir = @{ type = 'str'; default = 'C:\ProgramData\wsfc-iac' }
+        quorum = @{
+            type = 'dict'
+            options = @{
+                type = @{ type = 'str'; choices = 'node_majority', 'disk_witness', 'file_share_witness', 'cloud_witness' }
+                disk = @{ type = 'str' }
+                path = @{ type = 'str' }
+                account_name = @{ type = 'str' }
+                access_key = @{ type = 'str'; no_log = $true }
+                endpoint = @{ type = 'str' }
+            }
+            required_if = @(
+                @('type', 'disk_witness', @('disk')),
+                @('type', 'file_share_witness', @('path')),
+                @('type', 'cloud_witness', @('account_name'))
+            )
+        }
+        networks = @{
+            type = 'list'
+            elements = 'dict'
+            options = @{
+                subnet = @{ type = 'str'; required = $true }
+                name = @{ type = 'str' }
+                role = @{ type = 'str'; choices = 'none', 'cluster', 'cluster_and_client' }
+                metric = @{ type = 'int' }
+            }
+        }
+        properties = @{ type = 'dict' }
+        disks = @{
+            type = 'list'
+            elements = 'dict'
+            options = @{
+                name = @{ type = 'str'; required = $true }
+                unique_id = @{ type = 'str'; required = $true }
+                csv = @{ type = 'bool'; default = $false }
+                initialize = @{ type = 'bool'; default = $false }
+                file_system = @{ type = 'str'; default = 'NTFS'; choices = 'NTFS', 'ReFS' }
+                allocation_unit_size = @{ type = 'int'; default = 65536 }
+                label = @{ type = 'str' }
+            }
+        }
+    }
+    supports_check_mode = $true
+}
 
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory = $true)][string]$Name,
-    [Parameter(Mandatory = $true)][string[]]$Nodes,
-    [string]$AdministrativeAccessPoint = 'ActiveDirectoryAndDns',
-    [string[]]$StaticAddresses = @(),
-    [string[]]$IgnoreNetworks = @(),
-    [bool]$Validate = $true,
-    [string[]]$ValidateIgnore = @(),
-    [string]$ReportDir = 'C:\ProgramData\wsfc-iac',
-    # Structured settings arrive as JSON: the shape is the role's argument
-    # spec, and ConvertFrom-Json is the same on every PowerShell version.
-    [string]$QuorumJson = '{}',
-    [string]$NetworksJson = '[]',
-    [string]$PropertiesJson = '{}',
-    [string]$DisksJson = '[]',
-    [bool]$ReportOnly = $false
-)
+$module = [Ansible.Basic.AnsibleModule]::Create($args, $spec)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-# The script runs non-interactively, where a prompt fails the run
+# The module runs non-interactively, where a prompt fails the run
 # ("PowerShell is in NonInteractive mode", seen from New-Cluster in the lab).
 # The clustering cmdlets have no -Confirm; New-Cluster gets -Force (below).
 $ConfirmPreference = 'None'
 
-$inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
-if ($inAnsible -and $Ansible.CheckMode) { $ReportOnly = $true }
+$name = $module.Params.name
+$nodes = @($module.Params.nodes)
+$accessPoint = $module.Params.administrative_access_point
+$validate = $module.Params.validate
+$reportDir = $module.Params.report_dir
+$checkMode = $module.CheckMode
+
+# A list option left out arrives as $null, and @($null).Count is 1.
+function Get-ListParam {
+    param([string]$Key)
+    $value = $module.Params[$Key]
+    if ($null -eq $value) { return @() }
+    @($value)
+}
+
+$staticAddresses = Get-ListParam 'static_addresses'
+$ignoreNetworks = Get-ListParam 'ignore_networks'
+$validateIgnore = Get-ListParam 'validate_ignore'
+$networks = Get-ListParam 'networks'
+$disks = Get-ListParam 'disks'
+$quorum = $module.Params.quorum
+if ($null -eq $quorum) { $quorum = @{} }
+$properties = $module.Params.properties
+if ($null -eq $properties) { $properties = @{} }
 
 $actions = New-Object System.Collections.Generic.List[string]
-$warnings = New-Object System.Collections.Generic.List[string]
 $script:validationReport = ''
 $script:created = $false
 
-# Record an action; carry it out unless this is a report-only run.
+# Record an action; carry it out unless this is a check-mode run.
 function Invoke-Change {
     param([string]$Description, [scriptblock]$Change)
     $actions.Add($Description)
-    if (-not $ReportOnly) { & $Change }
+    if (-not $checkMode) { & $Change }
 }
 
 function Get-ShortName {
@@ -68,20 +134,14 @@ function Get-ShortName {
     ($Computer -split '\.')[0].ToUpperInvariant()
 }
 
+# A sub-option that was left out is $null; an empty string counts as left out
+# too, so a role can pass '' for "not set".
 function Get-Setting {
     param($Object, [string]$Key, $Default = $null)
-    if ($null -ne $Object -and $Object.PSObject.Properties[$Key] -and $null -ne $Object.$Key) {
-        return $Object.$Key
+    if ($null -ne $Object -and $Object.ContainsKey($Key) -and $null -ne $Object[$Key] -and [string]$Object[$Key] -ne '') {
+        return $Object[$Key]
     }
     $Default
-}
-
-# Windows PowerShell 5.1's ConvertFrom-Json emits a JSON array as ONE object,
-# so @($json | ConvertFrom-Json) of '[]' is an array holding an empty array.
-# Enumerate it instead.
-function ConvertFrom-JsonArray {
-    param([string]$Json)
-    foreach ($item in ($Json | ConvertFrom-Json)) { $item }
 }
 
 function Get-ResourceTypeName {
@@ -109,27 +169,27 @@ function Test-NetworkMatch {
 # names the result. ClusterNotApproved means at least one test failed.
 function Invoke-Validation {
     param([string[]]$TestNodes)
-    if (-not $Validate) { return }
-    if ($ReportOnly) {
+    if (-not $validate) { return }
+    if ($checkMode) {
         $actions.Add("validate nodes $($TestNodes -join ', ') with Test-Cluster")
         return
     }
-    if (-not (Test-Path -LiteralPath $ReportDir)) {
-        $null = New-Item -ItemType Directory -Path $ReportDir -Force
+    if (-not (Test-Path -LiteralPath $reportDir)) {
+        $null = New-Item -ItemType Directory -Path $reportDir -Force
     }
-    $reportName = Join-Path $ReportDir ('validate-{0}-{1}' -f $Name, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $reportName = Join-Path -Path $reportDir -ChildPath ('validate-{0}-{1}' -f $name, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     $testParams = @{
         Node = $TestNodes
         ReportName = $reportName
         WarningVariable = 'testWarnings'
         WarningAction = 'SilentlyContinue'
     }
-    if ($ValidateIgnore.Count -gt 0) { $testParams.Ignore = $ValidateIgnore }
+    if ($validateIgnore.Count -gt 0) { $testParams.Ignore = $validateIgnore }
     $testWarnings = $null
     $report = Test-Cluster @testParams
     if ($null -ne $report) { $script:validationReport = [string]@($report)[0].FullName }
     $text = (@($testWarnings) | ForEach-Object { [string]$_ }) -join ' '
-    foreach ($w in @($testWarnings)) { $warnings.Add("Test-Cluster: $w") }
+    foreach ($w in @($testWarnings)) { $module.Warn("Test-Cluster: $w") }
     if ($text -match 'ClusterNotApproved') {
         throw "Test-Cluster failed for $($TestNodes -join ', '); see $($script:validationReport)"
     }
@@ -142,7 +202,7 @@ function Assert-NoClusterDatabase {
     param([string[]]$TestNodes)
     foreach ($node in $TestNodes) {
         if ((Get-ShortName $node) -eq (Get-ShortName $env:COMPUTERNAME)) {
-            $db = Join-Path $env:windir 'Cluster\CLUSDB'
+            $db = Join-Path -Path $env:windir -ChildPath 'Cluster\CLUSDB'
         }
         else {
             $db = "\\$node\ADMIN$\Cluster\CLUSDB"
@@ -156,22 +216,18 @@ function Assert-NoClusterDatabase {
 
 function Invoke-Main {
     try {
-        Import-Module FailoverClusters
+        Import-Module -Name FailoverClusters
     }
     catch {
-        if ($ReportOnly) {
+        if ($checkMode) {
             # A check-mode run before the feature is installed.
-            $actions.Add("create cluster $Name with nodes $($Nodes -join ', ') (Failover Clustering isn't installed yet)")
+            $actions.Add("create cluster $name with nodes $($nodes -join ', ') (Failover Clustering isn't installed yet)")
             return
         }
-        throw "The FailoverClusters PowerShell module is required (feature RSAT-Clustering-PowerShell): $_"
+        throw "The FailoverClusters PowerShell module is required (feature RSAT-Clustering-PowerShell): $($_.Exception.Message)"
     }
 
-    $quorum = $QuorumJson | ConvertFrom-Json
-    $networks = @(ConvertFrom-JsonArray $NetworksJson)
-    $properties = $PropertiesJson | ConvertFrom-Json
-    $disks = @(ConvertFrom-JsonArray $DisksJson)
-    $wanted = @($Nodes | ForEach-Object { Get-ShortName $_ })
+    $wanted = @($nodes | ForEach-Object { Get-ShortName $_ })
     $local = Get-ShortName $env:COMPUTERNAME
 
     # --- 1. find the cluster ---------------------------------------------------
@@ -179,7 +235,7 @@ function Invoke-Main {
     # administrative access point has no name to resolve.
     $cluster = $null
     $via = ''
-    foreach ($node in $Nodes) {
+    foreach ($node in $nodes) {
         $found = $null
         try {
             $found = Get-Cluster -Name $node -ErrorAction Stop
@@ -187,8 +243,8 @@ function Invoke-Main {
         catch {
             continue
         }
-        if ($found.Name -ne $Name) {
-            throw "Node $node already belongs to cluster $($found.Name), not $Name"
+        if ($found.Name -ne $name) {
+            throw "Node $node already belongs to cluster $($found.Name), not $name"
         }
         if ($null -eq $cluster) {
             $cluster = $found
@@ -198,60 +254,59 @@ function Invoke-Main {
 
     # --- 2. create, or join missing nodes ------------------------------------
     if ($null -eq $cluster) {
-        Invoke-Validation -TestNodes $Nodes
+        Invoke-Validation -TestNodes $nodes
         $newParams = @{
-            Name = $Name
-            Node = $Nodes
+            Name = $name
+            Node = $nodes
             NoStorage = $true
-            AdministrativeAccessPoint = $AdministrativeAccessPoint
+            AdministrativeAccessPoint = $accessPoint
         }
-        if ($AdministrativeAccessPoint -ne 'None') {
-            if ($StaticAddresses.Count -gt 0) { $newParams.StaticAddress = $StaticAddresses }
-            if ($IgnoreNetworks.Count -gt 0) { $newParams.IgnoreNetwork = $IgnoreNetworks }
+        if ($accessPoint -ne 'None') {
+            if ($staticAddresses.Count -gt 0) { $newParams.StaticAddress = $staticAddresses }
+            if ($ignoreNetworks.Count -gt 0) { $newParams.IgnoreNetwork = $ignoreNetworks }
         }
-        elseif ($StaticAddresses.Count -gt 0) {
-            $warnings.Add('Static addresses are ignored: an administrative access point of None has no IP address')
+        elseif ($staticAddresses.Count -gt 0) {
+            $module.Warn('Static addresses are ignored: an administrative access point of None has no IP address')
         }
-        Invoke-Change "create cluster $Name with nodes $($Nodes -join ', ') (access point $AdministrativeAccessPoint)" {
-            Assert-NoClusterDatabase -TestNodes $Nodes
+        Invoke-Change "create cluster $name with nodes $($nodes -join ', ') (access point $accessPoint)" {
+            Assert-NoClusterDatabase -TestNodes $nodes
             $null = New-Cluster @newParams -Force
             $script:created = $true
         }
-        if ($ReportOnly) {
-            if ($networks.Count -or $disks.Count -or $properties.PSObject.Properties.Name -or
-                $quorum.PSObject.Properties.Name) {
-                $warnings.Add('Networks, properties, disks and quorum are planned once the cluster exists')
+        if ($checkMode) {
+            if ($networks.Count -or $disks.Count -or $properties.Count -or (Get-Setting -Object $quorum -Key 'type')) {
+                $module.Warn('Networks, properties, disks and quorum are planned once the cluster exists')
             }
             return
         }
     }
     else {
         $members = @(Get-ClusterNode -Cluster $via | ForEach-Object { Get-ShortName $_.Name })
-        $missing = @($Nodes | Where-Object { $members -notcontains (Get-ShortName $_) })
+        $missing = @($nodes | Where-Object { $members -notcontains (Get-ShortName $_) })
         if ($missing.Count -gt 0) {
-            Invoke-Validation -TestNodes $Nodes
+            Invoke-Validation -TestNodes $nodes
             foreach ($node in $missing) {
-                Invoke-Change "add node $node to cluster $Name" {
+                Invoke-Change "add node $node to cluster $name" {
                     $null = Add-ClusterNode -Cluster $via -Name $node -NoStorage
                 }
             }
         }
         foreach ($extra in @($members | Where-Object { $wanted -notcontains $_ })) {
-            $warnings.Add("Node $extra is in cluster $Name but not in wsfc_nodes; it was left in place")
+            $module.Warn("Node $extra is in cluster $name but not in nodes; it was left in place")
         }
     }
 
     # Connect through this node from here on: it is a member now, and a node
-    # works whether or not the cluster has a name. In a report-only run it may
+    # works whether or not the cluster has a name. In a check-mode run it may
     # not be a member yet, so use the node the cluster was found through.
     $conn = $local
-    if ($ReportOnly -and $via) { $conn = $via }
+    if ($checkMode -and $via) { $conn = $via }
 
     # --- 3. networks -----------------------------------------------------------
     $roleValues = @{ none = 0; cluster = 1; cluster_and_client = 3 }
     $clusterNetworks = @(Get-ClusterNetwork -Cluster $conn)
-    foreach ($spec in $networks) {
-        $subnetText = [string](Get-Setting -Object $spec -Key 'subnet' -Default '')
+    foreach ($netSpec in $networks) {
+        $subnetText = [string]$netSpec.subnet
         if ($subnetText -notmatch '^(.+)/(\d+)$') {
             throw "Network subnet '$subnetText' must be in CIDR form, for example 10.10.10.0/24"
         }
@@ -260,13 +315,12 @@ function Invoke-Main {
         $net = $clusterNetworks | Where-Object { Test-NetworkMatch -Network $_ -Subnet $subnet -Prefix $prefix } |
             Select-Object -First 1
         if ($null -eq $net) {
-            $warnings.Add("No cluster network matches $subnetText; is a node NIC on that subnet?")
+            $module.Warn("No cluster network matches $subnetText; is a node NIC on that subnet?")
             continue
         }
         $label = $net.Name
-        $role = Get-Setting -Object $spec -Key 'role'
+        $role = Get-Setting -Object $netSpec -Key 'role'
         if ($null -ne $role) {
-            if (-not $roleValues.ContainsKey([string]$role)) { throw "Network $subnetText has an unknown role '$role'" }
             $want = $roleValues[[string]$role]
             if ([int]$net.Role -ne $want) {
                 Invoke-Change "set network $label ($subnetText) role from $([int]$net.Role) to $want ($role)" {
@@ -274,13 +328,13 @@ function Invoke-Main {
                 }
             }
         }
-        $metric = Get-Setting -Object $spec -Key 'metric'
+        $metric = Get-Setting -Object $netSpec -Key 'metric'
         if ($null -ne $metric -and [int]$net.Metric -ne [int]$metric) {
             Invoke-Change "set network $label ($subnetText) metric from $($net.Metric) to $metric" {
                 $net.Metric = [uint32]$metric
             }
         }
-        $newName = [string](Get-Setting -Object $spec -Key 'name' -Default '')
+        $newName = [string](Get-Setting -Object $netSpec -Key 'name' -Default '')
         if ($newName -and $net.Name -ne $newName) {
             Invoke-Change "rename network $label ($subnetText) to $newName" {
                 $net.Name = $newName
@@ -290,15 +344,15 @@ function Invoke-Main {
 
     # --- 4. common properties --------------------------------------------------
     $clusterObject = Get-Cluster -Name $conn
-    foreach ($prop in @($properties.PSObject.Properties)) {
-        if (-not $clusterObject.PSObject.Properties[$prop.Name]) {
-            throw "Cluster $Name has no common property '$($prop.Name)'"
+    foreach ($propName in @($properties.Keys)) {
+        if (-not $clusterObject.PSObject.Properties[$propName]) {
+            throw "Cluster $name has no common property '$propName'"
         }
-        $current = [string]$clusterObject.($prop.Name)
-        $desired = [string]$prop.Value
+        $current = [string]$clusterObject.$propName
+        $desired = [string]$properties[$propName]
         if ($current -ne $desired) {
-            Invoke-Change "set cluster property $($prop.Name) from '$current' to '$desired'" {
-                $clusterObject.($prop.Name) = $prop.Value
+            Invoke-Change "set cluster property $propName from '$current' to '$desired'" {
+                $clusterObject.$propName = $properties[$propName]
             }
         }
     }
@@ -307,16 +361,16 @@ function Invoke-Main {
     if ($disks.Count -gt 0) {
         $resources = @(Get-ClusterResource -Cluster $conn)
         $sharedVolumes = @(Get-ClusterSharedVolume -Cluster $conn)
-        foreach ($spec in $disks) {
-            $diskName = [string](Get-Setting -Object $spec -Key 'name' -Default '')
-            $uniqueId = [string](Get-Setting -Object $spec -Key 'unique_id' -Default '')
-            $csv = [bool](Get-Setting -Object $spec -Key 'csv' -Default $false)
+        foreach ($diskSpec in $disks) {
+            $diskName = [string]$diskSpec.name
+            $uniqueId = [string]$diskSpec.unique_id
+            $csv = [bool]$diskSpec.csv
             if (-not $diskName -or -not $uniqueId) { throw 'Every disk needs a name and a unique_id' }
 
             # A disk added to CSV leaves Get-ClusterResource for Get-ClusterSharedVolume.
             if ($sharedVolumes | Where-Object { $_.Name -eq $diskName }) {
                 if (-not $csv) {
-                    $warnings.Add("Disk $diskName is a Cluster Shared Volume but csv is false; it was left as a CSV")
+                    $module.Warn("Disk $diskName is a Cluster Shared Volume but csv is false; it was left as a CSV")
                 }
                 continue
             }
@@ -339,10 +393,10 @@ function Invoke-Main {
                 throw "Disk $diskName : no disk on $local has UniqueId $uniqueId (Get-Disk | Select-Object Number, UniqueId)"
             }
             if ([string]$disk.PartitionStyle -eq 'RAW') {
-                if ([bool](Get-Setting -Object $spec -Key 'initialize' -Default $false)) {
-                    $fileSystem = [string](Get-Setting -Object $spec -Key 'file_system' -Default 'NTFS')
-                    $unitSize = [int](Get-Setting -Object $spec -Key 'allocation_unit_size' -Default 65536)
-                    $volumeLabel = [string](Get-Setting -Object $spec -Key 'label' -Default '')
+                if ([bool]$diskSpec.initialize) {
+                    $fileSystem = [string]$diskSpec.file_system
+                    $unitSize = [int]$diskSpec.allocation_unit_size
+                    $volumeLabel = [string](Get-Setting -Object $diskSpec -Key 'label' -Default '')
                     if (-not $volumeLabel) { $volumeLabel = $diskName }
                     Invoke-Change "initialize disk $($disk.Number) ($diskName) as GPT and format it $fileSystem ($unitSize-byte units)" {
                         if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false }
@@ -354,19 +408,19 @@ function Invoke-Main {
                     }
                 }
                 else {
-                    $warnings.Add("Disk $diskName (disk $($disk.Number)) is RAW; set initialize to format it")
+                    $module.Warn("Disk $diskName (disk $($disk.Number)) is RAW; set initialize to format it")
                 }
             }
             $available = $null
-            if (-not $ReportOnly) {
+            if (-not $checkMode) {
                 $available = Get-ClusterAvailableDisk -Cluster $conn | Where-Object { $_.Number -eq $disk.Number } |
                     Select-Object -First 1
                 if ($null -eq $available) {
-                    throw ("Disk $diskName (disk $($disk.Number) on $local) isn't available to cluster $Name. " +
+                    throw ("Disk $diskName (disk $($disk.Number) on $local) isn't available to cluster $name. " +
                         'It must be visible to every node and not already be a cluster disk under another name.')
                 }
             }
-            Invoke-Change "add disk $($disk.Number) to cluster $Name as $diskName$(if ($csv) { ' (CSV)' })" {
+            Invoke-Change "add disk $($disk.Number) to cluster $name as $diskName$(if ($csv) { ' (CSV)' })" {
                 $resource = $available | Add-ClusterDisk
                 $resource.Name = $diskName
                 if ($csv) { $null = Add-ClusterSharedVolume -Cluster $conn -Name $diskName }
@@ -437,41 +491,35 @@ function Invoke-Main {
     }
 }
 
-$failed = $false
-$errorText = ''
-$errorDetail = ''
+# The result is filled in before a failure is reported, so a run that stopped
+# halfway still says what it did (changed, actions) and what it planned.
+function Set-ModuleResult {
+    $module.Result.cluster = $name
+    $module.Result.created = $script:created
+    $module.Result.actions = @($actions)
+    $module.Result.validation_report = $script:validationReport
+    # Diagnostic only (the double hop); never worth failing the run for.
+    try {
+        $module.Result.identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    }
+    catch {
+        $module.Result.identity = ''
+    }
+    # In check mode an action that would be taken is a change, as for a real run.
+    $module.Result.changed = $actions.Count -gt 0
+    $module.Diff.prepared = ($actions -join "`n")
+}
+
+# FailJson exits through an exception, so it is only called outside the try
+# block, from the catch.
 try {
     Invoke-Main
 }
 catch {
-    $failed = $true
-    $errorText = '{0} (at line {1}: {2})' -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber,
-    $_.InvocationInfo.Line.Trim()
-    $errorDetail = ($_.Exception.ToString() + "`n" + $_.ScriptStackTrace)
-    if ($errorDetail.Length -gt 4000) { $errorDetail = $errorDetail.Substring(0, 4000) }
-    if (-not $inAnsible) { throw }
+    Set-ModuleResult
+    $msg = '{0} (at line {1}: {2})' -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber, $_.InvocationInfo.Line.Trim()
+    $module.FailJson($msg, $_)
 }
 
-$result = @{
-    cluster = $Name
-    report_only = $ReportOnly
-    created = $script:created
-    actions = @($actions)
-    warnings = @($warnings)
-    validation_report = $script:validationReport
-    identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    remote_session = $null -ne (Get-Variable -Name PSSenderInfo -ValueOnly -ErrorAction SilentlyContinue)
-}
-if ($inAnsible) {
-    # A report-only run that found work reports "changed", like check mode.
-    $Ansible.Changed = $actions.Count -gt 0
-    $Ansible.Result = $result
-    if ($failed) {
-        $Ansible.Failed = $true
-        $result.error = $errorText
-        $result.error_detail = $errorDetail
-    }
-}
-else {
-    [pscustomobject]$result
-}
+Set-ModuleResult
+$module.ExitJson()

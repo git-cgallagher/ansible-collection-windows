@@ -1,0 +1,29 @@
+---
+# Installs Failover Clustering and its PowerShell tools, and reads the node's
+# computer name. Idempotent, so every target can depend on it (meta/main.yml).
+#
+# A host of your own must also meet Microsoft's prerequisites for a workgroup
+# cluster, which the wsfc Molecule scenario's prepare step sets: a primary
+# DNS suffix, and LocalAccountTokenFilterPolicy = 1 for a local administrator
+# that isn't the built-in Administrator. The targets create the cluster
+# through runas become as ansible_user, which needs ansible_password.
+- name: Install Failover Clustering and its PowerShell tools
+  ansible.windows.win_feature:
+    name:
+      - Failover-Clustering
+      - RSAT-Clustering-PowerShell
+    include_management_tools: true
+    state: present
+  register: setup_wsfc_feature
+
+- name: Reboot when the install asks for it
+  ansible.windows.win_reboot:
+    reboot_timeout: 1800
+  when: setup_wsfc_feature.reboot_required
+
+# The cluster's node name is the computer name; the platform subset (in min)
+# sets ansible_hostname.
+- name: Read the node's computer name
+  ansible.windows.setup:
+    gather_subset: ['!all', 'min']
+  when: ansible_hostname is not defined

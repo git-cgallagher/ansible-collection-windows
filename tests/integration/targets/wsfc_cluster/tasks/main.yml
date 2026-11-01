@@ -1,0 +1,373 @@
+---
+# Integration tests for git_cgallagher.windows.wsfc_cluster on one node.
+# setup_wsfc (meta/main.yml) has installed Failover Clustering and read the
+# node's computer name. Every check reads the cluster through setup_wsfc's
+# cluster_state.ps1 (the FailoverClusters cmdlets), never through the module
+# under test. Each change runs in check mode first (predicts it, writes
+# nothing), then for real, then again (no change).
+#
+# The cluster tasks run through runas become: New-Cluster reaches the node
+# again from inside the WinRM session, which a plain logon can't delegate.
+# Starts by removing any cluster the node is in, and always removes its own.
+- name: Remove any cluster the node is in
+  ansible.windows.win_powershell:
+    script: "{{ setup_wsfc_remove_script }}"
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ ansible_user }}"
+  vars:
+    ansible_become_password: "{{ ansible_password }}"
+
+- name: Test wsfc_cluster, then clean up
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ ansible_user }}"
+  vars:
+    ansible_become_password: "{{ ansible_password }}"
+    wsfc_cluster_test_network_name: Ansible Test
+    wsfc_cluster_test_metric: 31000
+    wsfc_cluster_test_same_subnet: 20
+    wsfc_cluster_test_cross_subnet: 30
+  block:
+    # --- create ----------------------------------------------------------------
+    - name: Plan the cluster's creation (check mode)
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        properties:
+          SameSubnetThreshold: "{{ wsfc_cluster_test_same_subnet }}"
+        quorum:
+          type: node_majority
+      check_mode: true
+      diff: true
+      register: wsfc_cluster_create_check
+
+    - name: Read the cluster after the check-mode create
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read
+
+    - name: Check check mode predicted the create, warned about the rest, and wrote nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_create_check is changed
+          - not wsfc_cluster_create_check.created
+          - wsfc_cluster_create_check.cluster == setup_wsfc_name
+          - wsfc_cluster_create_check.actions | length == 1
+          - wsfc_cluster_create_check.actions[0] is search('create cluster ' ~ setup_wsfc_name)
+          - wsfc_cluster_create_check.actions[0] is search('access point None')
+          - wsfc_cluster_create_check.diff.prepared is search('create cluster ' ~ setup_wsfc_name)
+          - wsfc_cluster_create_check.warnings | select('search', 'planned once the cluster exists') | list | length == 1
+          - not wsfc_cluster_read.result.exists
+        fail_msg: "{{ wsfc_cluster_create_check }} / {{ wsfc_cluster_read.result }}"
+
+    - name: Create the cluster
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+      diff: true
+      register: wsfc_cluster_create
+
+    - name: Read the cluster after the create
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read
+
+    - name: Check the cluster exists with this node in it
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_create is changed
+          - wsfc_cluster_create.created
+          - wsfc_cluster_create.actions | length == 1
+          - wsfc_cluster_create.actions[0] is search('create cluster ' ~ setup_wsfc_name)
+          - wsfc_cluster_create.diff.prepared.splitlines() == wsfc_cluster_create.actions
+          - wsfc_cluster_create.validation_report == ''
+          - wsfc_cluster_read.result.exists
+          - wsfc_cluster_read.result.name == setup_wsfc_name
+          - wsfc_cluster_read.result.nodes | map('upper') | list == [ansible_hostname | upper]
+          - wsfc_cluster_read.result.node_states == ['Up']
+          - wsfc_cluster_read.result.networks | length >= 1
+        fail_msg: "{{ wsfc_cluster_create }} / {{ wsfc_cluster_read.result }}"
+
+    - name: Create the cluster again
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+      register: wsfc_cluster_create_again
+
+    - name: Check the repeat changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_create_again is not changed
+          - not wsfc_cluster_create_again.created
+          - wsfc_cluster_create_again.actions == []
+        fail_msg: "{{ wsfc_cluster_create_again | string }}"
+
+    # --- converge the network, properties and quorum ---------------------------------
+    # The network's subnet comes from the cluster, so the test works on any host.
+    - name: Converge the network, properties and quorum (check mode)
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        networks:
+          - subnet: "{{ wsfc_cluster_subnet }}"
+            name: "{{ wsfc_cluster_test_network_name }}"
+            role: cluster
+            metric: "{{ wsfc_cluster_test_metric }}"
+        properties:
+          SameSubnetThreshold: "{{ wsfc_cluster_test_same_subnet }}"
+          CrossSubnetThreshold: "{{ wsfc_cluster_test_cross_subnet }}"
+        quorum:
+          type: node_majority
+      vars:
+        wsfc_cluster_subnet: "{{ wsfc_cluster_read.result.networks[0].subnet }}"
+      check_mode: true
+      diff: true
+      register: wsfc_cluster_converge_check
+
+    - name: Read the cluster after the check-mode converge
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_after_check
+
+    - name: Check check mode planned the changes and wrote nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_converge_check is changed
+          - wsfc_cluster_converge_check.actions | select('search', 'rename network') | list | length == 1
+          - wsfc_cluster_converge_check.actions | select('search', 'metric') | list | length == 1
+          - wsfc_cluster_converge_check.actions | select('search', 'property SameSubnetThreshold') | list | length == 1
+          - wsfc_cluster_converge_check.actions | select('search', 'property CrossSubnetThreshold') | list | length == 1
+          - wsfc_cluster_converge_check.diff.prepared.splitlines() == wsfc_cluster_converge_check.actions
+          - wsfc_cluster_read_after_check.result.networks == wsfc_cluster_read.result.networks
+          - wsfc_cluster_read_after_check.result.same_subnet_threshold == wsfc_cluster_read.result.same_subnet_threshold
+        fail_msg: "{{ wsfc_cluster_converge_check }} / {{ wsfc_cluster_read_after_check.result }}"
+
+    - name: Converge the network, properties and quorum
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        networks:
+          - subnet: "{{ wsfc_cluster_subnet }}"
+            name: "{{ wsfc_cluster_test_network_name }}"
+            role: cluster
+            metric: "{{ wsfc_cluster_test_metric }}"
+        properties:
+          SameSubnetThreshold: "{{ wsfc_cluster_test_same_subnet }}"
+          CrossSubnetThreshold: "{{ wsfc_cluster_test_cross_subnet }}"
+        quorum:
+          type: node_majority
+      vars:
+        wsfc_cluster_subnet: "{{ wsfc_cluster_read.result.networks[0].subnet }}"
+      register: wsfc_cluster_converge
+
+    - name: Read the cluster after the converge
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_converged
+
+    - name: Check the cluster matches the options
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_converge is changed
+          - not wsfc_cluster_converge.created
+          - wsfc_cluster_converge.actions == wsfc_cluster_converge_check.actions
+          - wsfc_cluster_read_converged.result.networks[0].name == wsfc_cluster_test_network_name
+          - wsfc_cluster_read_converged.result.networks[0].role == 1
+          - wsfc_cluster_read_converged.result.networks[0].metric == wsfc_cluster_test_metric
+          - wsfc_cluster_read_converged.result.same_subnet_threshold == wsfc_cluster_test_same_subnet
+          - wsfc_cluster_read_converged.result.cross_subnet_threshold == wsfc_cluster_test_cross_subnet
+          - not wsfc_cluster_read_converged.result.witness
+        fail_msg: "{{ wsfc_cluster_converge }} / {{ wsfc_cluster_read_converged.result }}"
+
+    - name: Converge again
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        networks:
+          - subnet: "{{ wsfc_cluster_subnet }}"
+            name: "{{ wsfc_cluster_test_network_name }}"
+            role: cluster
+            metric: "{{ wsfc_cluster_test_metric }}"
+        properties:
+          SameSubnetThreshold: "{{ wsfc_cluster_test_same_subnet }}"
+          CrossSubnetThreshold: "{{ wsfc_cluster_test_cross_subnet }}"
+        quorum:
+          type: node_majority
+      vars:
+        wsfc_cluster_subnet: "{{ wsfc_cluster_read.result.networks[0].subnet }}"
+      register: wsfc_cluster_converge_again
+
+    - name: Check the repeat changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_converge_again is not changed
+          - wsfc_cluster_converge_again.actions == []
+        fail_msg: "{{ wsfc_cluster_converge_again | string }}"
+
+    # --- out-of-band drift ------------------------------------------------------------
+    - name: Drift a property and the network's name out-of-band
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module -Name FailoverClusters
+          (Get-Cluster -Name $env:COMPUTERNAME).SameSubnetThreshold = 12
+          (Get-ClusterNetwork -Cluster $env:COMPUTERNAME | Select-Object -First 1).Name = 'Drifted'
+
+    - name: Plan the fix (check mode)
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        networks:
+          - subnet: "{{ wsfc_cluster_subnet }}"
+            name: "{{ wsfc_cluster_test_network_name }}"
+            role: cluster
+            metric: "{{ wsfc_cluster_test_metric }}"
+        properties:
+          SameSubnetThreshold: "{{ wsfc_cluster_test_same_subnet }}"
+          CrossSubnetThreshold: "{{ wsfc_cluster_test_cross_subnet }}"
+        quorum:
+          type: node_majority
+      vars:
+        wsfc_cluster_subnet: "{{ wsfc_cluster_read.result.networks[0].subnet }}"
+      check_mode: true
+      diff: true
+      register: wsfc_cluster_drift_check
+
+    - name: Read the cluster after the plan
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_drifted
+
+    - name: Check the plan has exactly the two fixes and the drift is still there
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_drift_check is changed
+          - wsfc_cluster_drift_check.actions | length == 2
+          - wsfc_cluster_drift_check.actions | select('search', 'rename network Drifted') | list | length == 1
+          - wsfc_cluster_drift_check.actions | select('search', "SameSubnetThreshold from '12' to '" ~ wsfc_cluster_test_same_subnet ~ "'") | list | length == 1
+          - wsfc_cluster_read_drifted.result.same_subnet_threshold == 12
+          - wsfc_cluster_read_drifted.result.networks[0].name == 'Drifted'
+        fail_msg: "{{ wsfc_cluster_drift_check }} / {{ wsfc_cluster_read_drifted.result }}"
+
+    - name: Fix the drift
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        networks:
+          - subnet: "{{ wsfc_cluster_subnet }}"
+            name: "{{ wsfc_cluster_test_network_name }}"
+            role: cluster
+            metric: "{{ wsfc_cluster_test_metric }}"
+        properties:
+          SameSubnetThreshold: "{{ wsfc_cluster_test_same_subnet }}"
+          CrossSubnetThreshold: "{{ wsfc_cluster_test_cross_subnet }}"
+        quorum:
+          type: node_majority
+      vars:
+        wsfc_cluster_subnet: "{{ wsfc_cluster_read.result.networks[0].subnet }}"
+      register: wsfc_cluster_drift_fix
+
+    - name: Read the cluster after the fix
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_fixed
+
+    - name: Check the drift was fixed, and only that
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_drift_fix is changed
+          - wsfc_cluster_drift_fix.actions == wsfc_cluster_drift_check.actions
+          - wsfc_cluster_read_fixed.result == wsfc_cluster_read_converged.result
+        fail_msg: "{{ wsfc_cluster_drift_fix }} / {{ wsfc_cluster_read_fixed.result }}"
+
+    # --- errors ---------------------------------------------------------------------------
+    - name: Name a cluster this node doesn't belong to
+      git_cgallagher.windows.wsfc_cluster:
+        name: WSFCOTHER
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+      register: wsfc_cluster_wrong_name
+      failed_when: >-
+        'already belongs to cluster ' ~ setup_wsfc_name not in (wsfc_cluster_wrong_name.msg | default(''))
+
+    - name: Set a common property the cluster doesn't have
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        properties:
+          NoSuchProperty: 1
+      register: wsfc_cluster_bad_property
+      failed_when: "'has no common property' not in (wsfc_cluster_bad_property.msg | default(''))"
+
+    - name: Leave the disk out of a disk witness quorum
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_hostname }}"]
+        administrative_access_point: None
+        validate: false
+        quorum:
+          type: disk_witness
+      register: wsfc_cluster_bad_quorum
+      failed_when: >-
+        'type is disk_witness but all of the following are missing: disk' not in (wsfc_cluster_bad_quorum.msg | default(''))
+
+    - name: Read the cluster after the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_after_errors
+
+    - name: Check the failures changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_wrong_name is not changed
+          - wsfc_cluster_bad_property is not changed
+          - wsfc_cluster_bad_quorum is not changed
+          - wsfc_cluster_read_after_errors.result == wsfc_cluster_read_converged.result
+        fail_msg: "{{ wsfc_cluster_read_after_errors.result | string }}"
+  always:
+    - name: Remove the test cluster
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_remove_script }}"
+      register: wsfc_cluster_cleanup
+
+- name: Read the cluster after the cleanup
+  ansible.windows.win_powershell:
+    script: "{{ setup_wsfc_read_script }}"
+    depth: 5
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ ansible_user }}"
+  vars:
+    ansible_become_password: "{{ ansible_password }}"
+  register: wsfc_cluster_read_final
+
+- name: Check the tests left no cluster behind
+  ansible.builtin.assert:
+    that: not wsfc_cluster_read_final.result.exists
+    fail_msg: "{{ wsfc_cluster_read_final.result | string }}"

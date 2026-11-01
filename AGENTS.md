@@ -30,7 +30,9 @@ Its second area is **failover clustering** (0.3.0):
 - `roles/wsfc` — install Failover Clustering on every host in the
   play, then from one managing node validate, create the cluster (or add
   missing nodes) and converge networks, common properties, named shared
-  disks and the quorum witness (`files/converge_cluster.ps1`). It's the base
+  disks and the quorum witness, through the `wsfc_cluster` module
+  (`plugins/modules/wsfc_cluster.ps1`, which was the role's
+  `files/converge_cluster.ps1` until 0.5.0). It's the base
   for file servers, SQL Server FCIs and AGs; it doesn't install SQL Server or
   create shares or AGs. The role is plain `wsfc` (owner's choice,
   2026-10-31; it was `wsfc_cluster` before PR #20 merged), so its variables
@@ -76,7 +78,10 @@ role):
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
   properties, node-majority quorum, idempotence, a report-only plan and a
-  drift fix.
+  drift fix, then the `wsfc_cluster` module's integration target
+  (`tests/integration/targets/wsfc_cluster`, with `setup_wsfc`): its own
+  cluster planned in check mode, created, converged and drifted, with the
+  repeat-changes-nothing check after each change, and the error messages.
 
 They share the lab in `tests/domain_lab/` and the Molecule base config
 `.config/molecule/config.yml` (see Conventions). The lab first passed on
@@ -144,11 +149,12 @@ lab to the scripts — and record the surprise below as a gotcha.
   structured result and needs `check_mode: false` to compute its report is
   module-shaped: make it a module with real check-mode support, the way
   `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28) and
-  `import_gpos.ps1` became `gpo_import` (0.6.0, issue #29).
+  `import_gpos.ps1` became `gpo_import` (0.6.0, issue #29) and
+  `converge_cluster.ps1` became `wsfc_cluster` (0.7.0, issue #27).
 - The GPO modules `gpo_export.ps1` and `gpo_import.ps1` duplicate a small
   `# region common` helper block — keep the copies in sync (a shared
   `plugins/module_utils/_GpoCommon.psm1` is the follow-up now that both are
-  modules). `converge_cluster.ps1` shares nothing with them.
+  modules). `wsfc_cluster.ps1` shares nothing with them.
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -160,14 +166,20 @@ lab to the scripts — and record the surprise below as a gotcha.
   (`check_mode: "{{ true if x | bool else omit }}"`: `omit` keeps the play's
   own check mode in force; a templated `false` would switch `--check` off
   for that task).
-- `wsfc` passes its structured variables (quorum, networks,
-  properties, disks) to PowerShell as JSON strings. Windows PowerShell 5.1's
-  `ConvertFrom-Json` emits a JSON array as one object, so enumerate it
-  (`ConvertFrom-JsonArray`) instead of wrapping it in `@()`, which turns `[]`
-  into a one-element array.
-- `wsfc` reaches the cluster through a **node name**
+- `wsfc` passes its structured variables (quorum, networks, properties,
+  disks) to `wsfc_cluster` as the module's typed nested options. In the
+  module, a list option left out is `$null` and `@($null).Count` is 1, so
+  `Get-ListParam` coalesces it to `@()`; a dict's sub-options arrive as a
+  `Dictionary<string, object>` with every key present (`$null` when left
+  out), and `properties` (a free-form dict) keeps its JSON types.
+- `wsfc_cluster` reaches the cluster through a **node name**
   (`-Cluster <node>`), never the cluster name: a cluster with access point
   `None` has no name to resolve.
+- `wsfc`'s cluster task sets `check_mode: "{{ wsfc_report_only | bool or
+  ansible_check_mode }}"`. The `or ansible_check_mode` is load-bearing: a
+  bare `"{{ wsfc_report_only | bool }}"` templates to `check_mode: false`
+  under `--check` and the task would write during a check run. Never set
+  `check_mode: false` on a task that could write (owner rule, issue #27).
 - The manifest (`gpo-manifest.json`) is the contract between the roles.
   Round-trip symmetry is the invariant: whatever `gpo_backup` writes,
   `gpo_import` consumes verbatim. Change both sides and the README together.
@@ -240,6 +252,12 @@ lab to the scripts — and record the surprise below as a gotcha.
   things on purpose and check each module's idempotence themselves. The IIS
   targets check IIS through `setup_iis/files/read_mime_map.ps1` (appcmd.exe
   and the configuration files' XML), never through the module under test.
+  The exception is `wsfc_cluster`'s target: a cluster needs the workgroup
+  prerequisites `roles/wsfc/molecule/default/prepare.yml` sets, so that
+  scenario's verify.yml runs the target last (`ANSIBLE_ROLES_PATH` in its
+  molecule.yml points at `tests/integration/targets`), after the role's own
+  checks; the target removes the role's cluster, builds its own and removes
+  it. Its reads go through `setup_wsfc/files/cluster_state.ps1`.
 - **Every module needs `validate-modules:missing-gplv3-license` ignores** in
   `tests/sanity/ignore-2.18.txt` through `ignore-2.23.txt`, for its `.ps1`
   and its `.yml`: the collection is MIT, and validate-modules demands a GPLv3
@@ -319,7 +337,7 @@ ansible-galaxy collection build --force
   and adding `-Confirm:$false` failed with "A parameter cannot be found that
   matches parameter name 'Confirm'" (the cmdlets don't implement
   ShouldProcess). The fix is `New-Cluster -Force`, but `-Force` also wipes
-  stale cluster configuration off the nodes, so `converge_cluster.ps1` first
+  stale cluster configuration off the nodes, so `wsfc_cluster` first
   refuses if any node still has `Cluster\CLUSDB` with no cluster answering
   (`Assert-NoClusterDatabase`).
 

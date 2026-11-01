@@ -51,7 +51,8 @@
       vars:
         lab_c: "{{ lab_state.result }}"
 
-    # 2. Out-of-band drift: a report-only run plans the fix without making it.
+    # 2. Out-of-band drift: a report-only run (the module's check mode) plans
+    #    the fix without making it.
     - name: Drift a cluster property out-of-band
       ansible.windows.win_powershell:
         script: |
@@ -73,10 +74,11 @@
     - name: Check the plan has exactly the property fix
       ansible.builtin.assert:
         that:
-          - wsfc_run.result.report_only
-          - wsfc_run.result.actions | length == 1
-          - wsfc_run.result.actions[0] is search('SameSubnetThreshold')
-        fail_msg: "Plan: {{ wsfc_run.result }}"
+          - wsfc_run is changed
+          - not wsfc_run.created
+          - wsfc_run.actions | length == 1
+          - wsfc_run.actions[0] is search('SameSubnetThreshold')
+        fail_msg: "Plan: {{ wsfc_run }}"
 
     - name: Read the cluster after the plan
       ansible.windows.win_powershell:
@@ -104,10 +106,9 @@
       ansible.builtin.assert:
         that:
           - wsfc_run is changed
-          - not wsfc_run.result.report_only
-          - not wsfc_run.result.created
-          - wsfc_run.result.actions | length == 1
-        fail_msg: "Run: {{ wsfc_run.result }}"
+          - not wsfc_run.created
+          - wsfc_run.actions | length == 1
+        fail_msg: "Run: {{ wsfc_run }}"
 
     - name: Read the cluster after the fix
       ansible.windows.win_powershell:
@@ -123,3 +124,11 @@
       ansible.builtin.assert:
         that: lab_after_fix.result.same_subnet_threshold == lab_cluster.same_subnet_threshold
         fail_msg: "Cluster state: {{ lab_after_fix.result | to_nice_json }}"
+
+    # 4. The module's own integration target, from tests/integration/targets
+    #    (ANSIBLE_ROLES_PATH in molecule.yml): it removes this cluster, builds
+    #    its own in check mode and for real, converges and drifts it, and
+    #    removes it, leaving the VM without a cluster.
+    - name: Run the wsfc_cluster target
+      ansible.builtin.include_role:
+        name: wsfc_cluster

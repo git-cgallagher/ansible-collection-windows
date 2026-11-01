@@ -217,8 +217,9 @@ argument_specs:
         type: bool
         default: false
         description:
-          - Report every action without changing the cluster (a plan). Check mode implies it. Feature installs
-            follow normal check-mode rules.
+          - Run the cluster task in check mode, so it reports every action without changing the cluster (a plan),
+            while the feature install runs for real. Check mode implies it, and then also leaves the feature
+            uninstalled.
       wsfc_become_user:
         type: str
         default: ''
