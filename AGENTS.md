@@ -228,9 +228,15 @@ lab to the scripts — and record the surprise below as a gotcha.
 ## Commands
 
 ```bash
-# lint (what CI runs)
+# lint, exactly as CI runs it: in the ansible-runtime image (pinned ansible-core,
+# ansible-lint, yamllint, ansible.windows, microsoft.ad), through the same wrapper.
+# Needs Docker. The image tag + digest live in ansible-test.yml's RUNTIME_IMAGE.
+export RUNTIME_IMAGE=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
+.github/ci/runtime.sh yamllint . && .github/ci/runtime.sh ansible-lint
+
+# ...or with your own tools (versions may differ from CI's):
 pip install ansible-core ansible-lint yamllint
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install -r requirements.yml -r tests/domain_lab/requirements.yml
 yamllint . && ansible-lint
 
 # PowerShell lint exactly as CI's `ansible-test sanity` pslint runs it — the
