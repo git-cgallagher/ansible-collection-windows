@@ -184,6 +184,21 @@ ansible-galaxy collection build --force
   clusters; `runas` become gives a local logon with credentials. The lab uses
   it too (as `vagrant`).
 
+- **The FailoverClusters cmdlets have no `-Confirm`, and `New-Cluster` still
+  prompts.** Learned in the wsfc lab runs of 2026-10-31 (PR #20): `New-Cluster`
+  failed with "PowerShell is in NonInteractive mode" after validation passed,
+  and adding `-Confirm:$false` failed with "A parameter cannot be found that
+  matches parameter name 'Confirm'" (the cmdlets don't implement
+  ShouldProcess). The fix is `New-Cluster -Force`, but `-Force` also wipes
+  stale cluster configuration off the nodes, so `converge_cluster.ps1` first
+  refuses if any node still has `Cluster\CLUSDB` with no cluster answering
+  (`Assert-NoClusterDatabase`).
+
+- **A passing `Test-Cluster` reports `ClusterConditionallyApproved`**, not a
+  plain "approved", when tests are skipped (the lab skips Storage). The role
+  fails only on `ClusterNotApproved`; that failure string isn't confirmed in
+  a lab yet.
+
 - **Write GPO AD objects through GPMC (or LDAP), never `Set-ADObject`.**
   Confirmed in the domain_lab runs of 2026-10-28: `Set-ADObject` (AD Web
   Services) on a GPO's `groupPolicyContainer` fails with 8344 "insufficient
