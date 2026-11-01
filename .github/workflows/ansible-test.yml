@@ -12,9 +12,14 @@ on:
 permissions:
   contents: read
 
+# lint runs in the ansible-runtime image (.github/ci/runtime.sh): pinned ansible-core,
+# ansible-lint, yamllint and the third-party collections (ansible.windows, microsoft.ad)
+# the roles and the domain lab use, so it installs nothing. Bump the tag AND digest
+# together, to an ansible-runtime release. sanity and domain-lab install their own.
 env:
   PY_COLORS: '1'
   ANSIBLE_FORCE_COLOR: '1'
+  RUNTIME_IMAGE: ghcr.io/git-cgallagher/ansible-runtime:0.2.0-ci@sha256:9f36cb0ddd49251df1eef32142f08176018fe91c10a1c2f2a15dd5442b3bc572
 
 jobs:
   # Every merge to main is releasable (release.yml), so a PR that changes
@@ -91,17 +96,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        with:
-          python-version: '3.13'
-      - run: |
-          pip install ansible-core ansible-lint yamllint
-          ansible-galaxy collection install -r requirements.yml
-          # The roles' Molecule scenarios (the shared lab in tests/domain_lab)
-          # use microsoft.ad modules.
-          ansible-galaxy collection install -r tests/domain_lab/requirements.yml
-      - run: yamllint .
-      - run: ansible-lint
+      - run: .github/ci/runtime.sh yamllint .
+      - run: .github/ci/runtime.sh ansible-lint
 
   powershell:
     # The roles' and modules' PowerShell runs on Windows hosts CI doesn't
