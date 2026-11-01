@@ -28,7 +28,7 @@
 # something to do, in both modes.
 #
 # Windows PowerShell 5.1-compatible. Keep '# region common' in sync with
-# roles/gpo_backup/files/backup_gpos.ps1.
+# plugins/modules/gpo_import.ps1.
 
 # The argument spec and Create come first: ansible-test's validate-modules runs
 # this file under pwsh on Linux up to Create to read the spec.
@@ -36,36 +36,26 @@ $spec = @{
     options = @{
         domain = @{ type = 'str'; required = $true }
         server = @{ type = 'str' }
-        source_dir = @{ type = 'path'; required = $true }
-        manifest_path = @{ type = 'path'; default = 'gpo-manifest.json' }
-        migration_table_path = @{ type = 'path' }
-        state_dir = @{ type = 'path'; default = 'C:\ProgramData\gpo-iac' }
-        remove_unmanaged_links = @{ type = 'bool'; default = $false }
-        create_wmi_filters = @{ type = 'bool'; default = $false }
-        force = @{ type = 'bool'; default = $false }
+        work_dir = @{ type = 'str'; default = 'C:\ProgramData\gpo-iac\backup' }
         gpo_names = @{ type = 'list'; elements = 'str'; default = @() }
+        full_export = @{ type = 'bool'; default = $false }
     }
     supports_check_mode = $true
 }
 
 $module = [Ansible.Basic.AnsibleModule]::Create($args, $spec)
 
-$Domain = $module.Params.domain
-$Server = $module.Params.server
-$SourceDir = $module.Params.source_dir
-$ManifestPath = $module.Params.manifest_path
-$MigrationTablePath = $module.Params.migration_table_path
-$StateDir = $module.Params.state_dir
-$RemoveUnmanagedLinks = $module.Params.remove_unmanaged_links
-$CreateWmiFilters = $module.Params.create_wmi_filters
-$ForceImport = $module.Params.force
-$GpoNames = @($module.Params.gpo_names)
-$checkMode = $module.CheckMode
-
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# region common — keep in sync with backup_gpos.ps1
+$Domain = $module.Params.domain
+$Server = [string]$module.Params.server
+$WorkDir = $module.Params.work_dir
+$GpoNames = @($module.Params.gpo_names)
+$FullExport = [bool]$module.Params.full_export
+$checkMode = $module.CheckMode
+
+# region common — keep in sync with gpo_export.ps1
 function ConvertTo-SafeName {
     param([string]$Name)
     $safe = $Name -replace '[\\/:*?"<>|]', '_'
@@ -75,6 +65,9 @@ function ConvertTo-SafeName {
 }
 
 function Get-DirContentHash {
+    # Deterministic hash of a directory tree: relative paths (case-folded) +
+    # per-file SHA256. Empty directories count, so a GPO gaining or losing an
+    # empty User/ folder still registers.
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
     $base = (Get-Item -LiteralPath $Path).FullName
@@ -110,9 +103,12 @@ function Get-StringHash {
 }
 
 function Get-GpoSysvolPath {
-    # A GPO with no settings has no DomainSysvol: return $null (hashes as '')
-    # rather than fall back to the volatile Backup.xml / bkupInfo.xml /
-    # gpreport.xml, which would make it re-ship on every run.
+    # Inside a Backup-GPO folder, the settings payload lives under
+    # {backup-guid}\DomainSysvol. Hashing only that subtree keeps the hash
+    # stable across re-backups (Backup.xml / bkupInfo.xml / gpreport.xml
+    # carry timestamps and a fresh backup GUID every time). A GPO with no
+    # settings has no DomainSysvol: return $null (hashes as '') rather than
+    # fall back to those volatile files, or it would re-ship on every run.
     param([string]$BackupDir)
     $guidDir = Get-ChildItem -LiteralPath $BackupDir -Directory |
         Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
@@ -132,7 +128,7 @@ function Write-Utf8File {
 function Get-YesNo { param([bool]$Value) if ($Value) { 'Yes' } else { 'No' } }
 
 function ConvertTo-WmiFilterParm2 {
-    # Single-query encoder; inverse of the parser in backup_gpos.ps1.
+    # Single-query encoder; inverse of the parser in gpo_export.ps1.
     param([string]$Namespace, [string]$Query)
     '1;3;{0};{1};WQL;{2};{3};' -f $Namespace.Length, $Query.Length, $Namespace, $Query
 }
