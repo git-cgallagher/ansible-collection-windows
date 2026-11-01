@@ -104,9 +104,10 @@ jobs:
       - run: ansible-lint
 
   powershell:
-    # The roles' PowerShell runs on Windows hosts CI doesn't have, so at
-    # minimum: parse every script (a syntax error must not ship green) and
-    # gate on PSScriptAnalyzer errors; warnings are printed for review.
+    # The roles' and modules' PowerShell runs on Windows hosts CI doesn't
+    # have, so at minimum: parse every script and module util (a syntax error
+    # must not ship green) and gate on PSScriptAnalyzer errors; warnings are
+    # printed for review.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -115,7 +116,7 @@ jobs:
       - name: Parse scripts and run PSScriptAnalyzer
         shell: pwsh
         run: |
-          $files = Get-ChildItem roles, tests -Recurse -Filter '*.ps1'
+          $files = Get-ChildItem roles, tests, plugins -Recurse -Include '*.ps1', '*.psm1'
           if (-not $files) { throw 'No PowerShell scripts found; did the layout change?' }
           $failed = $false
           foreach ($f in $files) {
@@ -128,7 +129,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $findings = 'roles', 'tests' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
+          $findings = 'roles', 'tests', 'plugins' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
           $findings | Format-Table -AutoSize | Out-String -Width 400 | Write-Host
           if ($findings | Where-Object Severity -eq 'Error') { exit 1 }
 

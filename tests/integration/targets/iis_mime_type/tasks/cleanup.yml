@@ -1,0 +1,44 @@
+---
+# Runs whether the tests passed or not. main.yml then compares the server
+# level with what it was before the tests.
+- name: Remove the server-level test mappings
+  git_cgallagher.windows.iis_mime_type:
+    extension: "{{ item }}"
+    state: absent
+  loop:
+    - .ansibletest
+    - .ansiblebad
+
+- name: Put the test website and application back to inheriting everything
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_clear_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      PhysicalPath:
+        - "{{ setup_iis_site_dir }}"
+        - "{{ setup_iis_application_dir }}"
+
+- name: Read the test website's and application's own entries after the cleanup
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Application: "{{ item.application }}"
+      PhysicalPath: "{{ item.dir }}"
+    depth: 5
+  loop:
+    - {application: '', dir: "{{ setup_iis_site_dir }}"}
+    - {application: "{{ setup_iis_application }}", dir: "{{ setup_iis_application_dir }}"}
+  loop_control:
+    label: "{{ setup_iis_site }}{{ item.application }}"
+  register: iis_mime_type_read_levels
+
+- name: Check neither level stores anything of its own
+  ansible.builtin.assert:
+    that:
+      - item.result.application_host == []
+      - item.result.web_config == []
+    fail_msg: "{{ item.item }}: {{ item.result }}"
+  loop: "{{ iis_mime_type_read_levels.results }}"
+  loop_control:
+    label: "{{ setup_iis_site }}{{ item.item.application }}"

@@ -1,0 +1,42 @@
+---
+# Integration tests for git_cgallagher.windows.iis_mime_type. setup_iis
+# (meta/main.yml) has installed IIS and created the test website and
+# application. Every check reads IIS through setup_iis's read_mime_map.ps1
+# (appcmd.exe and the configuration files' XML), never through the module
+# under test.
+- name: Read the server-level MIME map before the tests
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    depth: 5
+  register: iis_mime_type_baseline
+
+- name: Test iis_mime_type, then clean up
+  block:
+    - name: Test the server level
+      ansible.builtin.import_tasks: server.yml
+
+    - name: Test input validation and error messages
+      ansible.builtin.import_tasks: errors.yml
+
+    - name: Test the site level
+      ansible.builtin.import_tasks: site.yml
+
+    - name: Test the application level
+      ansible.builtin.import_tasks: application.yml
+  always:
+    - name: Clean up
+      ansible.builtin.import_tasks: cleanup.yml
+
+- name: Read the server-level MIME map after the tests
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    depth: 5
+  register: iis_mime_type_final
+
+- name: Check the tests left the server level as they found it
+  ansible.builtin.assert:
+    that: iis_mime_type_final.result.effective == iis_mime_type_baseline.result.effective
+    fail_msg: >-
+      The server-level MIME map changed:
+      {{ iis_mime_type_final.result.effective | difference(iis_mime_type_baseline.result.effective) }} appeared,
+      {{ iis_mime_type_baseline.result.effective | difference(iis_mime_type_final.result.effective) }} went.

@@ -1,12 +1,13 @@
 # git_cgallagher.windows — Ansible for Windows Server
 
 An Ansible collection for running Windows Server as code, grouped by area.
-Each area's roles carry its prefix.
+Each area's roles and modules carry its prefix.
 
-| Area | Roles | What they do |
+| Area | Roles and modules | What they do |
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
 | [Failover clustering](#failover-clustering) | `wsfc` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups |
+| [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
 > Windows Server 2022 VM in CI, each by its own Molecule scenario
@@ -21,6 +22,22 @@ Each area's roles carry its prefix.
 >
 > Until 0.2.0 this collection was `git_cgallagher.gpo`, in the repository
 > `ansible-collection-gpo`. It was never published under that name.
+
+## Install
+
+```bash
+ansible-galaxy collection install git_cgallagher.windows
+```
+
+Or in a `requirements.yml`, installed with
+`ansible-galaxy collection install -r requirements.yml`:
+
+```yaml
+collections:
+  - name: git_cgallagher.windows
+```
+
+The collection's dependency, `ansible.windows`, installs with it.
 
 ## Group Policy as code
 
@@ -274,6 +291,107 @@ availability groups each need from it, and what isn't lab-tested yet;
         wsfc_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\AGCLU01'}
         wsfc_become_user: EXAMPLE\svc-cluster-build
         wsfc_become_password: "{{ vault_cluster_build_password }}"
+```
+
+## IIS
+
+Two modules manage IIS's static content MIME map
+(`system.webServer/staticContent`): the file extensions IIS serves, and the
+MIME type it sends for each.
+
+- `iis_mime_type` ensures that an extension maps to a MIME type at the server
+  level, for a website, or for an application or virtual directory under one,
+  or that it has no mapping there. It decides against the map IIS serves at
+  that level, inherited mappings included: a matching inherited mapping is
+  left alone, a different one is overridden at that level, and removing an
+  inherited one hides it there with a `<remove>` element. It supports check
+  mode and diff mode, and reads the level back after each change.
+- `iis_mime_type_info` lists the mappings IIS serves at a level, optionally
+  filtered by extension and MIME type (an entry must match both), and says
+  which ones are inherited.
+
+```yaml
+- name: Serve web app manifests with their MIME type, server-wide
+  git_cgallagher.windows.iis_mime_type:
+    extension: .webmanifest
+    mime_type: application/manifest+json
+
+- name: Serve .log files as plain text on one website only
+  git_cgallagher.windows.iis_mime_type:
+    site: Default Web Site
+    extension: .log
+    mime_type: text/plain
+
+- name: List the MIME types an application defines itself, rather than inherits
+  git_cgallagher.windows.iis_mime_type_info:
+    site: Default Web Site
+    application: /shop
+  register: shop_mime_types
+```
+
+`ansible-doc git_cgallagher.windows.iis_mime_type` (or `iis_mime_type_info`)
+documents every option and return value.
+
+**Where site and application mappings are stored.** By default in
+`applicationHost.config`, in a `<location path="Default Web Site/shop">`
+element, where deploying the site's content can't touch them. With
+`config_file: web.config`, a mapping goes into the `web.config` file in that
+level's directory instead, the way IIS Manager stores it. It then travels with
+the content, but a deployment that replaces that `web.config` wipes it. IIS
+reads a level's `web.config` after its `<location>` element, so the module
+refuses to change, in `applicationHost.config`, a mapping that the level's own
+`web.config` defines or clears; change those with `config_file: web.config`.
+
+**Requirements:** IIS (the `Web-Server` feature) on the managed host. The
+modules use IIS's native configuration API, the one `appcmd.exe` uses, rather
+than the WebAdministration PowerShell module.
+
+**Tests:** CI runs the modules' integration targets
+(`tests/integration/targets/`) against a real Windows Server 2022 VM with IIS,
+a plain server rather than a domain controller, through the Molecule scenario
+`tests/integration/molecule/iis` (the `domain-lab` workflow's `molecule (iis)`
+job). Not covered yet: sections locked at a parent level, and content
+directories on UNC paths.
+
+Not here yet: going back to inheriting a mapping that a level hid or overrode
+(the `<remove>` element stays; IIS Manager's **Revert To Parent** on the
+level's MIME Types page does it), and the rest of IIS's configuration, for
+which see [microsoft.iis](https://docs.ansible.com/ansible/latest/collections/microsoft/iis/index.html).
+`iis_mime_type_info` doesn't read `<location>` elements in a parent level's
+`web.config`: a mapping that one defines for the level, with the same MIME
+type the level would inherit anyway, is returned as inherited.
+
+## Active Directory sites
+
+This collection doesn't manage AD sites. Use
+[`microsoft.ad.site`](https://docs.ansible.com/ansible/latest/collections/microsoft/ad/site_module.html),
+with `microsoft.ad.site_link` and `microsoft.ad.site_subnet`, from microsoft.ad
+1.11 on.
+
+With `state: absent`, `microsoft.ad.site` removes the site and its child
+objects recursively, even ones protected from accidental deletion, and it
+doesn't check first whether domain controllers are still in the site. Check
+the site's `CN=Servers` container yourself:
+
+```yaml
+- name: Look for servers still in the site
+  microsoft.ad.object_info:
+    search_base: "CN=Servers,CN={{ site_name }},CN=Sites,CN=Configuration,{{ forest_root_dn }}"
+    search_scope: one_level
+    ldap_filter: (objectClass=*)
+  register: site_servers
+
+- name: Refuse to delete a site that still holds domain controllers
+  ansible.builtin.assert:
+    that: site_servers.objects | length == 0
+    fail_msg: >-
+      {{ site_name }} still holds {{ site_servers.objects | map(attribute='Name') | join(', ') }}.
+      Move them to another site first.
+
+- name: Delete the site
+  microsoft.ad.site:
+    name: "{{ site_name }}"
+    state: absent
 ```
 
 ## License

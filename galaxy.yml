@@ -1,14 +1,14 @@
 namespace: git_cgallagher
 name: windows
-version: 0.3.0
+version: 0.4.0
 readme: README.md
 authors:
   - Chris Gallagher (@git-cgallagher)
 description: >-
   Windows Server automation: Group Policy as code (export domain GPOs with
   their links, precedence, filtering and WMI filters to Git, and import them
-  into a target domain) and failover clusters for file servers, SQL Server
-  FCIs and availability groups.
+  into a target domain), failover clusters for file servers, SQL Server FCIs
+  and availability groups, and IIS MIME type mappings.
 license:
   - MIT
 tags:
@@ -20,6 +20,7 @@ tags:
   - failovercluster
   - sqlserver
   - iac
+  - iis
 dependencies:
   ansible.windows: '>=2.0.0'
 repository: https://github.com/git-cgallagher/ansible-collection-windows

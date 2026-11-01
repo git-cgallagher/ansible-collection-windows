@@ -1,0 +1,19 @@
+---
+# The test website and application the IIS targets share. The site's name has
+# spaces, like Default Web Site's.
+setup_iis_site: Ansible IIS Test
+setup_iis_site_port: 8091
+setup_iis_site_dir: 'C:\inetpub\ansible-iis-test\site'
+setup_iis_application: /app1
+setup_iis_application_dir: 'C:\inetpub\ansible-iis-test\app1'
+
+# Their IIS configuration paths, as the modules return them.
+setup_iis_server_path: MACHINE/WEBROOT/APPHOST
+setup_iis_site_path: "{{ setup_iis_server_path }}/{{ setup_iis_site }}"
+setup_iis_application_path: "{{ setup_iis_site_path }}{{ setup_iis_application }}"
+
+# The targets' own view of a level's MIME map, and the cleanup of the test
+# website's levels (files/). The targets are this role's siblings, so the
+# calling target's role_path finds them.
+setup_iis_read_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_iis/files/read_mime_map.ps1') }}"
+setup_iis_clear_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_iis/files/clear_mime_map.ps1') }}"

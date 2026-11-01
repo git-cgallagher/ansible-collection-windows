@@ -1,0 +1,344 @@
+---
+# On the test website: new mappings in each config_file, the refusal to
+# change from applicationHost.config what the website's web.config defines,
+# overriding and hiding inherited mappings, and deleting local ones.
+
+# --- a new mapping, in applicationHost.config (the default) ------------------------------
+- name: Add .ansiblesite on the test website
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansiblesite
+    mime_type: text/x-ansible-site
+  register: iis_mime_type_site_add
+
+- name: Read .ansiblesite on the test website
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .ansiblesite
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Read .ansiblesite at the server level
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .ansiblesite
+    depth: 5
+  register: iis_mime_type_read_server
+
+- name: Check it's stored in the website's <location> element, and only there
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_site_add is changed
+      - iis_mime_type_site_add.config_path == setup_iis_site_path
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansiblesite', 'mime_type': 'text/x-ansible-site'}]"
+      - "iis_mime_type_read.result.application_host == [{'element': 'mimeMap', 'extension': '.ansiblesite', 'mime_type': 'text/x-ansible-site'}]"
+      - iis_mime_type_read.result.web_config == []
+      - iis_mime_type_read_server.result.effective == []
+    fail_msg: "{{ iis_mime_type_site_add }} / {{ iis_mime_type_read.result }} / {{ iis_mime_type_read_server.result }}"
+
+- name: Add .ansiblesite on the test website again
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansiblesite
+    mime_type: text/x-ansible-site
+  register: iis_mime_type_site_add_again
+
+- name: Check the repeat changed nothing
+  ansible.builtin.assert:
+    that: iis_mime_type_site_add_again is not changed
+    fail_msg: "{{ iis_mime_type_site_add_again | string }}"
+
+# --- a new mapping, in the website's web.config ------------------------------------------
+- name: Add .ansibleweb to the test website's web.config
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansibleweb
+    mime_type: text/x-ansible-web
+    config_file: web.config
+  register: iis_mime_type_web_add
+
+- name: Read .ansibleweb on the test website
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .ansibleweb
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check it's stored in the website's web.config, and only there
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_web_add is changed
+      - iis_mime_type_web_add.config_path == setup_iis_site_path
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibleweb', 'mime_type': 'text/x-ansible-web'}]"
+      - "iis_mime_type_read.result.web_config == [{'element': 'mimeMap', 'extension': '.ansibleweb', 'mime_type': 'text/x-ansible-web'}]"
+      - iis_mime_type_read.result.application_host == []
+    fail_msg: "{{ iis_mime_type_web_add }} / {{ iis_mime_type_read.result }}"
+
+- name: Add .ansibleweb to the test website's web.config again
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansibleweb
+    mime_type: text/x-ansible-web
+    config_file: web.config
+  register: iis_mime_type_web_add_again
+
+- name: Check the repeat changed nothing
+  ansible.builtin.assert:
+    that: iis_mime_type_web_add_again is not changed
+    fail_msg: "{{ iis_mime_type_web_add_again | string }}"
+
+# --- applicationHost.config can't override the level's own web.config ----------------------
+- name: Change .ansibleweb through applicationHost.config (check mode)
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansibleweb
+    mime_type: text/x-ansible-other
+  check_mode: true
+  register: iis_mime_type_refused_check
+  failed_when: >-
+    'Refusing to change .ansibleweb' not in (iis_mime_type_refused_check.msg | default(''))
+    or 'config_file=web.config' not in (iis_mime_type_refused_check.msg | default(''))
+    or iis_mime_type_refused_check.changed | default(false)
+
+- name: Change .ansibleweb through applicationHost.config
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansibleweb
+    mime_type: text/x-ansible-other
+  register: iis_mime_type_refused
+  failed_when: >-
+    'Refusing to change .ansibleweb' not in (iis_mime_type_refused.msg | default(''))
+    or iis_mime_type_refused.changed | default(false)
+
+- name: Read .ansibleweb on the test website after the refusals
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .ansibleweb
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check the refusals wrote nothing
+  ansible.builtin.assert:
+    that:
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibleweb', 'mime_type': 'text/x-ansible-web'}]"
+      - iis_mime_type_read.result.application_host == []
+    fail_msg: "{{ iis_mime_type_read.result | string }}"
+
+# --- override an inherited mapping -----------------------------------------------------------
+- name: Override the inherited .html on the test website (check mode)
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .html
+    mime_type: text/x-ansible-html
+  check_mode: true
+  diff: true
+  register: iis_mime_type_override_check
+
+- name: Override the inherited .html on the test website
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .html
+    mime_type: text/x-ansible-html
+  diff: true
+  register: iis_mime_type_override
+
+- name: Read .html on the test website after the override
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .html
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Read .html at the server level after the override
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .html
+    depth: 5
+  register: iis_mime_type_read_server
+
+- name: Check the website overrides .html with a remove and an add, and the server keeps its own
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_override_check is changed
+      - iis_mime_type_override_check.diff == iis_mime_type_override.diff
+      - iis_mime_type_override is changed
+      - "iis_mime_type_override.diff.before == {'extension': '.html', 'mime_type': 'text/html'}"
+      - "iis_mime_type_override.diff.after == {'extension': '.html', 'mime_type': 'text/x-ansible-html'}"
+      - "iis_mime_type_read.result.effective == [{'extension': '.html', 'mime_type': 'text/x-ansible-html'}]"
+      - >-
+        iis_mime_type_read.result.application_host | sort(attribute='element') ==
+        [{'element': 'mimeMap', 'extension': '.html', 'mime_type': 'text/x-ansible-html'},
+         {'element': 'remove', 'extension': '.html', 'mime_type': ''}]
+      - "iis_mime_type_read_server.result.effective == [{'extension': '.html', 'mime_type': 'text/html'}]"
+    fail_msg: "{{ iis_mime_type_override }} / {{ iis_mime_type_read.result }} / {{ iis_mime_type_read_server.result }}"
+
+- name: Override .html on the test website again
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .html
+    mime_type: text/x-ansible-html
+  register: iis_mime_type_override_again
+
+- name: Check the repeat changed nothing
+  ansible.builtin.assert:
+    that: iis_mime_type_override_again is not changed
+    fail_msg: "{{ iis_mime_type_override_again | string }}"
+
+# --- hide an inherited mapping ------------------------------------------------------------------
+- name: Remove the inherited .css on the test website (check mode)
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .css
+    state: absent
+  check_mode: true
+  register: iis_mime_type_hide_check
+
+- name: Read .css on the test website after the check-mode removal
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .css
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Check check mode predicted the removal and wrote nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_hide_check is changed
+      - "iis_mime_type_read.result.effective == [{'extension': '.css', 'mime_type': 'text/css'}]"
+      - iis_mime_type_read.result.application_host == []
+    fail_msg: "{{ iis_mime_type_hide_check }} / {{ iis_mime_type_read.result }}"
+
+- name: Remove the inherited .css on the test website
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .css
+    state: absent
+  register: iis_mime_type_hide
+
+- name: Read .css on the test website after the removal
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .css
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Read .css at the server level after the removal
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .css
+    depth: 5
+  register: iis_mime_type_read_server
+
+- name: Check the website hides .css with a remove element, and the server keeps it
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_hide is changed
+      - iis_mime_type_read.result.effective == []
+      - "iis_mime_type_read.result.application_host == [{'element': 'remove', 'extension': '.css', 'mime_type': ''}]"
+      - "iis_mime_type_read_server.result.effective == [{'extension': '.css', 'mime_type': 'text/css'}]"
+    fail_msg: "{{ iis_mime_type_hide }} / {{ iis_mime_type_read.result }} / {{ iis_mime_type_read_server.result }}"
+
+- name: Remove .css on the test website again
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .css
+    state: absent
+  register: iis_mime_type_hide_again
+
+- name: Check the repeat changed nothing
+  ansible.builtin.assert:
+    that: iis_mime_type_hide_again is not changed
+    fail_msg: "{{ iis_mime_type_hide_again | string }}"
+
+# --- remove the override, and local mappings ----------------------------------------------------
+- name: Remove the overridden .html on the test website
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .html
+    state: absent
+  register: iis_mime_type_unoverride
+
+- name: Remove .ansiblesite from the test website's applicationHost.config entry
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansiblesite
+    state: absent
+  register: iis_mime_type_site_remove
+
+- name: Remove .ansibleweb from the test website's web.config
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: .ansibleweb
+    state: absent
+    config_file: web.config
+  register: iis_mime_type_web_remove
+
+- name: Read the test website's own entries after the removals
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      PhysicalPath: "{{ setup_iis_site_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Read .html at the server level after the removals
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Extension: .html
+    depth: 5
+  register: iis_mime_type_read_server
+
+- name: Check only the remove elements are left, and the server still serves .html
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_unoverride is changed
+      - iis_mime_type_site_remove is changed
+      - iis_mime_type_web_remove is changed
+      - "iis_mime_type_read.result.effective | selectattr('extension', 'in', ['.html', '.css', '.ansiblesite', '.ansibleweb']) | list == []"
+      - >-
+        iis_mime_type_read.result.application_host | sort(attribute='extension') ==
+        [{'element': 'remove', 'extension': '.css', 'mime_type': ''},
+         {'element': 'remove', 'extension': '.html', 'mime_type': ''}]
+      - iis_mime_type_read.result.web_config == []
+      - "iis_mime_type_read_server.result.effective == [{'extension': '.html', 'mime_type': 'text/html'}]"
+    fail_msg: "{{ iis_mime_type_read.result }} / {{ iis_mime_type_read_server.result }}"
+
+- name: Remove .html, .ansiblesite and .ansibleweb from the test website again
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    extension: "{{ item.extension }}"
+    state: absent
+    config_file: "{{ item.config_file }}"
+  loop:
+    - {extension: .html, config_file: applicationHost.config}
+    - {extension: .ansiblesite, config_file: applicationHost.config}
+    - {extension: .ansibleweb, config_file: web.config}
+  register: iis_mime_type_removals_again
+
+- name: Check the repeats changed nothing
+  ansible.builtin.assert:
+    that: iis_mime_type_removals_again is not changed
+    fail_msg: "{{ iis_mime_type_removals_again.results | map(attribute='changed') | list | string }}"
