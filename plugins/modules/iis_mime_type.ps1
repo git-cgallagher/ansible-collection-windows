@@ -197,7 +197,7 @@ try {
         # If an inherited entry shows through after deleting a local one, delete
         # that too.
         for ($attempt = 0; $attempt -lt 2 -and $stored; $attempt++) {
-            $collection.DeleteElement($stored.Index)
+            $null = Invoke-IisComMember -Object $collection -Name 'DeleteElement' -ArgumentList $stored.Index
             $stored = Get-IisMimeMapEntry -Collection $collection -Extension $extension | Select-Object -First 1
         }
 
@@ -206,14 +206,14 @@ try {
         }
         else {
             if ($state -eq 'present') {
-                $element = $collection.CreateNewElement('mimeMap')
-                $element.Properties.Item('fileExtension').Value = $after.extension
-                $element.Properties.Item('mimeType').Value = $mimeType
-                $collection.AddElement($element, -1)
+                $element = Invoke-IisComMember -Object $collection -Name 'CreateNewElement' -ArgumentList 'mimeMap'
+                Set-IisElementValue -Element $element -Name 'fileExtension' -Value $after.extension
+                Set-IisElementValue -Element $element -Name 'mimeType' -Value $mimeType
+                $null = Invoke-IisComMember -Object $collection -Name 'AddElement' -ArgumentList @($element, -1)
             }
 
             if (-not $module.CheckMode) {
-                $writer.CommitChanges()
+                $null = Invoke-IisComMember -Object $writer -Name 'CommitChanges'
                 $module.Result.changed = $true
             }
         }

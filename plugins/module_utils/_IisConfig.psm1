@@ -6,8 +6,188 @@
 # resolving the site and application options to a configuration path, and
 # reading a level's MIME map. Private to this collection, with no compatibility
 # promise. Windows PowerShell 5.1 syntax only.
+#
+# Every call into the API goes through Invoke-IisComMember or
+# Set-IisComProperty, never PowerShell's own COM binding: in a module's
+# runspace that throws a NullReferenceException on these objects before IIS
+# sees the call.
 
 $script:IisServerPath = 'MACHINE/WEBROOT/APPHOST'
+
+Function ConvertTo-IisComArgument {
+    <#
+    .SYNOPSIS
+    Returns the arguments for Type.InvokeMember as an object[] of base objects.
+
+    .DESCRIPTION
+    PowerShell wraps objects in a PSObject; passed as is, the API would get
+    PowerShell's wrapper instead of its own element.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowNull()]
+        [object[]]
+        $ArgumentList
+    )
+
+    if ($null -eq $ArgumentList) {
+        $ArgumentList = @()
+    }
+    $values = New-Object -TypeName 'object[]' -ArgumentList $ArgumentList.Count
+    for ($i = 0; $i -lt $ArgumentList.Count; $i++) {
+        $value = $ArgumentList[$i]
+        if ($null -ne $value) {
+            $value = $value.psobject.BaseObject
+        }
+        $values[$i] = $value
+    }
+
+    # The comma keeps PowerShell from unrolling the array on output.
+    , $values
+}
+
+Function Invoke-IisComInvokeMember {
+    <#
+    .SYNOPSIS
+    Type.InvokeMember on an IIS configuration API object, rethrowing the API's own error.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Object,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name,
+
+        [Parameter(Mandatory = $true)]
+        [System.Reflection.BindingFlags]
+        $Flags,
+
+        [AllowNull()]
+        [object[]]
+        $ArgumentList
+    )
+
+    $values = ConvertTo-IisComArgument -ArgumentList $ArgumentList
+    try {
+        $result = [System.__ComObject].InvokeMember($Name, $Flags, $null, $Object.psobject.BaseObject, $values)
+    }
+    catch {
+        # PowerShell's MethodInvocationException wraps a TargetInvocationException
+        # that wraps the COMException carrying IIS's message.
+        $exception = $_.Exception
+        while ($null -ne $exception.InnerException) {
+            $exception = $exception.InnerException
+        }
+        throw $exception
+    }
+
+    # The comma keeps PowerShell from enumerating a COM collection on output.
+    , $result
+}
+
+Function Invoke-IisComMember {
+    <#
+    .SYNOPSIS
+    Calls a method, or reads a property, of an IIS configuration API object.
+
+    .DESCRIPTION
+    Through IDispatch with DISPATCH_METHOD | DISPATCH_PROPERTYGET, as VBScript
+    calls these objects, so Item(index) works whichever of the two IIS declares.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Object,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name,
+
+        [AllowNull()]
+        [object[]]
+        $ArgumentList
+    )
+
+    $flags = [System.Reflection.BindingFlags]'InvokeMethod, GetProperty'
+    $result = Invoke-IisComInvokeMember -Object $Object -Name $Name -Flags $flags -ArgumentList $ArgumentList
+
+    # The comma keeps PowerShell from enumerating a COM collection on output.
+    , $result
+}
+
+Function Set-IisComProperty {
+    <#
+    .SYNOPSIS
+    Sets a property of an IIS configuration API object.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Object,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name,
+
+        [AllowNull()]
+        [object]
+        $Value
+    )
+
+    $flags = [System.Reflection.BindingFlags]::SetProperty
+    $null = Invoke-IisComInvokeMember -Object $Object -Name $Name -Flags $flags -ArgumentList @(, $Value)
+}
+
+Function Get-IisElementValue {
+    <#
+    .SYNOPSIS
+    Returns the value of a configuration element's attribute, such as a mimeMap element's fileExtension.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Element,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name
+    )
+
+    $properties = Invoke-IisComMember -Object $Element -Name 'Properties'
+    $property = Invoke-IisComMember -Object $properties -Name 'Item' -ArgumentList $Name
+    Invoke-IisComMember -Object $property -Name 'Value'
+}
+
+Function Set-IisElementValue {
+    <#
+    .SYNOPSIS
+    Sets the value of a configuration element's attribute.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Element,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name,
+
+        [AllowNull()]
+        [object]
+        $Value
+    )
+
+    $properties = Invoke-IisComMember -Object $Element -Name 'Properties'
+    $property = Invoke-IisComMember -Object $properties -Name 'Item' -ArgumentList $Name
+    Set-IisComProperty -Object $property -Name 'Value' -Value $Value
+}
 
 Function New-IisAdminManager {
     <#
@@ -39,7 +219,7 @@ Function New-IisAdminManager {
     }
 
     if ($CommitPath) {
-        $manager.CommitPath = $CommitPath
+        Set-IisComProperty -Object $manager -Name 'CommitPath' -Value $CommitPath
     }
     $manager
 }
@@ -65,12 +245,11 @@ Function Get-IisSectionCollection {
     )
 
     try {
-        $collection = $AdminManager.GetAdminSection($Section, $ConfigPath).Collection
+        $sectionElement = Invoke-IisComMember -Object $AdminManager -Name 'GetAdminSection' -ArgumentList $Section, $ConfigPath
+        $collection = Invoke-IisComMember -Object $sectionElement -Name 'Collection'
     }
     catch {
-        # TEMPORARY (PR 22): the full exception, to diagnose the IIS lab.
-        $detail = "$($_.Exception.GetType().FullName) on a $([Threading.Thread]::CurrentThread.GetApartmentState()) thread: $($_.Exception.ToString())"
-        throw "Couldn't read $Section at ${ConfigPath}: $($_.Exception.Message) [$detail]"
+        throw "Couldn't read $Section at ${ConfigPath}: $($_.Exception.Message)"
     }
 
     # The comma keeps PowerShell from enumerating a COM collection on output.
@@ -100,15 +279,16 @@ Function Get-IisMimeMapEntry {
         $Extension
     )
 
-    for ($i = 0; $i -lt $Collection.Count; $i++) {
-        $element = $Collection.Item($i)
-        $fileExtension = [string]$element.Properties.Item('fileExtension').Value
+    $count = Invoke-IisComMember -Object $Collection -Name 'Count'
+    for ($i = 0; $i -lt $count; $i++) {
+        $element = Invoke-IisComMember -Object $Collection -Name 'Item' -ArgumentList $i
+        $fileExtension = [string](Get-IisElementValue -Element $element -Name 'fileExtension')
         if ($Extension -and $fileExtension -ne $Extension) {
             continue
         }
 
         try {
-            $definedAt = ([string]$element.GetMetadata('deepestPathSet')).TrimEnd('/')
+            $definedAt = ([string](Invoke-IisComMember -Object $element -Name 'GetMetadata' -ArgumentList 'deepestPathSet')).TrimEnd('/')
         }
         catch {
             # ERROR_NOT_SUPPORTED: callers fall back to comparing with the parent level.
@@ -118,7 +298,7 @@ Function Get-IisMimeMapEntry {
         [PSCustomObject]@{
             Index = $i
             Extension = $fileExtension
-            MimeType = [string]$element.Properties.Item('mimeType').Value
+            MimeType = [string](Get-IisElementValue -Element $element -Name 'mimeType')
             DefinedAt = $definedAt
         }
     }
@@ -182,9 +362,10 @@ Function Resolve-IisConfigLevel {
 
     $sites = Get-IisSectionCollection -AdminManager $AdminManager -Section 'system.applicationHost/sites' -ConfigPath $script:IisServerPath
     $siteElement = $null
-    for ($i = 0; $i -lt $sites.Count; $i++) {
-        $candidate = $sites.Item($i)
-        if ([string]$candidate.Properties.Item('name').Value -eq $Site) {
+    $siteCount = Invoke-IisComMember -Object $sites -Name 'Count'
+    for ($i = 0; $i -lt $siteCount; $i++) {
+        $candidate = Invoke-IisComMember -Object $sites -Name 'Item' -ArgumentList $i
+        if ([string](Get-IisElementValue -Element $candidate -Name 'name') -eq $Site) {
             $siteElement = $candidate
             break
         }
@@ -192,23 +373,25 @@ Function Resolve-IisConfigLevel {
     if ($null -eq $siteElement) {
         throw "IIS has no website named '$Site'."
     }
-    $siteName = [string]$siteElement.Properties.Item('name').Value
+    $siteName = [string](Get-IisElementValue -Element $siteElement -Name 'name')
 
     # Every virtual path under the site: each application's path joined with
     # each of its virtual directories' paths ('' is the site's root).
     $virtualPath = $null
     $physicalPath = $null
-    $applications = $siteElement.Collection
-    for ($a = 0; $a -lt $applications.Count -and $null -eq $virtualPath; $a++) {
-        $app = $applications.Item($a)
-        $appPath = ([string]$app.Properties.Item('path').Value).TrimEnd('/')
-        $directories = $app.Collection
-        for ($d = 0; $d -lt $directories.Count; $d++) {
-            $directory = $directories.Item($d)
-            $candidatePath = $appPath + ([string]$directory.Properties.Item('path').Value).TrimEnd('/')
+    $applications = Invoke-IisComMember -Object $siteElement -Name 'Collection'
+    $applicationCount = Invoke-IisComMember -Object $applications -Name 'Count'
+    for ($a = 0; $a -lt $applicationCount -and $null -eq $virtualPath; $a++) {
+        $app = Invoke-IisComMember -Object $applications -Name 'Item' -ArgumentList $a
+        $appPath = ([string](Get-IisElementValue -Element $app -Name 'path')).TrimEnd('/')
+        $directories = Invoke-IisComMember -Object $app -Name 'Collection'
+        $directoryCount = Invoke-IisComMember -Object $directories -Name 'Count'
+        for ($d = 0; $d -lt $directoryCount; $d++) {
+            $directory = Invoke-IisComMember -Object $directories -Name 'Item' -ArgumentList $d
+            $candidatePath = $appPath + ([string](Get-IisElementValue -Element $directory -Name 'path')).TrimEnd('/')
             if ($candidatePath -eq $wanted) {
                 $virtualPath = $candidatePath
-                $physicalPath = [Environment]::ExpandEnvironmentVariables([string]$directory.Properties.Item('physicalPath').Value)
+                $physicalPath = [Environment]::ExpandEnvironmentVariables([string](Get-IisElementValue -Element $directory -Name 'physicalPath'))
                 break
             }
         }
@@ -252,4 +435,13 @@ Function ConvertTo-IisFileExtension {
     }
 }
 
-Export-ModuleMember -Function New-IisAdminManager, Get-IisSectionCollection, Get-IisMimeMapEntry, Resolve-IisConfigLevel, ConvertTo-IisFileExtension
+$exportFunctions = @(
+    'ConvertTo-IisFileExtension'
+    'Get-IisMimeMapEntry'
+    'Get-IisSectionCollection'
+    'Invoke-IisComMember'
+    'New-IisAdminManager'
+    'Resolve-IisConfigLevel'
+    'Set-IisElementValue'
+)
+Export-ModuleMember -Function $exportFunctions
