@@ -1,3 +1,5 @@
+plugins/modules/gpo_import.ps1 validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
+plugins/modules/gpo_import.yml validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
 plugins/modules/iis_mime_type.ps1 validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
 plugins/modules/iis_mime_type.yml validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
 plugins/modules/iis_mime_type_info.ps1 validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header

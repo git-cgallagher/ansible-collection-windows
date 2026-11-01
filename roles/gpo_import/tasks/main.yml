@@ -9,10 +9,10 @@
     fail_msg: gpo_import_domain and gpo_import_source_dir must be non-empty
     quiet: true
 
-# Staging tasks run even in --check (the convergence script needs the files
-# to compute its plan); the script itself then runs report-only. They're
-# scratch space, not managed state, so they never report a change — the
-# import task's result is the role's real "changed".
+# Staging tasks run even in --check: the module needs the files to compute
+# its plan (and to refuse a cpassword). The staging directory is scratch
+# space, not managed state, so these never report a change. The module's
+# result is the role's real "changed".
 - name: Clear the staging directory
   ansible.windows.win_file:
     path: '{{ gpo_import_workdir }}\stage'
@@ -46,27 +46,26 @@
   check_mode: false
   changed_when: false
 
+# gpo_import_report_only is check mode for this one task: the module predicts
+# every action and writes nothing. Otherwise the keyword is omitted, so the
+# task follows the play (--check, or check_mode applied to the role's tasks).
 - name: Import GPOs and reconcile topology
-  ansible.windows.win_powershell:
-    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/import_gpos.ps1') }}"
-    parameters:
-      Domain: "{{ gpo_import_domain }}"
-      Server: "{{ gpo_import_server }}"
-      SourceDir: '{{ gpo_import_workdir }}\stage'
-      ManifestPath: "{{ gpo_import_manifest }}"
-      MigrationTablePath: "{{ gpo_import_migration_table }}"
-      StateDir: "{{ gpo_import_state_dir }}"
-      ReportOnly: "{{ gpo_import_report_only | bool or ansible_check_mode }}"
-      RemoveUnmanagedLinks: "{{ gpo_import_remove_unmanaged_links | bool }}"
-      CreateWmiFilters: "{{ gpo_import_create_wmi_filters | bool }}"
-      ForceImport: "{{ gpo_import_force | bool }}"
-      GpoNames: "{{ gpo_import_gpos }}"
+  git_cgallagher.windows.gpo_import:
+    domain: "{{ gpo_import_domain }}"
+    server: "{{ gpo_import_server | default(omit, true) }}"
+    source_dir: '{{ gpo_import_workdir }}\stage'
+    manifest_path: "{{ gpo_import_manifest }}"
+    migration_table_path: "{{ gpo_import_migration_table | default(omit, true) }}"
+    state_dir: "{{ gpo_import_state_dir }}"
+    remove_unmanaged_links: "{{ gpo_import_remove_unmanaged_links | bool }}"
+    create_wmi_filters: "{{ gpo_import_create_wmi_filters | bool }}"
+    force: "{{ gpo_import_force | bool }}"
+    gpo_names: "{{ gpo_import_gpos }}"
+  check_mode: "{{ true if gpo_import_report_only | bool else omit }}"
   register: gpo_import_run
-  check_mode: false
 
-- name: Report actions and warnings
+- name: Report the actions
   ansible.builtin.debug:
     msg:
-      - "report_only: {{ gpo_import_run.result.report_only }}"
-      - "actions: {{ gpo_import_run.result.actions }}"
-      - "warnings: {{ gpo_import_run.result.warnings }}"
+      - "actions: {{ gpo_import_run.actions }}"
+      - "notices: {{ gpo_import_run.notices }}"
