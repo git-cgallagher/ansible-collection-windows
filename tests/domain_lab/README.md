@@ -5,14 +5,16 @@ one in `tests/integration`:
 
 | Scenario | What it tests |
 |---|---|
-| [`roles/gpo_backup/molecule/default`](../../roles/gpo_backup/molecule/default/README.md) | The export: the manifest, the backup folders, that an unchanged domain ships nothing and that a changed GPO ships |
-| [`roles/gpo_import/molecule/default`](../../roles/gpo_import/molecule/default/README.md) | The import round trip: out-of-band drift, a report-only plan, the import, the domain read back through GPMC, a re-export, and an import through a migration table |
+| [`roles/gpo_backup/molecule/default`](../../roles/gpo_backup/molecule/default/README.md) | The export: the manifest, the backup folders, that an unchanged domain ships nothing and that a changed GPO ships; then the `gpo_export` module's integration target |
+| [`roles/gpo_import/molecule/default`](../../roles/gpo_import/molecule/default/README.md) | The import round trip: out-of-band drift, a report-only plan, the import, the domain read back through GPMC, a re-export, and an import through a migration table; then the `gpo_import` module's integration target |
 | [`roles/wsfc/molecule/default`](../../roles/wsfc/molecule/default/README.md) | A one-node workgroup cluster built by `wsfc` (never promoted) |
 | [`tests/integration/molecule/iis`](../integration/molecule/iis/README.md) | The IIS modules' integration targets, on a plain server with IIS (never promoted) |
 
 Each one boots its own Windows Server 2022 VM under QEMU/KVM; the GPO
 scenarios promote it to the first DC of a new forest (`gpolab.test`) and run
-their role against it. CI runs them in
+their role against it, then the module's integration target from
+`tests/integration/targets/` (`gpo_export`, `gpo_import`, with the shared
+`setup_gpo_lab`), the way `wsfc`'s runs `wsfc_cluster`. CI runs them in
 [`.github/workflows/domain-lab.yml`](../../.github/workflows/domain-lab.yml)
 on `ubuntu-latest`, one job per scenario, in parallel (about 14 minutes).
 

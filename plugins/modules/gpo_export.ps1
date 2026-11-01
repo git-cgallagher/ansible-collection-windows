@@ -4,6 +4,7 @@
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
 #AnsibleRequires -CSharpUtil Ansible.Basic
+#AnsibleRequires -PowerShell ..module_utils._GpoCommon
 
 # Export a domain's GPOs plus a topology manifest. Runs on a Windows
 # management host with RSAT (GroupPolicy + ActiveDirectory modules); roles/gpo_backup
@@ -20,8 +21,10 @@
 # backup, so check mode decides exactly like a real run without running
 # Backup-GPO or writing anything: it reads AD and SYSVOL and returns the plan.
 #
-# Windows PowerShell 5.1-compatible. Keep '# region common' in sync with
-# plugins/modules/gpo_import.ps1.
+# Windows PowerShell 5.1-compatible. The pure logic (hashing, the zip, the
+# manifest's encodings, the state decisions) lives in
+# plugins/module_utils/_GpoCommon.psm1, shared with gpo_import and unit-tested
+# with Pester (tests/unit/plugins/).
 
 # The argument spec and Create come first: ansible-test's validate-modules runs
 # this file under pwsh on Linux up to Create to read the spec.
@@ -48,182 +51,6 @@ $GpoNames = @($module.Params.gpo_names)
 $FullExport = [bool]$module.Params.full_export
 $checkMode = $module.CheckMode
 
-# region common — keep in sync with gpo_import.ps1
-function ConvertTo-SafeName {
-    param([string]$Name)
-    $safe = $Name -replace '[\\/:*?"<>|]', '_'
-    $safe = $safe.TrimEnd('.', ' ')
-    if (-not $safe) { $safe = '_' }
-    $safe
-}
-
-function Get-DirContentHash {
-    # Deterministic hash of a directory tree: relative paths (case-folded) +
-    # per-file SHA256. Empty directories count, so a GPO gaining or losing an
-    # empty User/ folder still registers.
-    param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
-    $base = (Get-Item -LiteralPath $Path).FullName
-    $sb = New-Object System.Text.StringBuilder
-    $items = Get-ChildItem -LiteralPath $base -Recurse -Force |
-        Sort-Object { $_.FullName.Substring($base.Length).ToLowerInvariant() }
-    foreach ($it in $items) {
-        $rel = $it.FullName.Substring($base.Length).TrimStart('\').ToLowerInvariant()
-        if ($it.PSIsContainer) {
-            [void]$sb.AppendLine("dir|$rel")
-        }
-        else {
-            $h = (Get-FileHash -LiteralPath $it.FullName -Algorithm SHA256).Hash
-            [void]$sb.AppendLine("file|$rel|$h")
-        }
-    }
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
-        ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    }
-    finally { $sha.Dispose() }
-}
-
-function Get-StringHash {
-    param([string]$Text)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
-        ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    }
-    finally { $sha.Dispose() }
-}
-
-function Get-GpoSysvolPath {
-    # Inside a Backup-GPO folder, the settings payload lives under
-    # {backup-guid}\DomainSysvol. Hashing only that subtree keeps the hash
-    # stable across re-backups (Backup.xml / bkupInfo.xml / gpreport.xml
-    # carry timestamps and a fresh backup GUID every time). A GPO with no
-    # settings has no DomainSysvol: return $null (hashes as '') rather than
-    # fall back to those volatile files, or it would re-ship on every run.
-    param([string]$BackupDir)
-    $guidDir = Get-ChildItem -LiteralPath $BackupDir -Directory |
-        Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
-    if ($null -eq $guidDir) { return $null }
-    $sysvol = Join-Path $guidDir.FullName 'DomainSysvol'
-    if (Test-Path -LiteralPath $sysvol) { return $sysvol }
-    return $null
-}
-
-function Write-Utf8File {
-    param([string]$Path, [string]$Content)
-    $enc = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($Path, $Content, $enc)
-}
-# endregion common
-
-function New-ZipFromDirectory {
-    # Entries are written one by one so that (a) names use forward slashes —
-    # some .NET Framework / PowerShell 5.1 combinations write backslashes,
-    # which Linux unzip warns about and Ansible's unarchive treats as failure —
-    # and (b) empty directories get explicit entries (GPO backups contain
-    # them; Compress-Archive drops them).
-    param([string]$Source, [string]$Destination)
-    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-    $base = (Get-Item -LiteralPath $Source).FullName.TrimEnd('\') + '\'
-    $zip = [System.IO.Compression.ZipFile]::Open($Destination, [System.IO.Compression.ZipArchiveMode]::Create)
-    try {
-        foreach ($item in Get-ChildItem -LiteralPath $base -Recurse -Force) {
-            $rel = $item.FullName.Substring($base.Length).Replace('\', '/')
-            if ($item.PSIsContainer) {
-                if (-not (Get-ChildItem -LiteralPath $item.FullName -Force | Select-Object -First 1)) {
-                    [void]$zip.CreateEntry($rel + '/')
-                }
-            }
-            else {
-                [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $item.FullName, $rel)
-            }
-        }
-    }
-    finally { $zip.Dispose() }
-}
-
-function ConvertFrom-WmiFilterParm2 {
-    # msWMI-Parm2 single-query form: "1;3;<nsLen>;<qLen>;WQL;<namespace>;<query>;"
-    param([string]$Parm2)
-    try {
-        $i = $Parm2.IndexOf(';')
-        $count = [int]$Parm2.Substring(0, $i)
-        if ($count -ne 1) { return $null }   # multi-query: keep raw only
-        $parts = $Parm2.Substring($i + 1).Split(';', 4)
-        $nsLen = [int]$parts[1]
-        $qLen = [int]$parts[2]
-        $tail = $parts[3]
-        $tail = $tail.Substring($tail.IndexOf(';') + 1)   # skip the language token (WQL)
-        @{
-            namespace = $tail.Substring(0, $nsLen)
-            query = $tail.Substring($nsLen + 1, $qLen)
-        }
-    }
-    catch { $null }
-}
-
-function ConvertTo-RelativeDn {
-    # Link targets are stored relative to the domain root ('' = the root
-    # itself), so the manifest imports into a domain with another name.
-    param([string]$Dn, [string]$RootDn)
-    if ($Dn -ieq $RootDn) { return '' }
-    $suffix = ',' + $RootDn
-    if ($Dn.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $Dn.Substring(0, $Dn.Length - $suffix.Length)
-    }
-    throw "'$Dn' is not inside '$RootDn'"
-}
-
-function Test-Denied {
-    # A Deny entry (typically "Deny Apply group policy" to exclude admins) must
-    # never be mistaken for an Apply grant.
-    param($Permission)
-    [bool]($Permission.PSObject.Properties['Denied'] -and $Permission.Denied)
-}
-
-function Get-TrusteeEntry {
-    # Store trustees domain-relative so the manifest imports into any domain
-    # following the same naming convention (relative-name mapping).
-    param($Permission, [string]$NetBiosName)
-    $name = [string]$Permission.Trustee.Name
-    if ($name -and $name.Contains('\')) {
-        $parts = $name.Split('\', 2)
-        if ($parts[0] -eq $NetBiosName) { $name = $parts[1] }
-    }
-    $type = 'Group'
-    $sidType = [string]$Permission.Trustee.SidType
-    if ($sidType -eq 'User') { $type = 'User' }
-    elseif ($sidType -eq 'Computer') { $type = 'Computer' }
-    [ordered]@{ name = $name; type = $type }
-}
-
-function Get-GpoLiveContentHash {
-    # Deterministic hash of a GPO's live Group Policy Template (the SYSVOL
-    # folder), in Get-DirContentHash's format: relative paths (case-folded) and
-    # per-file SHA256, empty directories included. gpt.ini is left out: it holds
-    # the version counter, which GPMC bumps on every edit, and the display name,
-    # neither of which is settings content. Reading from the DC the export runs
-    # against (not the domain DFS path) keeps it free of replication races.
-    param([string]$Path)
-    $base = (Get-Item -LiteralPath $Path).FullName
-    $sb = New-Object System.Text.StringBuilder
-    $items = Get-ChildItem -LiteralPath $base -Recurse -Force |
-        Sort-Object { $_.FullName.Substring($base.Length).ToLowerInvariant() }
-    foreach ($it in $items) {
-        $rel = $it.FullName.Substring($base.Length).TrimStart('\').ToLowerInvariant()
-        if ($rel -eq 'gpt.ini') { continue }
-        if ($it.PSIsContainer) {
-            [void]$sb.AppendLine("dir|$rel")
-        }
-        else {
-            $h = (Get-FileHash -LiteralPath $it.FullName -Algorithm SHA256).Hash
-            [void]$sb.AppendLine("file|$rel|$h")
-        }
-    }
-    Get-StringHash -Text $sb.ToString()
-}
 
 $module.Result.shipped = @()
 $module.Result.deleted = @()
@@ -266,12 +93,9 @@ try {
     $module.Result.preflight.ad = $true
 
     # --- preflight: can the export be written? ------------------------------
-    $module.Result.preflight.work_dir_exists = [bool](Test-Path -LiteralPath $WorkDir -PathType Container)
+    $module.Result.preflight.work_dir_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $WorkDir -PathType Container)
     if ($checkMode) {
-        $probeDir = $WorkDir
-        while ($probeDir -and -not (Test-Path -LiteralPath $probeDir -PathType Container)) {
-            $probeDir = [System.IO.Path]::GetDirectoryName($probeDir)
-        }
+        $probeDir = Get-NearestExistingDirectory -Path $WorkDir
         if (-not $probeDir) {
             $preflightFailure = "work_dir $WorkDir can't be created: none of its parents exist."
         }
@@ -286,16 +110,19 @@ try {
                 $preflightFailure = "work_dir $WorkDir isn't writable (probed $probeDir): $($_.Exception.Message)"
             }
             finally {
-                if (Test-Path -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
+                if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $probeFile) { Remove-Item -LiteralPath $probeFile -Force }
             }
         }
     }
 
     # --- state --------------------------------------------------------------
     # Read-only here: check mode must not create work_dir either.
-    $stateFile = Join-Path $WorkDir ("backup-state-{0}.json" -f $Domain.ToLowerInvariant())
+    # [IO.Path]::Combine, not Join-Path: Windows PowerShell's Join-Path throws
+    # "Cannot find drive" for a work_dir on a drive that doesn't exist, before
+    # the preflight could report it.
+    $stateFile = [System.IO.Path]::Combine($WorkDir, ("backup-state-{0}.json" -f $Domain.ToLowerInvariant()))
     $state = @{ gpos = @{}; manifest_hash = '' }
-    if (Test-Path -LiteralPath $stateFile) {
+    if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stateFile) {
         $rawState = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($rawState.PSObject.Properties['gpos']) {
             foreach ($p in $rawState.gpos.PSObject.Properties) {
@@ -319,7 +146,10 @@ try {
 
     $safeSeen = @{}
     $shipped = New-Object System.Collections.ArrayList
-    $newState = @{ gpos = @{}; manifest_hash = '' }
+    # A filtered run (gpo_names) keeps the unselected GPOs' recorded hashes, so
+    # the next full export doesn't re-ship them; the selected ones are rewritten
+    # below. An unfiltered run starts empty, which is how a deleted GPO shows.
+    $newState = @{ gpos = (Get-CarriedOverGpoState -State $state.gpos -Selected $GpoNames); manifest_hash = '' }
 
     foreach ($gpo in $live) {
         $safe = ConvertTo-SafeName -Name $gpo.DisplayName
@@ -333,7 +163,7 @@ try {
         # the others: collect every failure, then fail the run without saving state.
         try {
             $gpt = Join-Path $policies ('{{{0}}}' -f $gpo.Id)
-            if (-not (Test-Path -LiteralPath $gpt -PathType Container)) {
+            if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $gpt -PathType Container)) {
                 throw "its SYSVOL folder $gpt does not exist"
             }
             $hash = Get-GpoLiveContentHash -Path $gpt
@@ -354,14 +184,7 @@ try {
 
     # GPOs recorded in state but gone from the domain (skip when filtering: an
     # unselected GPO is not a deleted one).
-    $deleted = New-Object System.Collections.ArrayList
-    if ($GpoNames.Count -eq 0) {
-        foreach ($name in $state.gpos.Keys) {
-            if (-not $newState.gpos.ContainsKey($name)) {
-                [void]$deleted.Add([ordered]@{ name = $name; backup_dir = $state.gpos[$name].dir })
-            }
-        }
-    }
+    $deleted = @(Get-DeletedGpoEntry -Recorded $state.gpos -Live $newState.gpos -Filtered ($GpoNames.Count -gt 0))
 
     # --- build the topology manifest -----------------------------------------
     $manifest = [ordered]@{
@@ -456,11 +279,11 @@ try {
 
     # --- real run only: stage, back up what ships, zip, save state ----------
     if (-not $checkMode) {
-        if (-not (Test-Path -LiteralPath $WorkDir)) {
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $WorkDir)) {
             New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
         }
-        $stage = Join-Path $WorkDir 'stage'
-        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        $stage = [System.IO.Path]::Combine($WorkDir, 'stage')
+        if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
         $exportRoot = Join-Path $stage 'export'
         $exportGpos = Join-Path $exportRoot 'gpos'
         New-Item -ItemType Directory -Path $exportGpos -Force | Out-Null
@@ -481,8 +304,8 @@ try {
 
         Write-Utf8File -Path (Join-Path $exportRoot 'gpo-manifest.json') -Content $manifestJson
 
-        $zipPath = Join-Path $WorkDir 'gpo-export.zip'
-        if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+        $zipPath = [System.IO.Path]::Combine($WorkDir, 'gpo-export.zip')
+        if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
         New-ZipFromDirectory -Source $exportRoot -Destination $zipPath
         $module.Result.zip = $zipPath
 

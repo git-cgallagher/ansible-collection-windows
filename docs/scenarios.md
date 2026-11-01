@@ -130,7 +130,7 @@ the import:
 **Building the table:** let GPMC write it so the format and source names are
 exactly what `Import-GPO` expects. Use the Migration Table Editor
 (`mtedit.exe`, "Populate from Backup"), or script it with the GPMC COM API,
-as the lab does (`roles/gpo_import/molecule/default/files/new_migtable.ps1`):
+as the lab does (`tests/integration/targets/setup_gpo_lab/files/new_migtable.ps1`):
 
 ```powershell
 $gpm = New-Object -ComObject GPMgmt.GPM

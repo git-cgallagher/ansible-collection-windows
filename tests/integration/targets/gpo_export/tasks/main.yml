@@ -1,0 +1,601 @@
+---
+# Integration tests for git_cgallagher.windows.gpo_export, on a domain
+# controller of the lab domain. setup_gpo_lab (meta/main.yml) has read the
+# domain's name and checked the fixture is seeded. Every check reads the domain
+# through setup_gpo_lab's read_domain.ps1 (GPMC and AD) and the export through
+# read_export.ps1 (the file system, the zip and the state file), never through
+# the module under test.
+#
+# The module reads AD and SYSVOL and writes only its working directory, so the
+# tests give it one of their own under setup_gpo_lab_dir, apart from the
+# gpo_backup role's, and remove it at the end. The domain changes the tests
+# make (a registry value in one GPO, so that it ships alone, and three
+# throwaway GPOs) are undone in the always block, so the target runs twice on
+# the same host.
+- name: Read the domain before the tests
+  ansible.windows.win_powershell:
+    script: "{{ setup_gpo_lab_read_script }}"
+    parameters:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+    depth: 8
+  register: gpo_export_domain_before
+
+- name: Test gpo_export, then clean up
+  vars:
+    gpo_export_fx: "{{ setup_gpo_lab_fixture }}"
+    gpo_export_work_dir: '{{ setup_gpo_lab_dir }}\export'
+    gpo_export_denied_dir: '{{ setup_gpo_lab_dir }}\export-denied'
+    gpo_export_zip: '{{ gpo_export_work_dir }}\gpo-export.zip'
+    gpo_export_temp_gpo: IacLab - Temp Export
+    # Both map to the folder name 'IacLab - Dup_' (the characters \/:*?"<>| become _).
+    gpo_export_dup_gpos: ['IacLab - Dup?', 'IacLab - Dup:']
+    gpo_export_gpo_names: "{{ gpo_export_domain_before.result.topology.gpos.keys() | list | sort }}"
+    gpo_export_result_keys: [preflight, shipped, deleted, manifest_changed, gpo_count, zip, server, errors]
+    gpo_export_read_params:
+      WorkDir: "{{ gpo_export_work_dir }}"
+      Domain: "{{ setup_gpo_lab_domain }}"
+  block:
+    - name: Start without a working directory
+      ansible.windows.win_file:
+        path: "{{ gpo_export_work_dir }}"
+        state: absent
+
+    # --- the first export: check mode, real, repeat ------------------------------------
+    # With no state file every GPO is new, so the plan is the whole domain.
+    - name: Plan the first export (check mode, no working directory yet)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      check_mode: true
+      register: gpo_export_first_check
+
+    - name: Read the working directory after the plan
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read
+
+    - name: Check check mode planned every GPO, proved the parent writable and created nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_export_result_keys | difference(gpo_export_first_check.keys() | list) == []
+          - gpo_export_first_check is changed
+          - gpo_export_first_check.zip is none
+          - gpo_export_first_check.gpo_count == gpo_export_gpo_names | length
+          - gpo_export_first_check.shipped | map(attribute='name') | sort == gpo_export_gpo_names
+          - gpo_export_first_check.deleted == []
+          - gpo_export_first_check.manifest_changed
+          - gpo_export_first_check.errors == []
+          - gpo_export_first_check.server | lower == setup_gpo_lab_pdc | lower
+          - gpo_export_first_check.preflight.ad
+          - gpo_export_first_check.preflight.gpmc
+          - not gpo_export_first_check.preflight.work_dir_exists
+          - gpo_export_first_check.preflight.work_dir_writable
+          - gpo_export_first_check.preflight.work_dir_probed | lower == setup_gpo_lab_dir | lower
+          - not gpo_export_read.result.exists
+        fail_msg: "{{ gpo_export_first_check }} / {{ gpo_export_read.result }}"
+
+    - name: Export the domain
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_first
+
+    - name: Read the export
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read
+
+    - name: Check every GPO shipped, as planned, into a zip with the manifest and a state file
+      ansible.builtin.assert:
+        that:
+          - gpo_export_first is changed
+          - gpo_export_first.shipped == gpo_export_first_check.shipped
+          - gpo_export_first.deleted == []
+          - gpo_export_first.manifest_changed
+          - gpo_export_first.errors == []
+          - gpo_export_first.zip | lower == gpo_export_zip | lower
+          - not gpo_export_first.preflight.work_dir_exists
+          - gpo_export_first.preflight.work_dir_writable
+          - gpo_export_first.preflight.work_dir_probed | lower == gpo_export_work_dir | lower
+          - gpo_export_read.result.zip_exists
+          - "'gpo-manifest.json' in gpo_export_read.result.entries"
+          - gpo_export_read.result.zip_gpos | sort == gpo_export_first.shipped | map(attribute='backup_dir') | sort
+          - gpo_export_read.result.entries | select('match', '^gpos/[^/]+/manifest[.]xml$') | list | length == gpo_export_first.gpo_count
+          - gpo_export_read.result.entries | select('match', '^gpos/[^/]+/[{][^/]+[}]/Backup[.]xml$') | list | length == gpo_export_first.gpo_count
+          - gpo_export_read.result.state_exists
+          - gpo_export_read.result.state.hash_basis == 'sysvol'
+          - gpo_export_read.result.state.gpos | sort == gpo_export_gpo_names
+        fail_msg: "{{ gpo_export_first }} / {{ gpo_export_read.result | combine({'manifest': '...'}) }}"
+
+    # The manifest, against the fixture: links in precedence order (domain root
+    # included), enforced and disabled links, block-inheritance, security
+    # filtering, the WMI filter and GPO status.
+    - name: Check the manifest captured the fixture's topology
+      ansible.builtin.assert:
+        that:
+          - gpo_export_m.domain == setup_gpo_lab_domain
+          - gpo_export_m.root_dn == setup_gpo_lab_root_dn
+          - gpo_export_m.netbios == gpo_export_domain_before.result.netbios
+          - gpo_export_m.domain_sid is match('^S-1-5-21-')
+          - gpo_export_m.gpos.keys() | list | sort == gpo_export_gpo_names
+          - gpo_export_m.gpos[gpo_export_fx.gpo_baseline].backup_dir == gpo_export_fx.gpo_baseline
+          - gpo_export_m.gpos[gpo_export_fx.gpo_baseline].denied == []
+          - gpo_export_m.gpos[gpo_export_fx.gpo_baseline].status == 'AllSettingsEnabled'
+          - gpo_export_m.gpos[gpo_export_fx.gpo_baseline].wmi_filter == gpo_export_fx.wmi_filter
+          - "gpo_export_m.gpos[gpo_export_fx.gpo_baseline].apply_to == [{'name': gpo_export_fx.group, 'type': 'Group'}]"
+          - gpo_export_m.gpos[gpo_export_fx.gpo_rdp].status == 'UserSettingsDisabled'
+          - "gpo_export_m.gpos[gpo_export_fx.gpo_rdp].apply_to == [{'name': 'Authenticated Users', 'type': 'Group'}]"
+          - gpo_export_m.gpos[gpo_export_fx.gpo_password].status == 'AllSettingsEnabled'
+          - gpo_export_m.gpos[gpo_export_fx.gpo_password].wmi_filter is none
+          - gpo_export_m.wmi_filters[gpo_export_fx.wmi_filter].namespace == gpo_export_fx.wmi_namespace
+          - gpo_export_m.wmi_filters[gpo_export_fx.wmi_filter].query == gpo_export_fx.wmi_query
+          - gpo_export_m.wmi_filters[gpo_export_fx.wmi_filter].description == gpo_export_fx.wmi_description
+          - "gpo_export_root.links == [{'gpo': gpo_export_fx.gpo_password, 'enforced': false, 'enabled': true},
+                                      {'gpo': 'Default Domain Policy', 'enforced': false, 'enabled': true}]"
+          - not gpo_export_root.block_inheritance
+          - "gpo_export_servers.links == [{'gpo': gpo_export_fx.gpo_baseline, 'enforced': true, 'enabled': true},
+                                         {'gpo': gpo_export_fx.gpo_rdp, 'enforced': false, 'enabled': true},
+                                         {'gpo': gpo_export_fx.gpo_server_admins, 'enforced': false, 'enabled': true}]"
+          - not gpo_export_servers.block_inheritance
+          - "gpo_export_workstations.links == [{'gpo': gpo_export_fx.gpo_rdp, 'enforced': false, 'enabled': false},
+                                              {'gpo': gpo_export_fx.gpo_ws_admins, 'enforced': false, 'enabled': true}]"
+          - gpo_export_workstations.block_inheritance
+          # An OU with no links and no blocked inheritance isn't in the manifest.
+          - gpo_export_m.soms | selectattr('target', 'equalto', 'OU=' ~ gpo_export_fx.ou) | list | length == 0
+          # What the manifest says is what GPMC shows.
+          - gpo_export_m.gpos[gpo_export_fx.gpo_baseline].apply_to | map(attribute='name') | list
+            == gpo_export_domain_before.result.topology.gpos[gpo_export_fx.gpo_baseline].apply_to
+          - gpo_export_servers.links == gpo_export_domain_before.result.topology.soms['OU=Servers,OU=' ~ gpo_export_fx.ou].links
+        fail_msg: "Manifest doesn't match the fixture: {{ gpo_export_m | to_nice_json }}"
+      vars:
+        gpo_export_m: "{{ gpo_export_read.result.manifest }}"
+        gpo_export_root: "{{ gpo_export_m.soms | selectattr('target', 'equalto', '') | first }}"
+        gpo_export_servers: "{{ gpo_export_m.soms | selectattr('target', 'equalto', 'OU=Servers,OU=' ~ gpo_export_fx.ou) | first }}"
+        gpo_export_workstations: "{{ gpo_export_m.soms | selectattr('target', 'equalto', 'OU=Workstations,OU=' ~ gpo_export_fx.ou) | first }}"
+
+    - name: Export again
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_again
+
+    - name: Read the export after the repeat
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_again
+
+    # The zip is rewritten on every run (the role reads it only when something
+    # shipped), so compare the state, not the files.
+    - name: Check an unchanged domain ships nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_export_again is not changed
+          - gpo_export_again.shipped == []
+          - gpo_export_again.deleted == []
+          - not gpo_export_again.manifest_changed
+          - gpo_export_again.errors == []
+          - gpo_export_again.zip is not none
+          - gpo_export_again.gpo_count == gpo_export_first.gpo_count
+          - gpo_export_read_again.result.zip_gpos == []
+          - "'gpo-manifest.json' in gpo_export_read_again.result.entries"
+          - gpo_export_read_again.result.state == gpo_export_read.result.state
+        fail_msg: "{{ gpo_export_again | string }}"
+
+    # --- check mode with a state file: nothing written -----------------------------------
+    - name: Plan again (check mode, working directory in place)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      check_mode: true
+      register: gpo_export_check
+
+    - name: Read the working directory after the check-mode run
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_check
+
+    - name: Check check mode left the working directory byte-for-byte as it was
+      ansible.builtin.assert:
+        that:
+          - gpo_export_check is not changed
+          - gpo_export_check.shipped == []
+          - gpo_export_check.zip is none
+          - gpo_export_check.preflight.work_dir_exists
+          - gpo_export_check.preflight.work_dir_writable
+          - gpo_export_check.preflight.work_dir_probed | lower == gpo_export_work_dir | lower
+          - gpo_export_read_check.result.files == gpo_export_read_again.result.files
+        fail_msg: >-
+          {{ gpo_export_check }}; before: {{ gpo_export_read_again.result.files }};
+          after: {{ gpo_export_read_check.result.files }}
+
+    # --- a changed GPO ships alone -----------------------------------------------------------
+    # A settings change through GPMC changes the GPO's SYSVOL content, not the
+    # topology, so the GPO ships and the manifest doesn't change.
+    - name: Change a setting in the RDP GPO through GPMC
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          Set-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
+              -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'ExportTargetProbe' -Type DWord -Value 1 | Out-Null
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_export_fx.gpo_rdp }}"
+
+    - name: Plan the export of the changed domain (check mode)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      check_mode: true
+      register: gpo_export_changed_check
+
+    - name: Export the changed domain
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_changed
+
+    - name: Read the export of the changed domain
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_changed
+
+    - name: Export the changed domain again
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_changed_again
+
+    - name: Check the changed GPO, and only it, shipped, as planned, then nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_export_changed_check is changed
+          - gpo_export_changed_check.shipped | map(attribute='name') | list == [gpo_export_fx.gpo_rdp]
+          - not gpo_export_changed_check.manifest_changed
+          - gpo_export_changed_check.zip is none
+          - gpo_export_changed is changed
+          - gpo_export_changed.shipped == gpo_export_changed_check.shipped
+          - gpo_export_changed.deleted == []
+          - not gpo_export_changed.manifest_changed
+          - gpo_export_read_changed.result.zip_gpos == [gpo_export_fx.gpo_rdp]
+          - gpo_export_read_changed.result.manifest.gpos.keys() | list | sort == gpo_export_gpo_names
+          - gpo_export_changed_again is not changed
+          - gpo_export_changed_again.shipped == []
+        fail_msg: "{{ gpo_export_changed_check }} / {{ gpo_export_changed }} / {{ gpo_export_changed_again }}"
+
+    # --- a new GPO, a deleted GPO, and the gpo_names filter -------------------------------------
+    - name: Create a throwaway GPO
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          New-GPO -Name $Name -Domain $Domain -Server $pdc | Out-Null
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_export_temp_gpo }}"
+
+    - name: Export the domain with the new GPO
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_new_gpo
+
+    - name: Check the new GPO shipped alone and changed the manifest
+      ansible.builtin.assert:
+        that:
+          - gpo_export_new_gpo is changed
+          - gpo_export_new_gpo.shipped | map(attribute='name') | list == [gpo_export_temp_gpo]
+          - gpo_export_new_gpo.manifest_changed
+          - gpo_export_new_gpo.deleted == []
+          - gpo_export_new_gpo.gpo_count == gpo_export_gpo_names | length + 1
+        fail_msg: "{{ gpo_export_new_gpo | string }}"
+
+    - name: Delete the throwaway GPO
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          Remove-GPO -Name $Name -Domain $Domain -Server $pdc
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_export_temp_gpo }}"
+
+    # gpo_names limits the export to the named GPOs; an unselected GPO is not a
+    # deleted one, so deleted-GPO detection is skipped, and the state file
+    # keeps the unselected GPOs' hashes.
+    - name: Export two unchanged GPOs by name
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+        gpo_names:
+          - "{{ gpo_export_fx.gpo_baseline }}"
+          - "{{ gpo_export_fx.gpo_rdp }}"
+      register: gpo_export_filtered
+
+    - name: Export one GPO by name, whether or not it changed
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+        gpo_names: ["{{ gpo_export_fx.gpo_baseline }}"]
+        full_export: true
+      register: gpo_export_filtered_full
+
+    - name: Read the export after the filtered runs
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_filtered
+
+    - name: Check the filter selected the GPOs, skipped deletion detection and kept the others' state
+      ansible.builtin.assert:
+        that:
+          - gpo_export_filtered.gpo_count == 2
+          - gpo_export_filtered.shipped == []
+          - gpo_export_filtered.deleted == []
+          - gpo_export_filtered_full is changed
+          - gpo_export_filtered_full.gpo_count == 1
+          - gpo_export_filtered_full.shipped | map(attribute='name') | list == [gpo_export_fx.gpo_baseline]
+          - gpo_export_filtered_full.deleted == []
+          - gpo_export_read_filtered.result.zip_gpos == [gpo_export_fx.gpo_baseline]
+          - gpo_export_read_filtered.result.manifest.gpos.keys() | list == [gpo_export_fx.gpo_baseline]
+          - gpo_export_read_filtered.result.state.gpos | sort == (gpo_export_gpo_names + [gpo_export_temp_gpo]) | sort
+        fail_msg: "{{ gpo_export_filtered }} / {{ gpo_export_filtered_full }} / {{ gpo_export_read_filtered.result.state }}"
+
+    - name: Plan the export after the deletion (check mode)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      check_mode: true
+      register: gpo_export_deleted_check
+
+    - name: Export after the deletion
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_deleted
+
+    - name: Export after the deletion again
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_deleted_again
+
+    - name: Read the export after the deletion
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_deleted
+
+    # The filtered runs wrote the filtered manifest, so the full one differs
+    # from it (manifest_changed); nothing re-ships, the state kept every hash.
+    - name: Check the deleted GPO was reported once, then forgotten
+      ansible.builtin.assert:
+        that:
+          - gpo_export_deleted_check is changed
+          - gpo_export_deleted_check.shipped == []
+          - "gpo_export_deleted_check.deleted == [{'name': gpo_export_temp_gpo, 'backup_dir': gpo_export_temp_gpo}]"
+          - gpo_export_deleted_check.manifest_changed
+          - gpo_export_deleted is changed
+          - gpo_export_deleted.shipped == []
+          - gpo_export_deleted.deleted == gpo_export_deleted_check.deleted
+          - gpo_export_deleted.gpo_count == gpo_export_gpo_names | length
+          - gpo_export_deleted_again is not changed
+          - gpo_export_deleted_again.deleted == []
+          - gpo_export_read_deleted.result.state.gpos | sort == gpo_export_gpo_names
+          - gpo_export_read_deleted.result.manifest.gpos.keys() | list | sort == gpo_export_gpo_names
+        fail_msg: "{{ gpo_export_deleted_check }} / {{ gpo_export_deleted }} / {{ gpo_export_deleted_again }}"
+
+    # --- failures: each fails clearly and writes nothing ----------------------------------------
+    # Two GPOs whose display names map to the same folder name can't share
+    # an export; the clash test below fails before anything is written. They
+    # exist before the domain is read, so the read after the failures
+    # compares like with like.
+    - name: Create two GPOs whose names map to the same folder name
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string[]]$Names)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          foreach ($name in $Names) { New-GPO -Name $name -Domain $Domain -Server $pdc | Out-Null }
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Names: "{{ gpo_export_dup_gpos }}"
+
+    - name: Read the domain before the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+        depth: 8
+      register: gpo_export_domain_before_errors
+
+    - name: Leave the domain out
+      git_cgallagher.windows.gpo_export:
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_no_domain
+      failed_when: "'missing required arguments: domain' not in (gpo_export_no_domain.msg | default(''))"
+
+    # Check mode still has to prove the export could be written: its one write
+    # is a probe file in work_dir (or the nearest existing parent), removed at
+    # once. A directory that denies writes must fail the plan.
+    - name: Create a working directory that denies writes
+      ansible.windows.win_file:
+        path: "{{ gpo_export_denied_dir }}"
+        state: directory
+
+    - name: Deny everyone write access to it
+      ansible.windows.win_acl:
+        path: "{{ gpo_export_denied_dir }}"
+        user: Everyone
+        rights: Write
+        type: deny
+        state: present
+
+    - name: Plan against the denied directory (check mode)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_denied_dir }}"
+      check_mode: true
+      register: gpo_export_denied
+      failed_when: "'preflight failed' not in (gpo_export_denied.msg | default(''))"
+
+    - name: List what the probe left in the denied directory
+      ansible.windows.win_find:
+        paths: "{{ gpo_export_denied_dir }}"
+        file_type: any
+      register: gpo_export_denied_files
+
+    - name: Check the preflight refused the denied directory and left nothing behind
+      ansible.builtin.assert:
+        that:
+          - gpo_export_denied is not changed
+          - '"isn''t writable" in gpo_export_denied.msg'
+          - gpo_export_denied.preflight.ad
+          - gpo_export_denied.preflight.gpmc
+          - gpo_export_denied.preflight.work_dir_exists
+          - not gpo_export_denied.preflight.work_dir_writable
+          - gpo_export_denied.preflight.work_dir_probed | lower == gpo_export_denied_dir | lower
+          - gpo_export_denied.shipped == []
+          - gpo_export_denied_files.files | length == 0
+        fail_msg: "{{ gpo_export_denied | string }}"
+
+    - name: Plan against a working directory none of whose parents exist (check mode)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: 'Q:\gpo-iac-test\export'
+      check_mode: true
+      register: gpo_export_no_parent
+      failed_when: "'none of its parents exist' not in (gpo_export_no_parent.msg | default(''))"
+
+    - name: Check the preflight reported no directory to probe
+      ansible.builtin.assert:
+        that:
+          - gpo_export_no_parent is not changed
+          - not gpo_export_no_parent.preflight.work_dir_exists
+          - not gpo_export_no_parent.preflight.work_dir_writable
+          - gpo_export_no_parent.preflight.work_dir_probed is none
+        fail_msg: "{{ gpo_export_no_parent | string }}"
+
+    - name: Export with the clashing names
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_clash
+      failed_when: "'map to the same folder name' not in (gpo_export_clash.msg | default(''))"
+
+    - name: Read the export after the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_after_errors
+
+    - name: Read the domain after the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+        depth: 8
+      register: gpo_export_domain_after_errors
+
+    - name: Check the failures changed nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_export_clash is not changed
+          - "'IacLab - Dup_' in gpo_export_clash.msg"
+          - gpo_export_read_after_errors.result.files == gpo_export_read_deleted.result.files
+          - gpo_export_domain_after_errors.result.versions == gpo_export_domain_before_errors.result.versions
+          - gpo_export_domain_after_errors.result.topology.soms == gpo_export_domain_before_errors.result.topology.soms
+        fail_msg: "{{ gpo_export_clash }} / {{ gpo_export_read_after_errors.result.files }}"
+  always:
+    - name: Remove the throwaway GPOs
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string[]]$Names)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          $removed = @()
+          foreach ($gpo in @(Get-GPO -All -Domain $Domain -Server $pdc | Where-Object { $Names -contains $_.DisplayName })) {
+              Remove-GPO -Guid $gpo.Id -Domain $Domain -Server $pdc
+              $removed += $gpo.DisplayName
+          }
+          $Ansible.Changed = $removed.Count -gt 0
+          $removed
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Names: "{{ [gpo_export_temp_gpo] + gpo_export_dup_gpos }}"
+
+    - name: Remove the test setting from the RDP GPO
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          $value = $null
+          try {
+              $value = Get-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
+                  -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'ExportTargetProbe' -ErrorAction Stop
+          }
+          catch {
+              $value = $null
+          }
+          if ($value) {
+              Remove-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
+                  -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'ExportTargetProbe' | Out-Null
+          }
+          else {
+              $Ansible.Changed = $false
+          }
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_export_fx.gpo_rdp }}"
+
+    - name: Remove the working directories
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ gpo_export_work_dir }}"
+        - "{{ gpo_export_denied_dir }}"
+
+- name: Read the domain after the tests
+  ansible.windows.win_powershell:
+    script: "{{ setup_gpo_lab_read_script }}"
+    parameters:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+    depth: 8
+  register: gpo_export_domain_after
+
+- name: Look for the working directories after the cleanup
+  ansible.windows.win_stat:
+    path: "{{ item }}"
+  loop:
+    - '{{ setup_gpo_lab_dir }}\export'
+    - '{{ setup_gpo_lab_dir }}\export-denied'
+  register: gpo_export_dirs_after
+
+- name: Check the tests left the domain's topology and the host as they found them
+  ansible.builtin.assert:
+    that:
+      - gpo_export_domain_after.result.topology == gpo_export_domain_before.result.topology
+      - gpo_export_dirs_after.results | map(attribute='stat.exists') | list == [false, false]
+    fail_msg: "{{ gpo_export_domain_after.result.topology | to_nice_json }}"

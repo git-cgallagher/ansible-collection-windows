@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.10.0 — 2026-11-01
+
+Every module has its own integration target (issue #44).
+
+- `gpo_export` and `gpo_import` get ansible-test integration targets
+  (`tests/integration/targets/gpo_export`, `gpo_import`, with the shared
+  `setup_gpo_lab`), run from the `gpo_backup` and `gpo_import` roles'
+  Molecule scenarios after the roles' own checks, the way `wsfc_cluster` runs
+  from `wsfc`'s. Each covers check mode (predicts, writes nothing, the
+  preflight facts), the real run and its documented result keys, the repeat
+  (`changed: false`), every documented failure path and the module's options:
+  for `gpo_export` the manifest against the fixture, a changed GPO shipping
+  alone, a new and a deleted GPO, `gpo_names`, an ACL-denied working
+  directory, one with no existing parent and two GPOs mapping to one folder
+  name; for `gpo_import` the fixture's drift, the plans against it, the forced
+  converge back, `remove_unmanaged_links`, `create_wmi_filters`, the migration
+  table, the cpassword refusal, an incomplete backup folder, a missing
+  manifest, a missing migration table, a GPO missing from both domain and
+  export, and an ACL-denied `state_dir`. The roles' scenarios keep role
+  behaviour (staging, fetch/unpack, variables, report-only) and leave the
+  module's to the targets; `new_migtable.ps1` moved to `setup_gpo_lab`.
+- `gpo_export` and `gpo_import` share `plugins/module_utils/_GpoCommon.psm1`
+  instead of each carrying a copy of the common helpers. It holds their pure
+  logic: hashing, the zip, the manifest's encodings, the export's state
+  decisions, the import decision and the link plan, now separate functions
+  (`Get-GpoImportReason`, `Get-GpoLinkPlan` and others). Behaviour is
+  unchanged: the hash format is pinned by a unit test, so recorded state
+  still matches. Small differences: `deleted` is sorted by name, and after a
+  failed link change in a run that fails anyway, the remaining links are
+  planned as if it had succeeded.
+- Pester unit tests (`tests/unit/plugins/`) for the util and both GPO
+  modules, run by the `powershell` CI job: the pinned hash formats,
+  `gpt.ini` left out of the live hash, the zip's entries, the WMI filter
+  encoding round trip, relative DNs and trustee names, the state carry-over
+  and deleted-GPO detection, the import reasons, the link plan (including
+  that it converges in one pass and a re-plan is empty), the migration table
+  path, the backup folder check and each module's wiring to the util.
+- AGENTS.md records the testing standard: every role has a Molecule
+  scenario; every module has an integration target (what it must cover,
+  where it runs) and Pester unit tests. It's a convention, not a CI check.
+  `wsfc_cluster` and the IIS modules' unit tests are a follow-up (issue #47).
+- **Fix:** `gpo_export` and `gpo_import` given a `work_dir`, `state_dir` or
+  `source_dir` on a drive that doesn't exist fail in the preflight with its
+  message (`none of its parents exist`, `no existing parent directory`,
+  `manifest not found`) instead of PowerShell's "Cannot find drive": their
+  existence checks no longer let `Test-Path` stop the run, and paths under
+  those directories are built with `[IO.Path]::Combine`, because Windows
+  PowerShell's `Join-Path` resolves the drive. Found by the new `gpo_export`
+  target.
+- **Fix:** a `gpo_export` run with `gpo_names` keeps the unselected GPOs'
+  hashes in the state file. Before, it rewrote the state with the selected
+  GPOs only, so the next unfiltered export re-shipped every other GPO and
+  forgot which GPOs had been deleted. Found by the new target.
+
 ## 0.9.0 — 2026-11-01
 
 `gpo_import` proves a plan could run (issue #41).

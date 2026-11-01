@@ -7,13 +7,13 @@
 
 # Authored state -> export -> out-of-band drift. converge.yml then has to put
 # the domain back from the export alone. (gpo_backup's own scenario checks
-# the export itself.)
+# the export itself; the module's preflight, state directory and refusals are
+# the gpo_import integration target, which verify.yml runs last.)
 - name: Export the authored state with gpo_backup, then drift the domain
   hosts: all
   gather_facts: false
   vars:
     lab_repo: "{{ lab_dir }}/gpo-repo"
-    lab_denied_state_dir: 'C:\ProgramData\gpo-iac\denied-state'
   tasks:
     # Fixture sanity before anything is exported: the hand-written password
     # policy is a valid security template and, linked above Default Domain
@@ -76,8 +76,9 @@
           - lab_policy_drifted.result.lockout_threshold == 0
         fail_msg: "Effective policy after drift: {{ lab_policy_drifted.result }}"
 
-    # gpo_import_report_only puts the module in check mode: it predicts the
-    # changes (changed=true, the actions listed) and writes nothing.
+    # gpo_import_report_only puts the module in check mode: the role stages the
+    # export, the module predicts the changes (changed=true, the actions
+    # listed) and writes nothing.
     - name: Plan the import against the drifted domain (report-only)
       ansible.builtin.include_role:
         name: git_cgallagher.windows.gpo_import
@@ -92,6 +93,7 @@
       ansible.builtin.assert:
         that:
           - gpo_import_run.changed
+          - gpo_import_run.preflight.passed
           - gpo_import_run.actions | select('search', "import GPO '" ~ lab_fixture.gpo_rdp ~ "'") | list | length == 1
           - gpo_import_run.actions | select('search', "create WMI filter") | list | length == 1
           - gpo_import_run.actions | select('search', "remove unmanaged link") | list | length == 1
@@ -121,151 +123,3 @@
       ansible.builtin.assert:
         that: not lab_state_after_plan.stat.exists
         fail_msg: "report-only mode wrote {{ gpo_import_run.state_file }}"
-
-    # The preflight proved the run could work: the facts it reports, and the
-    # state_dir probe file it created is gone again.
-    - name: Check the preflight facts of the plan
-      ansible.builtin.assert:
-        that:
-          - gpo_import_run.preflight.passed
-          - gpo_import_run.preflight.manifest_valid
-          - gpo_import_run.preflight.backup_folders == gpo_import_run.gpo_count
-          - gpo_import_run.preflight.backup_folders_incomplete | length == 0
-          - gpo_import_run.preflight.cpassword_clean
-          - gpo_import_run.preflight.state_dir_writable
-          - gpo_import_run.preflight.state_dir_probe | lower == gpo_import_run.preflight.state_dir | lower
-          - gpo_import_run.preflight.domain_reachable
-          - gpo_import_run.preflight.gpmc_reachable
-          - gpo_import_run.preflight.links_readable
-          - gpo_import_run.preflight.wmi_filters_readable
-          # the drift deleted one GPO
-          - gpo_import_run.preflight.live_gpo_count == gpo_import_run.gpo_count - 1
-        fail_msg: "Unexpected preflight: {{ gpo_import_run.preflight | to_nice_json }}"
-
-    - name: Look for a leftover state_dir probe file
-      ansible.windows.win_find:
-        paths: "{{ gpo_import_run.preflight.state_dir }}"
-        patterns: ['.gpo-import-probe-*.tmp']
-        hidden: true
-      register: lab_probe_files
-
-    - name: Check the probe file is gone
-      ansible.builtin.assert:
-        that: lab_probe_files.matched == 0
-        fail_msg: "probe files left behind: {{ lab_probe_files.files | map(attribute='path') | list }}"
-
-    # An unwritable state_dir must fail check mode with the preflight message,
-    # before anything is planned: the real run could not record the import.
-    - name: Create a state_dir the connection account may not write to
-      ansible.windows.win_powershell:
-        script: |
-          param([string]$Path, [string]$User)
-          $Ansible.Changed = $false
-          New-Item -ItemType Directory -Path $Path -Force | Out-Null
-          & icacls.exe $Path /deny "${User}:(W)" | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "icacls failed with $LASTEXITCODE" }
-          [ordered]@{ user = $User; acl = @(& icacls.exe $Path) }
-        parameters:
-          Path: "{{ lab_denied_state_dir }}"
-          User: "{{ ansible_user | default('vagrant') }}"
-      register: lab_denied_dir
-
-    - name: Show the denied directory's ACL
-      ansible.builtin.debug:
-        var: lab_denied_dir.output
-
-    - name: Plan against the unwritable state_dir
-      block:
-        - name: Run gpo_import report-only with the denied state_dir
-          ansible.builtin.include_role:
-            name: git_cgallagher.windows.gpo_import
-          vars:
-            gpo_import_domain: "{{ lab_domain }}"
-            gpo_import_source_dir: "{{ lab_repo }}"
-            gpo_import_state_dir: "{{ lab_denied_state_dir }}"
-            gpo_import_report_only: true
-            gpo_import_create_wmi_filters: true
-            gpo_import_remove_unmanaged_links: true
-
-        - name: Fail — the preflight should have refused
-          ansible.builtin.fail:
-            msg: gpo_import planned against a state_dir it cannot write
-      rescue:
-        - name: Check it failed in the preflight on state_dir
-          ansible.builtin.assert:
-            that:
-              - ansible_failed_result.msg | default('') is search('preflight failed')
-              - ansible_failed_result.msg | default('') is search('state_dir .* is not writable')
-              - not ansible_failed_result.preflight.passed
-              - not ansible_failed_result.preflight.state_dir_writable
-              - ansible_failed_result.preflight.manifest_valid
-              - ansible_failed_result.preflight.cpassword_clean
-              - ansible_failed_result.actions is not defined
-            fail_msg: "Failed for another reason: {{ ansible_failed_result | to_nice_json }}"
-      always:
-        - name: Remove the denied directory
-          ansible.windows.win_powershell:
-            script: |
-              param([string]$Path)
-              $Ansible.Changed = $false
-              if (Test-Path -LiteralPath $Path) {
-                  & icacls.exe $Path /reset | Out-Null
-                  Remove-Item -LiteralPath $Path -Recurse -Force
-              }
-            parameters:
-              Path: "{{ lab_denied_state_dir }}"
-
-    - name: Look for the deleted GPO after the refused plan
-      ansible.windows.win_powershell:
-        script: |
-          param([string]$Name)
-          $Ansible.Changed = $false
-          [bool](Get-GPO -All | Where-Object { $_.DisplayName -eq $Name })
-        parameters:
-          Name: "{{ lab_fixture.gpo_rdp }}"
-      register: lab_rdp_after_refusal
-
-    - name: Check the refused plan touched nothing
-      ansible.builtin.assert:
-        that: not (lab_rdp_after_refusal.output | first)
-        fail_msg: the preflight refusal recreated a GPO
-
-    # GPP cpassword is a decryptable secret; the module must refuse a backup
-    # that contains one, before touching the domain (a documented failure).
-    - name: Build a copy of the export with a cpassword planted in it
-      delegate_to: localhost
-      block:
-        - name: Copy the export
-          ansible.builtin.copy:
-            src: "{{ lab_repo }}/"
-            dest: "{{ lab_dir }}/gpo-repo-cpassword/"
-            remote_src: true
-            mode: u=rwX,go=
-
-        - name: Plant a Groups.xml carrying cpassword
-          ansible.builtin.copy:
-            dest: "{{ lab_dir }}/gpo-repo-cpassword/gpos/{{ lab_fixture.gpo_baseline }}/Groups.xml"
-            content: '<Groups><User name="x"><Properties cpassword="example-not-secret"/></User></Groups>'
-            mode: "0600"
-
-    - name: Import the poisoned export
-      block:
-        - name: Run gpo_import on it
-          ansible.builtin.include_role:
-            name: git_cgallagher.windows.gpo_import
-          vars:
-            gpo_import_domain: "{{ lab_domain }}"
-            gpo_import_source_dir: "{{ lab_dir }}/gpo-repo-cpassword"
-            gpo_import_report_only: true
-
-        - name: Fail — the import should have refused
-          ansible.builtin.fail:
-            msg: gpo_import accepted a backup containing cpassword
-      rescue:
-        - name: Check it refused because of cpassword
-          ansible.builtin.assert:
-            that:
-              - ansible_failed_result.msg | default('') is search('Refusing to import')
-              - ansible_failed_result.cpassword_files | default([]) | length == 1
-              - not ansible_failed_result.preflight.cpassword_clean
-            fail_msg: "Failed for another reason: {{ ansible_failed_result | to_nice_json }}"
