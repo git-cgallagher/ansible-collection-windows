@@ -17,7 +17,9 @@ on:
   pull_request:
     paths:
       - roles/**
+      - plugins/**
       - tests/domain_lab/**
+      - tests/integration/**
       - .config/molecule/**
       - requirements.yml
       - .github/workflows/domain-lab.yml
@@ -25,7 +27,9 @@ on:
     branches: [main]
     paths:
       - roles/**
+      - plugins/**
       - tests/domain_lab/**
+      - tests/integration/**
       - .config/molecule/**
       - requirements.yml
       - .github/workflows/domain-lab.yml
@@ -53,16 +57,26 @@ env:
   # here, and the GPO scenarios their exports (lab_dir).
   MOLECULE_LAB_DIR: /mnt/gpo-lab
 
+# The IIS modules (plugins/modules/iis_*) are tested the same way by one more
+# job: the Molecule scenario tests/integration/molecule/iis boots the same box
+# as a plain server (never a DC), installs IIS and runs the modules'
+# integration targets (tests/integration/targets/) as roles.
 jobs:
   molecule:
-    name: molecule (${{ matrix.role }})
+    name: molecule (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
-      # One role's failure must not cancel the other roles' 14-minute runs.
+      # One job's failure must not cancel the others' 14-minute runs.
       fail-fast: false
+      # name: the job's name and diagnostics artifact; workdir: the scenario's
+      # project directory; vm: the scenario's platform name.
       matrix:
-        role: [gpo_backup, gpo_import, wsfc]
+        include:
+          - {name: gpo_backup, workdir: roles/gpo_backup, scenario: default, vm: dc01}
+          - {name: gpo_import, workdir: roles/gpo_import, scenario: default, vm: dc01}
+          - {name: wsfc, workdir: roles/wsfc, scenario: default, vm: dc01}
+          - {name: iis, workdir: tests/integration, scenario: iis, vm: iis01}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -85,30 +99,33 @@ jobs:
           kvm: 'true'
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
 
-      # From the role's directory: that's where Molecule finds the scenario,
-      # and how its prerun recognizes a role inside a collection.
+      # From the scenario's project directory (the role's, or
+      # tests/integration): that's where Molecule finds the scenario, and how
+      # its prerun recognizes a role inside a collection.
       # --destroy=never: keep the VM for the diagnostics below; the last step
       # destroys it either way.
       # A hang must become a failure, so the screen capture below runs.
       - name: molecule test
         timeout-minutes: 75
-        working-directory: roles/${{ matrix.role }}
-        run: molecule test --destroy=never
+        working-directory: ${{ matrix.workdir }}
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: molecule test -s "$SCENARIO" --destroy=never
 
-      # Writes <platform>-screen.ppm into the lab directory; never fails the job.
+      # Writes <vm>-screen.ppm into the lab directory; never fails the job.
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
         uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@b2601b3f376da3e03f99c18ebc79d9d7a37e9c7f  # v0.2.0
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
-          platforms: dc01
+          platforms: ${{ matrix.vm }}
 
       - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: domain-lab-diagnostics-${{ matrix.role }}
+          name: domain-lab-diagnostics-${{ matrix.name }}
           path: |
             ${{ env.MOLECULE_LAB_DIR }}/*-screen.ppm
             ${{ env.MOLECULE_LAB_DIR }}/gpo-repo*/
@@ -117,5 +134,7 @@ jobs:
 
       - name: molecule destroy
         if: always()
-        working-directory: roles/${{ matrix.role }}
-        run: molecule destroy
+        working-directory: ${{ matrix.workdir }}
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: molecule destroy -s "$SCENARIO"

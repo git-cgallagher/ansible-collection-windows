@@ -1,15 +1,16 @@
 ---
-# Molecule base config for every role's scenario (roles/*/molecule/*/).
-# Molecule merges it under each scenario's molecule.yml (--base-config defaults
-# to .config/molecule/config.yml at the repository root), so the box pin and
-# the fixture live here once; a scenario's molecule.yml holds only what
-# differs.
+# Molecule base config for every scenario: each role's (roles/*/molecule/*/)
+# and the IIS modules' runner (tests/integration/molecule/iis/). Molecule
+# merges it under each scenario's molecule.yml (--base-config defaults to
+# .config/molecule/config.yml at the repository root), so the box pin and the
+# fixture live here once; a scenario's molecule.yml holds only what differs.
 #
 # Each scenario boots one Windows Server 2022 VM (QEMU/KVM) with the
-# molecule-git-cgallagher driver and runs its role against it for real; the
-# GPO roles' scenarios promote it to the first DC of a new forest first. Needs
-# a Linux host with /dev/kvm and ~20 GB free in $MOLECULE_LAB_DIR, and Molecule
-# run from the role's directory. See tests/domain_lab/README.md.
+# molecule-git-cgallagher driver and runs its tests against it for real; the
+# domain labs promote it to the first DC of a new forest first. Needs a Linux
+# host with /dev/kvm and ~20 GB free in $MOLECULE_LAB_DIR, and Molecule run
+# from the scenario's project directory (the role's, or tests/integration).
+# See tests/domain_lab/README.md.
 dependency:
   name: galaxy
   options:
@@ -19,9 +20,9 @@ driver:
   # windows_vm kind (github.com/git-cgallagher/ansible-collection-molecule).
   name: molecule-git-cgallagher
   options:
-    # Every platform entry starts from these, so a scenario that replaces
-    # platforms (Molecule replaces the whole list) names its VM and inherits
-    # the box and the VM's size.
+    # Every platform entry starts from these and can override them field by
+    # field, so a scenario that replaces platforms (Molecule replaces the
+    # whole list) names its VM and inherits the box and the VM's size.
     platform_defaults:
       kind: windows_vm
       # jborean93's packer-windoze box: a sysprepped Windows Server 2022

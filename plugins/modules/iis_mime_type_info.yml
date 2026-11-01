@@ -1,0 +1,124 @@
+DOCUMENTATION:
+  module: iis_mime_type_info
+  short_description: Read the MIME type mappings IIS serves
+  description:
+    - Lists the MIME type mappings in IIS's static content MIME map (C(system.webServer/staticContent)) at the server level, for a
+      website, or for an application or virtual directory under one.
+    - Returns the effective map at that level, the one IIS serves from, including what it inherits from parent levels, and says
+      which entries are inherited.
+    - Optionally filtered by extension, by MIME type, or by both, in which case an entry must match both.
+  version_added: 0.4.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    extension:
+      description:
+        - Only the mapping for this file extension, such as C(.html). A missing leading dot is added.
+        - Compared case-insensitively, as in IIS.
+      type: str
+    mime_type:
+      description:
+        - Only the mappings to this MIME type, such as C(text/html).
+        - Compared case-insensitively.
+      type: str
+    site:
+      description:
+        - The website to read, by its exact name. Names compare case-insensitively, without wildcards.
+        - Omit it, and O(application), for the server level.
+      type: str
+    application:
+      description:
+        - The virtual path of an application or virtual directory under O(site), such as C(/app1). A missing leading C(/) is added.
+        - Omit it for the site level.
+        - Requires O(site).
+      type: str
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+      details: The module only reads, so check mode returns the same data.
+    diff_mode:
+      support: N/A
+      details: The module changes nothing.
+    platform:
+      platforms: windows
+  notes:
+    - Needs IIS (the C(Web-Server) feature) on the managed host. The module uses IIS's native configuration API, the one
+      C(appcmd.exe) uses, rather than the WebAdministration PowerShell module.
+    - IIS doesn't report where a mapping is defined, so for a mapping that repeats its parent level's, the module reads the
+      level's own C(<location>) element in C(applicationHost.config) and its C(web.config). A C(<location>) element in a
+      parent level's C(web.config) that targets the level isn't read; a mapping defined only there is returned as
+      inherited.
+  seealso:
+    - module: git_cgallagher.windows.iis_mime_type
+    - name: Adding Static Content MIME Mappings <mimeMap>
+      description: The IIS configuration reference for the MIME map.
+      link: https://learn.microsoft.com/en-us/iis/configuration/system.webserver/staticcontent/mimemap
+
+EXAMPLES: |
+  - name: Read every mapping IIS serves server-wide
+    git_cgallagher.windows.iis_mime_type_info:
+    register: server_mime_types
+
+  - name: Find out which MIME type a website serves .json files as
+    git_cgallagher.windows.iis_mime_type_info:
+      site: Default Web Site
+      extension: .json
+    register: site_json
+
+  - name: Show it, or that the website doesn't serve .json files
+    ansible.builtin.debug:
+      msg: "{{ site_json.mime_types[0].mime_type if site_json.mime_types else 'no mapping' }}"
+
+  - name: List the mappings an application defines itself, rather than inherits
+    git_cgallagher.windows.iis_mime_type_info:
+      site: Default Web Site
+      application: /shop
+    register: shop_mime_types
+
+  - name: Show them
+    ansible.builtin.debug:
+      msg: "{{ shop_mime_types.mime_types | rejectattr('inherited') | list }}"
+
+RETURN:
+  mime_types:
+    description:
+      - The matching mappings, sorted by extension.
+      - An empty list when nothing matches.
+    returned: always
+    type: list
+    elements: dict
+    contains:
+      extension:
+        description: The file extension, as IIS stores it.
+        returned: always
+        type: str
+        sample: .html
+      mime_type:
+        description: The MIME type IIS serves the extension as.
+        returned: always
+        type: str
+        sample: text/html
+      config_path:
+        description: The IIS configuration path of the level that was read.
+        returned: always
+        type: str
+        sample: MACHINE/WEBROOT/APPHOST/Default Web Site
+      inherited:
+        description:
+          - V(true) when the mapping comes from a parent level.
+          - V(false) when it's defined at this level, in a C(<location>) element of C(applicationHost.config) or in the level's
+            C(web.config). Always V(false) at the server level.
+        returned: always
+        type: bool
+        sample: true
+    sample:
+      - extension: .css
+        mime_type: text/css
+        config_path: MACHINE/WEBROOT/APPHOST/Default Web Site
+        inherited: true
+      - extension: .webmanifest
+        mime_type: application/manifest+json
+        config_path: MACHINE/WEBROOT/APPHOST/Default Web Site
+        inherited: false

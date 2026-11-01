@@ -1,0 +1,40 @@
+---
+# A plain server, never promoted. Quiet it, check that the modules fail
+# clearly while IIS is missing, then install IIS and create the test website
+# with the setup_iis target, which the targets also depend on.
+- name: Prepare the IIS lab VM
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the connection
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    # As tests/domain_lab/promote.yml does for the domain labs.
+    - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+          try {
+              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          }
+          catch {
+              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
+          }
+
+    - name: Look for IIS
+      ansible.windows.win_service_info:
+        name: W3SVC
+      register: lab_iis_service
+
+    - name: Read the MIME map before IIS is installed
+      git_cgallagher.windows.iis_mime_type_info:
+      register: lab_no_iis
+      failed_when: "'Install the Web-Server feature' not in (lab_no_iis.msg | default(''))"
+      when: not lab_iis_service.exists
+
+    - name: Install IIS and create the test website
+      ansible.builtin.include_role:
+        name: setup_iis

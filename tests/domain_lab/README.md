@@ -1,24 +1,26 @@
 # domain lab — the domain controller the roles' Molecule scenarios test against
 
-Each role has its own Molecule scenario next to it, and both run against a
-real domain controller:
+Each role has its own Molecule scenario next to it, and the IIS modules have
+one in `tests/integration`:
 
 | Scenario | What it tests |
 |---|---|
 | [`roles/gpo_backup/molecule/default`](../../roles/gpo_backup/molecule/default/README.md) | The export: the manifest, the backup folders, that an unchanged domain ships nothing and that a changed GPO ships |
 | [`roles/gpo_import/molecule/default`](../../roles/gpo_import/molecule/default/README.md) | The import round trip: out-of-band drift, a report-only plan, the import, the domain read back through GPMC, a re-export, and an import through a migration table |
+| [`roles/wsfc/molecule/default`](../../roles/wsfc/molecule/default/README.md) | A one-node workgroup cluster built by `wsfc` (never promoted) |
+| [`tests/integration/molecule/iis`](../integration/molecule/iis/README.md) | The IIS modules' integration targets, on a plain server with IIS (never promoted) |
 
-Each one boots its own Windows Server 2022 VM under QEMU/KVM, promotes it to
-the first DC of a new forest (`gpolab.test`) and runs its role against it.
-CI runs both in
+Each one boots its own Windows Server 2022 VM under QEMU/KVM; the GPO
+scenarios promote it to the first DC of a new forest (`gpolab.test`) and run
+their role against it. CI runs them in
 [`.github/workflows/domain-lab.yml`](../../.github/workflows/domain-lab.yml)
-on `ubuntu-latest`, one job per role, in parallel (about 14 minutes).
+on `ubuntu-latest`, one job per scenario, in parallel (about 14 minutes).
 
 ## What the scenarios share
 
 | Path | What it is |
 |---|---|
-| [`.config/molecule/config.yml`](../../.config/molecule/config.yml) | Molecule's base config: the driver and the pinned box (`driver.options.platform_defaults`), the provisioner, the inventory, the fixture's names (`lab_fixture`) and the test sequence. Molecule merges it under every scenario's `molecule.yml`, because `--base-config` defaults to that file at the repository root. |
+| [`.config/molecule/config.yml`](../../.config/molecule/config.yml) | Molecule's base config: the driver, with the pinned box and the VM's size (`driver.options.platform_defaults`), the provisioner, the inventory, the fixture's names (`lab_fixture`) and the test sequence. Molecule merges it under every scenario's `molecule.yml`, because `--base-config` defaults to that file at the repository root. A scenario's platform entry overrides any `platform_defaults` field (the IIS scenario sets only its name, `iis01`). |
 | [`promote.yml`](promote.yml) | Promote it to a DC (`git_cgallagher.molecule.ad_forest`), then wait until AD Web Services, SYSVOL (the domain's DFS path included) and GPMC answer |
 | [`seed.yml`](seed.yml), [`files/lab_fixture.ps1`](files/lab_fixture.ps1) | Seed the authored state: OUs, groups, a WMI filter and five GPOs with links and filtering, including the [real-world scenarios](../../docs/scenarios.md). `lab_fixture.ps1 -Action Drift` is the out-of-band drift that `gpo_import`'s scenario repairs. |
 | [`requirements.yml`](requirements.yml) | The collections the lab uses: `ansible.windows` and `microsoft.ad` (for `ad_forest`) |
@@ -29,10 +31,11 @@ Molecule driver, which started as this lab's own create and destroy
 playbooks: its `windows_vm` kind boots, waits for and tears down the box, and
 the same repository's `ad_forest` role does the promotion.
 
-Each scenario's `prepare.yml` imports `promote.yml` and `seed.yml`, then adds
-its own steps. The fixture uses GPMC's own APIs wherever one exists (WMI
-filter linking, links, permissions, status), so the roles are checked against
-GPMC rather than against themselves.
+Each GPO scenario's `prepare.yml` imports `promote.yml` and `seed.yml`, then
+adds its own steps; wsfc's prepares a workgroup node and the IIS scenario's
+installs IIS instead. The fixture uses GPMC's own APIs wherever one exists
+(WMI filter linking, links, permissions, status), so the roles are checked
+against GPMC rather than against themselves.
 
 ## The VM image
 
@@ -72,6 +75,8 @@ mkdir -p .molecule-collections/ansible_collections/git_cgallagher
 ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows
 cd roles/gpo_import    # or roles/gpo_backup, roles/wsfc
 MOLECULE_LAB_DIR=/path/with/space molecule test
+# the IIS modules' targets: from tests/integration instead
+cd ../../tests/integration && MOLECULE_LAB_DIR=/path/with/space molecule test -s iis
 ```
 
 CI pins the same tag by commit in `domain-lab.yml` (the `setup-molecule` and
@@ -91,7 +96,8 @@ and the exported GPO repos (`gpo-repo`, `gpo-repo-after`). The box image
 survives `molecule destroy`; delete it by hand to reclaim ~6 GB. A box cached
 by an older checkout in `~/.cache/gpo-domain-lab` (the lab's directory before
 the driver; `GPO_LAB_DIR` is gone) is reused if `MOLECULE_LAB_DIR` points
-there. The scenarios use the same VM name and port, so run one at a time.
+there. The scenarios share the WinRM port (and the role scenarios the VM
+name), so run one at a time.
 
 To iterate: `molecule create`, `molecule prepare`, then repeat
 `molecule converge` / `molecule verify`; `molecule destroy` when done.
@@ -99,8 +105,8 @@ To iterate: `molecule create`, `molecule prepare`, then repeat
 ## When it fails in CI
 
 The workflow keeps the VM until diagnostics are collected: a screen dump of
-the VM console (`dc01-screen.ppm`, from the driver repository's
+the VM console (`<vm>-screen.ppm`, from the driver repository's
 `vm-screendump` action) and the exported repos are uploaded as the
-`domain-lab-diagnostics-<role>` artifact. A boot-stage failure (BSOD, stuck
-OOBE) shows on the screen dump; a role failure shows in the Ansible output and
-the exported manifests.
+`domain-lab-diagnostics-<job>` artifact (`gpo_backup`, `gpo_import`, `wsfc`,
+`iis`). A boot-stage failure (BSOD, stuck OOBE) shows on the screen dump; a
+role failure shows in the Ansible output and the exported manifests.

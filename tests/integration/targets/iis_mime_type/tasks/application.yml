@@ -1,0 +1,55 @@
+---
+# On the test application under the test website.
+- name: Add .ansibleapp to the test application
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    application: "{{ setup_iis_application }}"
+    extension: .ansibleapp
+    mime_type: text/x-ansible-app
+  register: iis_mime_type_app_add
+
+- name: Read .ansibleapp on the test application
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Application: "{{ setup_iis_application }}"
+      Extension: .ansibleapp
+      PhysicalPath: "{{ setup_iis_application_dir }}"
+    depth: 5
+  register: iis_mime_type_read
+
+- name: Read .ansibleapp on the test website
+  ansible.windows.win_powershell:
+    script: "{{ setup_iis_read_script }}"
+    parameters:
+      Site: "{{ setup_iis_site }}"
+      Extension: .ansibleapp
+    depth: 5
+  register: iis_mime_type_read_site
+
+- name: Check it's stored in the application's <location> element, and the website doesn't serve it
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_app_add is changed
+      - iis_mime_type_app_add.config_path == setup_iis_application_path
+      - "iis_mime_type_read.result.effective == [{'extension': '.ansibleapp', 'mime_type': 'text/x-ansible-app'}]"
+      - "iis_mime_type_read.result.application_host == [{'element': 'mimeMap', 'extension': '.ansibleapp', 'mime_type': 'text/x-ansible-app'}]"
+      - iis_mime_type_read.result.web_config == []
+      - iis_mime_type_read_site.result.effective == []
+    fail_msg: "{{ iis_mime_type_app_add }} / {{ iis_mime_type_read.result }} / {{ iis_mime_type_read_site.result }}"
+
+- name: Add .ansibleapp again, naming the application without its leading slash and with a trailing one
+  git_cgallagher.windows.iis_mime_type:
+    site: "{{ setup_iis_site }}"
+    application: "{{ setup_iis_application[1:] }}/"
+    extension: .ansibleapp
+    mime_type: text/x-ansible-app
+  register: iis_mime_type_app_add_again
+
+- name: Check the repeat found the same application and changed nothing
+  ansible.builtin.assert:
+    that:
+      - iis_mime_type_app_add_again is not changed
+      - iis_mime_type_app_add_again.config_path == setup_iis_application_path
+    fail_msg: "{{ iis_mime_type_app_add_again | string }}"

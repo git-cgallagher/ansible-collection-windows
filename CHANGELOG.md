@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0 — 2026-11-01
+
+A new area, IIS, with the collection's first modules.
+
+- New module `iis_mime_type`: ensures that a file extension maps to a MIME
+  type in IIS's static content MIME map, or has no mapping, at the server
+  level, for a website, or for an application or virtual directory under one.
+  It decides against the map IIS serves at that level, inherited mappings
+  included, so it overrides or hides inherited mappings at that level rather
+  than copying them. It writes each change in one commit, reads the level back
+  afterwards, and supports check mode and diff mode. Site and application
+  mappings go into `<location>` elements in `applicationHost.config` by
+  default, or into the level's `web.config` with `config_file: web.config`.
+- New module `iis_mime_type_info`: lists the mappings IIS serves at a level,
+  filtered by extension, by MIME type or by both, says which ones are
+  inherited, and returns an empty list when nothing matches.
+- Both are new implementations that replace `win_iis_mimetype` and
+  `win_iis_mimetype_info` from the old `ansible-windows` repository. Their
+  options differ: `site` and `application` instead of a configuration path,
+  `mime_type` is required for `state: present` and must look like
+  `type/subtype` (backslashes are no longer rewritten to slashes), and the
+  info module applies both filters together.
+- Their integration targets (`tests/integration/targets/`) run in CI on a
+  Windows Server 2022 VM with IIS, through the Molecule scenario
+  `tests/integration/molecule/iis` (the `domain-lab` workflow's
+  `molecule (iis)` job). The Molecule base config now keeps the box pin and
+  the VM's size in one default, `lab_vm`, so a scenario can boot a VM under
+  its own name without repeating the pin.
+- README: how to install the collection from Galaxy, and a note sending
+  Active Directory site management to `microsoft.ad.site`, with a check for
+  domain controllers before deleting a site.
+
 ## 0.3.0 — 2026-10-31
 
 A second area: failover clusters.
