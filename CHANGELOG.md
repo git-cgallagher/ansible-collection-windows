@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.2 — 2026-11-02
+
+No module or role changes; the domain lab's fixture and the `gpo_import`
+integration target ([#50](https://github.com/git-cgallagher/ansible-collection-windows/issues/50)).
+
+- `Set-GPInheritance` once returned without an error and left the lab's
+  Workstations OU blocked, so the drift's unblock didn't take and the
+  `gpo_import` target's plan check failed for the wrong reason (PR #49's first
+  `gpo_import` lab run). `tests/domain_lab/files/lab_fixture.ps1` now sets
+  inheritance through `Set-LabInheritance`, which reads it back after every
+  write, retries, and throws if it never takes; the drift also confirms the
+  unblock survived its later link changes. The fixture's diagnostics record
+  how many writes each step needed.
+- The `gpo_import` target's "Check the drift took" asserts the unblock, so a
+  drift that didn't take fails there, not later in the plan check.
+
 ## 0.10.1 — 2026-11-02
 
 No module or role changes. The domain labs move to molecule-git-cgallagher
