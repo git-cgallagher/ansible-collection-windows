@@ -8,8 +8,9 @@ description: >-
   Windows Server automation: Group Policy as code (export domain GPOs with
   their links, precedence, filtering and WMI filters to Git, and import them
   into a target domain), failover clusters for file servers, SQL Server FCIs
-  and availability groups, the Active Directory accounts and Kerberos SPNs SQL
-  Server runs under, and IIS MIME type mappings.
+  and availability groups, clustered file servers that fail over and validate
+  on demand, the Active Directory accounts and Kerberos SPNs SQL Server runs
+  under, and IIS MIME type mappings.
 license:
   - MIT
 tags:
@@ -19,6 +20,7 @@ tags:
   - activedirectory
   - wsfc
   - failovercluster
+  - fileserver
   - sqlserver
   - mssql
   - iac

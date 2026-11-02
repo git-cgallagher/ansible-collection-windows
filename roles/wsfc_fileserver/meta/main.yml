@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  role_name: wsfc_fileserver
+  author: Chris Gallagher
+  description: Run a clustered file server on a Windows Server Failover Cluster, fail it over and validate it
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+dependencies: []

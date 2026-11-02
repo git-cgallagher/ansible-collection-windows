@@ -1,0 +1,209 @@
+---
+# Three entry points share the connection options (YAML anchors keep one copy):
+# main creates or converges the file server, validate checks its shares from a
+# client, failover moves it to another node and validates it there.
+# defaults/main.yml holds every entry point's defaults;
+# tests/argument_specs/check_role.yml checks each against the entry points
+# that document it.
+argument_specs:
+  main:
+    short_description: Run a clustered file server on a Windows Server Failover Cluster
+    description:
+      - Installs the File Server role service on every host in the play, then, from one managing node, creates a
+        general-purpose clustered file server (C(Add-ClusterFileServerRole)) on cluster disks that already exist, or
+        converges an existing one, its preferred owners and its SMB shares.
+      - Sits on a cluster built by the C(git_cgallagher.windows.wsfc) role, with an Active Directory administrative
+        access point and the file server's disks in O(git_cgallagher.windows.wsfc#role:main:wsfc_disks).
+      - Shares are scoped to the file server's name, so clients reach them as C(\\<name>\<share>) whichever node
+        owns the role. Share permissions are made exact for every share that lists any; NTFS permissions are left
+        as they are.
+      - Never removes shares, disks or owners that the variables don't list. Supports check mode; check mode and
+        O(wsfc_fileserver_report_only) report every action without changing anything.
+      - The C(validate) and C(failover) entry points (C(tasks_from)) check the shares from a client and move the
+        role between nodes.
+      - Run it against every node of the cluster in one play (C(hosts) = the cluster's nodes).
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      wsfc_fileserver_name: &opt_name
+        type: str
+        required: true
+        description:
+          - The file server's name, also its client access point (a computer object in Active Directory and a DNS
+            name) and its cluster group's name. At most 15 characters.
+      wsfc_fileserver_static_addresses:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Static IP addresses for the client access point, one per subnet the nodes span.
+          - Empty means DHCP on every cluster network that clients use. Only used when the role is created.
+      wsfc_fileserver_ignore_networks:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Networks (C(10.0.2.0/24)) the client access point must not take a DHCP address on. Only used when the
+            role is created.
+      wsfc_fileserver_disks:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Cluster disk resource names for the file server, as named in
+            O(git_cgallagher.windows.wsfc#role:main:wsfc_disks). They must be in Available Storage or already in
+            this role.
+          - Creating the role needs at least one. On an existing role, disks it lacks are moved into it.
+      wsfc_fileserver_shares:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - SMB shares scoped to the file server. A share's folder is created when it's missing.
+          - Unlisted shares are left alone. A share whose path differs is reported, not moved.
+        options:
+          name:
+            type: str
+            required: true
+            description: Share name.
+          path:
+            type: str
+            required: true
+            description: Local path on one of the role's disks (C(E:\Shares\Projects)).
+          description:
+            type: str
+            default: ''
+            description: Share description.
+          full_access:
+            type: list
+            elements: str
+            default: []
+            description: Accounts or groups granted Full share access (C(EXAMPLE\File Admins)).
+          change_access:
+            type: list
+            elements: str
+            default: []
+            description: Accounts or groups granted Change share access.
+          read_access:
+            type: list
+            elements: str
+            default: []
+            description:
+              - Accounts or groups granted Read share access.
+              - When all three lists are empty the share's permissions are left as they are (a new share gets
+                Windows' default, Everyone Read). Otherwise they are made exact.
+          continuously_available:
+            type: bool
+            default: false
+            description:
+              - Transparent failover (SMB 3 persistent handles), so open files survive a move to another node.
+                Suits application data (Hyper-V, SQL Server); a share of user documents usually leaves it off.
+          folder_enumeration_mode:
+            type: str
+            default: Unrestricted
+            choices: [Unrestricted, AccessBased]
+            description: V(AccessBased) hides folders a user can't read.
+          encrypt_data:
+            type: bool
+            default: false
+            description: Require SMB encryption.
+      wsfc_fileserver_preferred_owners:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Computer names of the nodes that should own the role, in order. Empty leaves them as they are.
+      wsfc_fileserver_report_only:
+        type: bool
+        default: false
+        description:
+          - Report every action without changing anything (as check mode does).
+      wsfc_fileserver_manage_node: &opt_manage_node
+        type: str
+        default: ''
+        description:
+          - Inventory name of the cluster node that runs the cluster commands. It must be one of the play's hosts.
+          - Empty means the first host in the play.
+      wsfc_fileserver_become_user: &opt_become_user
+        type: str
+        default: ''
+        description:
+          - Account the cluster commands (and the client checks) run as, with C(runas) become, for example a domain
+            account that administers the cluster (C(EXAMPLE\svc-cluster)).
+          - Moving a role and creating shares on another node reach that node over the network, which a plain WinRM
+            logon can't do (the double hop). Empty runs them as the connection user, which works on a one-node
+            cluster or with CredSSP or Kerberos delegation.
+      wsfc_fileserver_become_password: &opt_become_password
+        type: str
+        default: ''
+        no_log: true
+        description:
+          - Password for O(wsfc_fileserver_become_user).
+
+  validate:
+    short_description: Check a clustered file server's shares from a client
+    description:
+      - Checks that the file server's cluster group is online, then, from a client host, writes, reads back and
+        deletes a probe file in each share through C(\\<name>\<share>). Fails when any share can't be reached or
+        doesn't return what was written.
+      - Changes nothing but the probe files (which it removes), so it reports no change.
+      - Run it against the cluster's nodes, like the main entry point.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      wsfc_fileserver_name: *opt_name
+      wsfc_fileserver_shares: &opt_shares_for_checks
+        type: list
+        elements: dict
+        default: []
+        description:
+          - The main entry point's shares; only their names are used, as the default for
+            O(wsfc_fileserver_validate_shares).
+      wsfc_fileserver_validate_client: &opt_validate_client_used
+        type: str
+        default: ''
+        description:
+          - Inventory name of the host that reaches the shares, ideally a machine that isn't a cluster node, as a
+            real client would be.
+          - Empty means the managing node.
+      wsfc_fileserver_validate_shares: &opt_validate_shares_used
+        type: list
+        elements: str
+        default: []
+        description:
+          - Names of the shares to check. Empty means every share in O(wsfc_fileserver_shares).
+          - The account needs permission to create and delete files in each.
+      wsfc_fileserver_manage_node: *opt_manage_node
+      wsfc_fileserver_become_user: *opt_become_user
+      wsfc_fileserver_become_password: *opt_become_password
+
+  failover:
+    short_description: Fail a clustered file server over to another node and validate it
+    description:
+      - Writes a marker file into each share from the client, moves the file server's cluster group to another node
+        (C(Move-ClusterGroup)), waits for it to come online there, then checks from the client that every marker
+        is still readable and each share takes a new write. Reports how long the move took.
+      - A planned failover, as for patching a node; it doesn't simulate a crash.
+      - Reports a change when the role moved. Check mode reports the move without making it.
+      - Run it against the cluster's nodes, like the main entry point.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      wsfc_fileserver_name: *opt_name
+      wsfc_fileserver_shares: *opt_shares_for_checks
+      wsfc_fileserver_validate_client: *opt_validate_client_used
+      wsfc_fileserver_validate_shares: *opt_validate_shares_used
+      wsfc_fileserver_failover_to:
+        type: str
+        default: ''
+        description:
+          - Computer name of the node to move the role to.
+          - Empty means another node that is up, preferring the role's preferred owners in order.
+      wsfc_fileserver_failover_timeout:
+        type: int
+        default: 300
+        description:
+          - Seconds to wait for the role to come online on the new node.
+      wsfc_fileserver_manage_node: *opt_manage_node
+      wsfc_fileserver_become_user: *opt_become_user
+      wsfc_fileserver_become_password: *opt_become_password

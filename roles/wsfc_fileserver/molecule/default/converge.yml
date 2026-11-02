@@ -1,0 +1,42 @@
+---
+# Build a two-node cluster on the shared disks (wsfc), then a file server on it
+# (wsfc_fileserver). Molecule's idempotence step re-runs this and fails on any
+# "changed". Both roles' variables are in molecule.yml (group_vars lab_nodes),
+# so verify.yml runs the roles with the same ones.
+- name: Build the cluster and the file server
+  hosts: lab_nodes
+  gather_facts: false
+  tasks:
+    # The iSCSI disks' UniqueIds are only known once the target made them;
+    # tell them apart by size. Read-only.
+    - name: Read the shared disks' UniqueIds
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          @(Get-Disk | Where-Object { [string]$_.BusType -eq 'iSCSI' } |
+              ForEach-Object { [ordered]@{ size_gb = [int]($_.Size / 1GB); unique_id = $_.UniqueId } })
+      register: lab_disks
+      run_once: true
+      check_mode: false
+
+    # wsfc_disks takes only its own keys, so build each entry explicitly.
+    - name: Describe the shared disks for wsfc
+      ansible.builtin.set_fact:
+        lab_wsfc_disks: >-
+          {{ lab_wsfc_disks | default([]) + [{
+               'name': item.name,
+               'unique_id': (lab_disks.output | selectattr('size_gb', 'equalto', item.size_gb) | first).unique_id,
+               'initialize': true,
+               'label': item.label,
+               'drive_letter': item.drive_letter | default('')}] }}
+      loop: "{{ lab_cluster.disks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Build the cluster with wsfc
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc
+
+    - name: Build the file server with wsfc_fileserver
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc_fileserver
