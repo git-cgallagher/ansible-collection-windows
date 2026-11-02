@@ -89,40 +89,41 @@ jobs:
 
       # Python, ansible-core, Molecule, the molecule-git-cgallagher driver and
       # its collection git_cgallagher.molecule (both from the action's pinned
-      # commit; the collection brings ansible.windows and microsoft.ad), the
-      # checkout as git_cgallagher.windows in .molecule-collections, KVM, QEMU,
-      # pypsrp and the lab directory.
+      # commit), the other collections, the checkout as git_cgallagher.windows
+      # in .molecule-collections, KVM, QEMU, pypsrp and the lab directory.
       # Normally a few minutes; a stuck apt hung a run until the 120-minute job
       # limit (2026-11-01), so fail fast and re-run instead. Since v0.2.1 the
       # action limits its own apt-get calls (3 and 8 minutes); this step's
       # limit is the backstop for the rest, because a composite action's own
       # steps can't set one.
       # Python packages and collections at the versions of the ansible-runtime image ansible-test.yml
-      # pins (its constraints.txt), so the lab runs the same ansible-core, Molecule and
-      # pypsrp as the jobs that run in the image. .cache/ is gitignored.
+      # pins: its constraints.txt, and its collections (setup-molecule's collections-image), so the
+      # lab runs the same ansible-core, Molecule, pypsrp and collections as the jobs that run in the
+      # image, and downloads no collection from Galaxy. .cache/ is gitignored.
       - name: Read the ansible-runtime image's pins
+        id: runtime
         timeout-minutes: 10
         run: |
           image=$(sed -n 's/^ *RUNTIME_IMAGE: //p' .github/workflows/ansible-test.yml)
           [ -n "$image" ] || { echo "::error::RUNTIME_IMAGE not found in ansible-test.yml"; exit 1; }
+          echo "image=$image" >> "$GITHUB_OUTPUT"
           mkdir -p .cache
           docker run --rm "$image" cat /usr/share/ansible-runtime/constraints.txt > .cache/constraints.txt
-          # Every collection pin except git_cgallagher.molecule: setup-molecule installs that one
-          # from its own pinned commit, which may be newer than the image's.
-          docker run --rm "$image" python -c 'import sys, yaml
-          d = yaml.safe_load(open("/usr/share/ansible-runtime/collections.yml"))
-          d["collections"] = [c for c in d["collections"] if "ansible-collection-molecule" not in c["name"]]
-          yaml.safe_dump(d, sys.stdout, sort_keys=False)' > .cache/collections.yml
 
       - name: Set up Molecule, the driver, KVM and QEMU
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@ab9538db70ddb0786723d60da1f1f8fac8d0bcfc  # v0.4.0
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@fe241402b3ecf67a343b634d39a14086ef913a50  # v0.5.0
         timeout-minutes: 15
         with:
           constraints: .cache/constraints.txt
           collection: git_cgallagher.windows
-          # The image's collection pins, not this repo's ranges (the image's consumers check
-          # verifies the pins satisfy them).
-          requirements: .cache/collections.yml
+          # Every collection in the image except git_cgallagher.molecule (the action's own commit
+          # supplies that one), copied, never downloaded.
+          collections-image: ${{ steps.runtime.outputs.image }}
+          # The files the scenarios' dependency steps name (the IIS one uses tests/integration's),
+          # checked offline against the image's collections: one it lacks fails here.
+          requirements: |
+            tests/domain_lab/requirements.yml
+            tests/integration/requirements.yml
           kvm: 'true'
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
 
@@ -143,7 +144,7 @@ jobs:
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@ab9538db70ddb0786723d60da1f1f8fac8d0bcfc  # v0.4.0
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@fe241402b3ecf67a343b634d39a14086ef913a50  # v0.5.0
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}

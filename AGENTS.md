@@ -506,8 +506,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.4.0"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.4.0
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.5.0"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.5.0
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
@@ -733,6 +733,16 @@ ansible-galaxy collection build --force
   the driver by commit in two `uses:` lines (`setup-molecule`,
   `vm-screendump`); bump them together, along with the tag in the install
   lines above and in `tests/domain_lab/README.md`.
+- **The labs download no collection from Galaxy** (since driver v0.5.0,
+  after two lab jobs were lost to Galaxy errors on 2026-11-02). setup-molecule's
+  `collections-image` copies every collection out of the ansible-runtime image
+  `ansible-test.yml` pins (except `git_cgallagher.molecule`, from the action's
+  own commit), and `tests/domain_lab/requirements.yml` and
+  `tests/integration/requirements.yml` are only checked against them, offline.
+  So a collection or minimum the labs newly need goes into ansible-runtime's
+  `requirements/collections.yml` first; until an image with it is pinned, the
+  setup step fails and names the file. Molecule's own `dependency` step then
+  finds everything installed ("Nothing to do").
 - **A composite action's steps can't set `timeout-minutes`** (the runner's
   `action_yaml.json` schema has no such key), so the 10-minute guard the
   KVM/QEMU install step got after a stuck apt hung a run for two hours
