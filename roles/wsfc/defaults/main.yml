@@ -41,6 +41,15 @@ wsfc_networks: []
 # Cluster common properties, for example SameSubnetThreshold.
 wsfc_properties: {}
 
+# Site fault domains and the nodes in each, for a cluster across datacenters.
+wsfc_sites: []
+
+# The cluster's preferred site (PreferredSite); empty = leave it.
+wsfc_preferred_site: ''
+
+# Node votes (NodeWeight) by node name, 1 or 0; unlisted nodes keep theirs.
+wsfc_node_weights: {}
+
 # Shared disks to add as named cluster disks (optionally CSVs).
 wsfc_disks: []
 

@@ -5,11 +5,12 @@ argument_specs:
     description:
       - Installs Failover Clustering on every host in the play, then, from one managing node, validates the nodes
         (C(Test-Cluster)), creates the cluster (C(New-Cluster)) or adds the nodes it is missing, and converges its
-        quorum witness, network names and roles, common properties and named shared disks.
+        quorum witness, network names and roles, sites, node votes, common properties and named shared disks.
       - Lays the foundation that file servers, SQL Server failover cluster instances and Always On availability groups
         sit on. It doesn't install SQL Server, create file shares or availability groups; the role README says what
         each of those workloads needs from it.
-      - Never removes nodes, disks, networks or witnesses that the variables don't list; it reports them as warnings.
+      - Never removes nodes, sites, disks, networks or witnesses that the variables don't list; it reports them as
+        warnings.
       - Supports check mode; check mode and O(wsfc_report_only) report every action without changing the
         cluster.
       - Run it against every node of the cluster in one play (C(hosts) = the cluster's nodes).
@@ -134,6 +135,25 @@ argument_specs:
             type: str
             description:
               - Azure service endpoint for V(cloud_witness); empty means the public cloud (C(core.windows.net)).
+          credential:
+            type: dict
+            description:
+              - The account the cluster connects to a V(file_share_witness) share with, for a share outside the domain
+                such as one on a NAS (Windows Server 2019 and later). Leave it out for a share the cluster name object
+                can reach.
+              - A credential can't be read back, so it is only sent when the witness is set or its path changes.
+            options:
+              username:
+                type: str
+                required: true
+                description:
+                  - The account's name, in the form the share's host expects.
+              password:
+                type: str
+                required: true
+                no_log: true
+                description:
+                  - The account's password. Keep it in a vault.
       wsfc_networks:
         type: list
         elements: dict
@@ -168,6 +188,48 @@ argument_specs:
           - Cluster common properties to set, by name, for example V(SameSubnetThreshold), V(CrossSubnetThreshold),
             V(CrossSubnetDelay) for multi-subnet availability groups, or V(ClusterLogSize).
           - Values are compared as strings with the current value; only differing properties are set.
+      wsfc_sites:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - Site fault domains to create, and the nodes in each, for a cluster across datacenters. With sites, a group
+            fails over to a node in its own site before one in another, and heartbeats between sites can be tuned with
+            the C(CrossSiteDelay) and C(CrossSiteThreshold) common properties (O(wsfc_properties)).
+          - A missing site is created and a listed node is moved into its site. A site the cluster has that this
+            doesn't list is reported in a warning and left in place, and so is the site of a node no site lists.
+          - Nodes and sites share one set of fault domain names, so a site can't have a node's name.
+        options:
+          name:
+            type: str
+            required: true
+            description:
+              - Site name, for example V(DC1).
+          nodes:
+            type: list
+            elements: str
+            description:
+              - Computer names of the nodes in the site. A node belongs to one site.
+          description:
+            type: str
+            description:
+              - Site description, for example the datacenter's location. Kept as it is when this is left out.
+      wsfc_preferred_site:
+        type: str
+        default: ''
+        description:
+          - The cluster's preferred site (its C(PreferredSite) property), for example the primary datacenter. Groups
+            start in it on a cold start, and in a tie between sites, dynamic quorum takes votes from the other sites
+            first so the preferred site keeps the cluster running.
+          - One of O(wsfc_sites), or a site the cluster already has. Set it here or in O(wsfc_properties), not both.
+          - Empty means leave the current value.
+      wsfc_node_weights:
+        type: dict
+        default: {}
+        description:
+          - Node votes (C(NodeWeight)) by node computer name. V(1) gives a node a quorum vote and V(0) takes it away,
+            for example from disaster recovery nodes that mustn't keep the cluster running on their own.
+          - Nodes not listed keep their vote. Dynamic quorum still adjusts the votes of the nodes that have one.
       wsfc_disks:
         type: list
         elements: dict
