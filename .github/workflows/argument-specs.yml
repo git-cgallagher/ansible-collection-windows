@@ -46,7 +46,7 @@ jobs:
 
             # the documentation of each role, from its spec
             ansible-doc -t role -l git_cgallagher.windows
-            for role in gpo_backup gpo_import wsfc; do
+            for role in gpo_backup gpo_import wsfc wsfc_fileserver; do
               ansible-doc -t role "git_cgallagher.windows.$role" > /dev/null
               echo "ok: git_cgallagher.windows.$role"
             done

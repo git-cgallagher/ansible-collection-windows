@@ -1,20 +1,25 @@
 ---
 # Included once per role by validate.yml (spec_role = role name).
-- name: Load the role's argument spec and defaults
+# A role with several entry points (tasks_from) keeps every entry point's
+# defaults in defaults/main.yml; each default must be documented by at least
+# one entry point, and every entry point that documents it agrees with it.
+- name: Load the role's argument specs and defaults
   ansible.builtin.set_fact:
-    spec_main: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/' ~ spec_role ~ '/meta/argument_specs.yml') | from_yaml).argument_specs.main }}"
+    spec_entry_points: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/' ~ spec_role ~ '/meta/argument_specs.yml') | from_yaml).argument_specs }}"
     spec_defaults: "{{ lookup('ansible.builtin.file', spec_roles_dir ~ '/' ~ spec_role ~ '/defaults/main.yml') | from_yaml | default({}, true) }}"
 
-- name: Check the spec documents the role and every variable in defaults/main.yml
+- name: Check every entry point is documented and every variable in defaults/main.yml is too
   ansible.builtin.assert:
     that:
-      - spec_main.short_description | default('') | length > 0
-      - spec_main.options | default({}) | length > 0
+      - spec_entry_points.main is defined
+      - spec_entry_points.values() | map(attribute='short_description', default='') | select('equalto', '') | list | length == 0
+      - spec_entry_points.values() | map(attribute='options', default={}) | select('equalto', {}) | list | length == 0
       - spec_undocumented | length == 0
-    fail_msg: "{{ spec_role }}: undocumented defaults {{ spec_undocumented }} (or no short_description/options)"
+    fail_msg: "{{ spec_role }}: undocumented defaults {{ spec_undocumented }} (or an entry point without short_description/options)"
     quiet: true
   vars:
-    spec_undocumented: "{{ spec_defaults.keys() | difference(spec_main.options.keys()) }}"
+    spec_documented: "{{ spec_entry_points.values() | map(attribute='options') | map('list') | flatten | unique }}"
+    spec_undocumented: "{{ spec_defaults.keys() | difference(spec_documented) }}"
 
 # Required options have no default (so a missing one fails validation); every
 # other option documents exactly the default that defaults/main.yml sets.
@@ -26,10 +31,15 @@
       - (item.value.required | default(false)) != (item.key in spec_defaults)
       - (item.value.required | default(false)) or (item.value.default is defined and item.value.default == spec_defaults[item.key])
     fail_msg: >-
-      {{ spec_role }}.{{ item.key }}: needs a type and description; a required option must not be in
-      defaults/main.yml; any other option's spec default must equal defaults/main.yml
+      {{ spec_role }}:{{ item.entry_point }}.{{ item.key }}: needs a type and description; a required option must
+      not be in defaults/main.yml; any other option's spec default must equal defaults/main.yml
       (spec {{ item.value.default | default('<none>') }}, defaults {{ spec_defaults[item.key] | default('<absent>') }}).
     quiet: true
-  loop: "{{ spec_main.options | dict2items }}"
+  loop: "{{ spec_options }}"
   loop_control:
-    label: "{{ spec_role }}.{{ item.key }}"
+    label: "{{ spec_role }}:{{ item.entry_point }}.{{ item.key }}"
+  vars:
+    # One item per (entry point, option).
+    spec_options: >-
+      {% set out = [] %}{% for ep, spec in spec_entry_points.items() %}{% for key, value in spec.options.items() %}{%
+      set _ = out.append({'entry_point': ep, 'key': key, 'value': value}) %}{% endfor %}{% endfor %}{{ out }}
