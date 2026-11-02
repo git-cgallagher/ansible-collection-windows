@@ -1,0 +1,69 @@
+---
+# mssql_prereqs' scenario: a fresh forest on the shared lab VM (dc01), which
+# prepare.yml promotes (see README.md). converge.yml creates the lab's SQL
+# Server accounts, gMSA, SPNs and groups; verify.yml reads them back through
+# the ActiveDirectory module and runs the refusals and the list modes. The
+# driver, platform, provisioner and inventory come from the repository's
+# Molecule base config, .config/molecule/config.yml, which Molecule merges
+# under this file.
+scenario:
+  name: default
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        lab_sql:
+          # Throwaway lab password (the VM is reachable only on the runner's
+          # loopback); it meets the default domain password policy.
+          password: Example-not-secret-7
+          # prepare.yml gives this account an SPN the refusal test claims.
+          squatter: svc-squatter-lab
+          squatted_spn: "MSSQLSvc/squat.{{ lab_domain }}:1433"
+        lab_groups:
+          - name: GG-SQL-Hosts-Lab
+            description: Hosts that may retrieve the lab gMSA's password
+            members: [Domain Controllers]
+          - name: GG-SQL-Admins-Lab
+            members: [vagrant]
+        lab_accounts:
+          - name: svc-sqldb-lab
+            password: "{{ lab_sql.password }}"
+            description: Lab SQL Server engine, default instance and AG listener
+            spn_sets:
+              - hosts: ["sql01.{{ lab_domain }}", "ag01-lsn.{{ lab_domain }}"]
+                short_names: true
+          - name: svc-sqlinst-lab
+            password: "{{ lab_sql.password }}"
+            spn_sets:
+              - {hosts: ["sql02.{{ lab_domain }}"], port: 14330, instance: INST1}
+            extra_spns: ["MSSQLSvc/sqlfci01.{{ lab_domain }}:14330"]
+          - name: gmsa-sqlagt
+            type: gmsa
+            dns_hostname: "gmsa-sqlagt.{{ lab_domain }}"
+            # A group this role creates first.
+            retrieve_password: [GG-SQL-Hosts-Lab]
+            spn_sets:
+              - hosts: ["sqlfci02.{{ lab_domain }}"]
+        # What verify.yml expects the role to build from lab_accounts.
+        lab_expected_spns:
+          svc-sqldb-lab:
+            - "MSSQLSvc/sql01.{{ lab_domain }}:1433"
+            - "MSSQLSvc/sql01.{{ lab_domain }}"
+            - "MSSQLSvc/ag01-lsn.{{ lab_domain }}:1433"
+            - "MSSQLSvc/ag01-lsn.{{ lab_domain }}"
+            - MSSQLSvc/sql01:1433
+            - MSSQLSvc/sql01
+            - MSSQLSvc/ag01-lsn:1433
+            - MSSQLSvc/ag01-lsn
+          svc-sqlinst-lab:
+            - "MSSQLSvc/sql02.{{ lab_domain }}:14330"
+            - "MSSQLSvc/sql02.{{ lab_domain }}:INST1"
+            - "MSSQLSvc/sqlfci01.{{ lab_domain }}:14330"
+          gmsa-sqlagt:
+            - "MSSQLSvc/sqlfci02.{{ lab_domain }}:1433"
+            - "MSSQLSvc/sqlfci02.{{ lab_domain }}"
+        # The role's variables, used by converge.yml and verify.yml. prepare.yml
+        # creates the forest's KDS root key, so the role only checks for it.
+        mssql_prereqs_accounts: "{{ lab_accounts }}"
+        mssql_prereqs_groups: "{{ lab_groups }}"
+        mssql_prereqs_kds_root_key: check

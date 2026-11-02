@@ -1,0 +1,22 @@
+---
+# Included by validate.yml once per case (spec_case: case, accounts, groups,
+# kds, expect): mssql_prereqs' argument spec must reject the input before the
+# role's first task.
+- name: "Reject {{ spec_case.case }}"
+  block:
+    - name: Include mssql_prereqs with the input
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+      vars:
+        mssql_prereqs_accounts: "{{ spec_case.accounts | default([]) }}"
+        mssql_prereqs_groups: "{{ spec_case.groups | default([]) }}"
+        mssql_prereqs_kds_root_key: "{{ spec_case.kds | default('check') }}"
+
+    - name: Fail because validation accepted it
+      ansible.builtin.fail:
+        msg: "mssql_prereqs accepted {{ spec_case.case }}"
+  rescue:
+    - name: Check the argument spec rejected it
+      ansible.builtin.assert:
+        that: ansible_failed_result.argument_errors | default([]) | join(' ') is search(spec_case.expect)
+        fail_msg: "{{ spec_case.case }}: {{ ansible_failed_result | to_json }}"

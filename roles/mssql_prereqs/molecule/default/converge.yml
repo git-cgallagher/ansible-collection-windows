@@ -1,0 +1,9 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: false
+  tasks:
+    # The role's variables come from molecule.yml's group_vars.
+    - name: Create the lab's SQL Server accounts, gMSA, SPNs and groups
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs

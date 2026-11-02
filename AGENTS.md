@@ -70,6 +70,26 @@ a behavioral spec of the old `ansible-windows` modules, under this
 collection's MIT license: don't copy code from GPL-licensed IIS modules
 (microsoft.iis, community.windows) into it.
 
+Its fourth area is **SQL Server** (0.12.0), planned in issue #48 (the roles,
+their phases and the owner's decisions of 2026-11-01). The first role:
+
+- `roles/mssql_prereqs` — the Active Directory accounts SQL Server runs
+  under, created before SQL Server is: domain users (`microsoft.ad.user`) or
+  gMSAs (`microsoft.ad.service_account`), their generated `MSSQLSvc` SPNs,
+  groups, and the forest's KDS root key (checked, or created when asked). It
+  runs once, from a DC. `tasks/plan.yml` is its pure half (defaults, SPN
+  building, validation, no Active Directory), which
+  `tests/argument_specs/validate.yml` runs on localhost with
+  `tasks_from: plan` and `public: true`; `tasks/main.yml` imports it, then
+  reads (KDS root keys, SPNs held elsewhere) before it writes anything.
+
+Next, per issue #48: `mssql` (standalone instances and FCIs) and `mssql_ag`
+(availability groups). **Every cluster change is made by `wsfc` itself**
+(owner rule, 2026-11-01): amend `wsfc`/`wsfc_cluster`, never put cluster
+configuration into an `mssql` role. Service accounts and SPNs stay in
+`mssql_prereqs`, never in `mssql` or `mssql_ag`. The base role `mssql` must
+never get a variable starting `mssql_ag_` or `mssql_prereqs_`.
+
 ## ⚠️ Maturity — read before relying on it
 
 **Lab-tested within one domain.** Each role has its own Molecule scenario
@@ -115,6 +135,17 @@ role):
   refusal, an incomplete backup folder, a missing manifest, a GPO missing
   from both domain and export, an ACL-denied `state_dir`), each leaving the
   domain and the state file as they were.
+- `roles/mssql_prereqs/molecule/default`: a fresh forest. Before it has a
+  KDS root key, `check` refuses the gMSA and a report-only `create` plans one
+  and writes nothing; prepare then adds a key backdated 10 hours (a key is
+  usable 10 hours after its effective time). Converge creates two domain
+  users (default and named instance, short names, an extra SPN), a gMSA a
+  role-created group may retrieve, and two groups; verify reads every SPN,
+  flag, member and the AES-only encryption types through the ActiveDirectory
+  cmdlets, refuses an SPN another account holds (naming it, writing
+  nothing), plans a new account report-only (creating nothing), and checks
+  that add mode keeps an out-of-band SPN while exclusive mode removes it and
+  a repeat changes nothing.
 - `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
@@ -194,8 +225,8 @@ Not covered by the lab yet (issue #16 unless noted):
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
 third-party box download. Promote its jobs, `molecule (gpo_backup)`,
-`molecule (gpo_import)`, `molecule (wsfc)`, `molecule (iis)` and
-`molecule (wsfc_fileserver)`, after four
+`molecule (gpo_import)`, `molecule (wsfc)`, `molecule (iis)`,
+`molecule (wsfc_fileserver)` and `molecule (mssql_prereqs)`, after four
 consecutive green weekly runs each, and replace the path filter with a job that always reports and skips the lab
 when nothing relevant changed.
 
@@ -408,6 +439,16 @@ lab to the scripts — and record the surprise below as a gotcha.
   ansible-lint passes without it), never a `galaxy.yml` dependency. Keep the targets' own reads (`read_mime_map.ps1`, the inline
   reads) in PowerShell: the oracle must stay independent of the module under
   test and of any other IIS module.
+- **No secret in a loop item.** `loop_control.label` shortens only the
+  summary line; `-v` output and registered results keep the whole item. Loop
+  over a projection without the secret (`mssql_prereqs` strips `password`
+  with `map('dict2items') | map('rejectattr', 'key', 'equalto', 'password')
+  | map('list') | map('items2dict')`) and look the secret up by name inside
+  the task, as a module argument the module itself hides.
+- **An empty `set` clears a `microsoft.ad` list option** (since 1.11.0 it's
+  no longer ignored on creation): send `{set: []}` only when clearing is
+  meant, as `mssql_prereqs_exclusive: true` does, and omit the option
+  otherwise.
 - **Every module needs `validate-modules:missing-gplv3-license` ignores** in
   `tests/sanity/ignore-2.18.txt` through `ignore-2.23.txt`, for its `.ps1`
   and its `.yml`: the collection is MIT, and validate-modules demands a GPLv3
@@ -732,3 +773,30 @@ ansible-galaxy collection build --force
 - **`ansible.windows.win_powershell` serializes results only 2 levels deep
   by default**; a dict of lists of dicts comes back with the inner dicts as
   strings. The IIS targets pass `depth: 5` to every read.
+- **A template made only of Jinja tags renders to `None` when it outputs
+  nothing** (ansible-core 2.21.5 in the ansible-runtime image, found
+  building `mssql_prereqs`, 2026-11-02): `{%- for … -%}…{%- endfor -%}` over
+  an empty loop gave `None`, so `| length` failed. Build such lists in a
+  `namespace` (`{%- set found.items = found.items + [x] -%}`) and end the
+  template with `{{ found.items }}`.
+- **A role's `vars/main.yml` isn't visible after `include_role` without
+  `public: true`**; facts the role sets are. The argument-specs test of
+  `mssql_prereqs`' plan includes it with `public: true`.
+- **A KDS root key is usable 10 hours after its effective time**, so a lab
+  that needs a gMSA at once backdates its key
+  (`Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)`, in
+  `mssql_prereqs`' prepare). `mssql_prereqs_kds_root_key: create` makes a
+  key that waits the 10 hours.
+- **`Get-KdsRootKey` emits `$null` when the forest has no key**, so a plain
+  `@(Get-KdsRootKey).Count` is 1 on a fresh forest. PR #52's first lab run
+  (2026-11-02) skipped its pre-key tests and its own key creation that way,
+  and the role then rightly found no key. Count with
+  `@(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count`.
+  (`microsoft.ad.kds_root_key_info` is fine: it loops over the cmdlet's
+  output, and PowerShell doesn't iterate over a lone `$null`.)
+- **The `microsoft.ad` modules resolve principals even in check mode.** A
+  gMSA whose `allowed_to_retrieve_password` names a group the same run only
+  *plans* failed `mssql_prereqs`' report-only plan with "Failed to find the AD
+  object DNs" (PR #52's second lab run, 2026-11-02). The role now passes
+  `lookup_failure_action: warn` in check mode for a list that names one of its
+  own groups (gMSA retrievers and group members), and `fail` otherwise.
