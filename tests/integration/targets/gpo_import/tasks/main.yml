@@ -250,6 +250,9 @@
           - gpo_import_fx.gpo_rdp not in gpo_import_drifted.result.topology.gpos
           - gpo_import_fx.wmi_filter not in gpo_import_drifted.result.topology.wmi_filters
           - gpo_import_drifted.result.settings.password_min_length == 8
+          # The plan below expects to restore it (issue #50: an unblock that
+          # didn't take showed up there as a missing plan line).
+          - not gpo_import_drifted.result.topology.soms['OU=Workstations,OU=' ~ gpo_import_fx.ou].block_inheritance
         fail_msg: "{{ gpo_import_drifted.result | to_nice_json }}"
 
     # With the defaults, a WMI filter the manifest names but the domain lacks is

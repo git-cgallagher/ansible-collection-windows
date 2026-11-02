@@ -227,6 +227,33 @@ function Set-LabLink {
     }
 }
 
+function Set-LabInheritance {
+    # Set-GPInheritance has returned without an error and left the OU as it
+    # was (issue #50, on a fresh lab DC), so every write is read back and
+    # retried, and a write that never takes throws instead of letting a later
+    # check fail for the wrong reason. It reads first: a call that finds the
+    # OU already right writes nothing. The diagnostics record how many writes
+    # each step needed (1 normally, 0 for a confirmation that found it right).
+    param([string]$Target, [bool]$Blocked, [string]$Step)
+    $want = ('No', 'Yes')[[int]$Blocked]
+    $writes = 0
+    while ($true) {
+        $now = [bool](Get-GPInheritance -Target $Target -Domain $Domain -Server $pdc).GpoInheritanceBlocked
+        if ($now -eq $Blocked) {
+            $diag["inheritance_$Step"] = $writes
+            return
+        }
+        if ($writes -ge 5) {
+            throw "block inheritance on '$Target' is still $now after $writes writes of $Blocked"
+        }
+        Set-GPInheritance -Target $Target -IsBlocked $want -Domain $Domain -Server $pdc | Out-Null
+        $writes++
+        if ($writes -gt 1) {
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
 function Invoke-Seed {
     foreach ($ou in @(@($fx.ou, $rootDn), @('Servers', $ouDn), @('Workstations', $ouDn))) {
         if (-not (Test-AdObject -Dn "OU=$($ou[0]),$($ou[1])")) {
@@ -323,7 +350,7 @@ function Invoke-Seed {
     Set-LabLink -GpoName $fx.gpo_server_admins -Target $serversDn -Order 3 -Enforced No -Enabled Yes
     Set-LabLink -GpoName $fx.gpo_rdp -Target $workstationsDn -Order 1 -Enforced No -Enabled No
     Set-LabLink -GpoName $fx.gpo_ws_admins -Target $workstationsDn -Order 2 -Enforced No -Enabled Yes
-    Set-GPInheritance -Target $workstationsDn -IsBlocked Yes -Domain $Domain -Server $pdc | Out-Null
+    Set-LabInheritance -Target $workstationsDn -Blocked $true -Step 'seed'
     [void]$done.Add('settings, filtering, links')
 }
 
@@ -377,7 +404,7 @@ function Invoke-Drift {
 
     # 3. An unmanaged link at the top of a managed OU; inheritance unblocked.
     New-GPLink -Name $fx.gpo_password -Target $serversDn -Order 1 -Domain $Domain -Server $pdc | Out-Null
-    Set-GPInheritance -Target $workstationsDn -IsBlocked No -Domain $Domain -Server $pdc | Out-Null
+    Set-LabInheritance -Target $workstationsDn -Blocked $false -Step 'drift'
 
     # 4. Password policy: Default Domain Policy moved back above it (so its
     #    weaker settings win again) and the GPO's own minimum lowered.
@@ -393,6 +420,10 @@ function Invoke-Drift {
 
     # 6. The workstation Restricted Groups GPO unlinked.
     Remove-GPLink -Name $fx.gpo_ws_admins -Target $workstationsDn -Domain $Domain -Server $pdc | Out-Null
+
+    # Confirm the unblock from step 3 survived the later link changes on the
+    # same OU (it writes again, and says so in the diagnostics, if not).
+    Set-LabInheritance -Target $workstationsDn -Blocked $false -Step 'drift_confirm'
     [void]$done.Add('links, inheritance, password policy, local admins')
 }
 

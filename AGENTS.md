@@ -501,6 +501,14 @@ ansible-galaxy collection build --force
 
 ## ⚠️ Gotchas
 
+- **`Set-GPInheritance` can return without an error and change nothing.** On
+  a fresh lab DC the drift's unblock of the Workstations OU once didn't take
+  (issue #50, PR #49's first `gpo_import` lab run), and the target's plan check
+  then failed far from the cause. `lab_fixture.ps1` sets inheritance only
+  through `Set-LabInheritance` (read back, retry, throw), and the target's
+  "Check the drift took" asserts it. Read back any other fixture write that a
+  later check depends on.
+
 - **`wsfc`'s cluster task sets `become` itself** (from
   `wsfc_become_user`), which overrides a play-level `become` for that
   task. `New-Cluster` and friends hit the WinRM double hop on multi-node
