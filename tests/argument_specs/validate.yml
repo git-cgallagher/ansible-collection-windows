@@ -11,7 +11,7 @@
   tasks:
     - name: Check one role
       ansible.builtin.include_tasks: check_role.yml
-      loop: [gpo_backup, gpo_import, wsfc]
+      loop: [gpo_backup, gpo_import, wsfc, mssql_prereqs]
       loop_control:
         loop_var: spec_role
 
@@ -255,3 +255,161 @@
               - ansible_failed_result.argument_errors is not defined
               - ansible_failed_result.msg | default('') is search('at most 15 characters')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+# mssql_prereqs: its argument spec, then its plan (tasks/plan.yml), which
+# fills in defaults, builds the SPNs and validates the whole list without
+# touching Active Directory, so it runs here without a Windows host.
+- name: Exercise mssql_prereqs' argument spec
+  hosts: localhost
+  gather_facts: false
+  vars:
+    spec_roles_dir: "{{ playbook_dir }}/../../roles"
+    spec_prereqs: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/mssql_prereqs/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+  tasks:
+    - name: Accept a minimal mssql_prereqs call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_prereqs }}"
+        provided_arguments: {}
+
+    - name: Accept a full mssql_prereqs call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_prereqs }}"
+        provided_arguments:
+          mssql_prereqs_accounts:
+            - name: svc-sqldb
+              type: user
+              password: example-not-secret
+              path: OU=SQL,DC=example,DC=com
+              description: SQL Server engine
+              upn: svc-sqldb@example.com
+              spn_sets:
+                - {hosts: [sql01.example.com, ag01-lsn.example.com], port: 1433, instance: MSSQLSERVER, short_names: true}
+              extra_spns: [MSSQLSvc/sqlfci01.example.com:1433]
+              state: present
+            - name: gmsa-sqlagt
+              type: gmsa
+              dns_hostname: gmsa-sqlagt.example.com
+              retrieve_password: [SQL01$, GG-SQL-Hosts]
+          mssql_prereqs_groups:
+            - {name: GG-SQL-Hosts, scope: global, path: 'OU=SQL,DC=example,DC=com', description: SQL hosts, members: [SQL01$], state: present}
+          mssql_prereqs_exclusive: true
+          mssql_prereqs_kds_root_key: create
+          mssql_prereqs_kds_root_key_effective_time_hours: 10
+          mssql_prereqs_domain_server: dc01.example.com
+          mssql_prereqs_domain_username: EXAMPLE\svc-ad-build
+          mssql_prereqs_domain_password: example-not-secret
+          mssql_prereqs_report_only: true
+
+    - name: Reject what the argument spec rules out
+      ansible.builtin.include_tasks: mssql_prereqs_spec_reject.yml
+      loop:
+        - case: an account type of msa
+          accounts: [{name: svc-a, type: msa}]
+          expect: mssql_prereqs_accounts
+        - case: an account without a name
+          accounts: [{type: user, password: x}]
+          expect: mssql_prereqs_accounts
+        - case: a group scope of local
+          groups: [{name: GG-A, scope: local}]
+          expect: mssql_prereqs_groups
+        - case: a KDS root key mode of always
+          kds: always
+          expect: mssql_prereqs_kds_root_key
+      loop_control:
+        loop_var: spec_case
+        label: "{{ spec_case.case }}"
+
+- name: Exercise mssql_prereqs' plan
+  hosts: localhost
+  gather_facts: false
+  vars:
+    plan_accounts:
+      - name: svc-sqldb-lab
+        password: example-not-secret
+        spn_sets:
+          - hosts: [sql01.example.com, ag01-lsn.example.com]
+            short_names: true
+      - name: svc-sqlinst-lab
+        password: example-not-secret
+        spn_sets:
+          - {hosts: [sql02.example.com], port: 14330, instance: INST1}
+        extra_spns: [MSSQLSvc/sqlfci01.example.com:14330]
+      - name: gmsa-sqlagt
+        type: gmsa
+        dns_hostname: gmsa-sqlagt.example.com
+        retrieve_password: [GG-SQL-Hosts]
+        spn_sets:
+          - hosts: [sqlfci02.example.com]
+      # Absent accounts get no SPNs, so they can hand theirs to another.
+      - name: svc-gone
+        state: absent
+        spn_sets:
+          - hosts: [sql01.example.com]
+  tasks:
+    - name: Plan the accounts
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+        tasks_from: plan
+        public: true
+      vars:
+        mssql_prereqs_accounts: "{{ plan_accounts }}"
+
+    - name: Check the SPNs, and that no password reached the planned accounts
+      ansible.builtin.assert:
+        that:
+          - mssql_prereqs__spns['svc-sqldb-lab'] | sort == plan_expected_db | sort
+          - mssql_prereqs__spns['svc-sqlinst-lab'] | sort == plan_expected_inst | sort
+          - mssql_prereqs__spns['gmsa-sqlagt'] | sort == plan_expected_gmsa | sort
+          - "'svc-gone' not in mssql_prereqs__spns"
+          - mssql_prereqs__accounts | selectattr('password', 'defined') | list | length == 0
+        fail_msg: "Planned {{ mssql_prereqs__spns | to_json }}"
+      vars:
+        plan_expected_db:
+          - MSSQLSvc/sql01.example.com:1433
+          - MSSQLSvc/ag01-lsn.example.com:1433
+          - MSSQLSvc/sql01:1433
+          - MSSQLSvc/ag01-lsn:1433
+          - MSSQLSvc/sql01.example.com
+          - MSSQLSvc/ag01-lsn.example.com
+          - MSSQLSvc/sql01
+          - MSSQLSvc/ag01-lsn
+        plan_expected_inst:
+          - MSSQLSvc/sql02.example.com:14330
+          - MSSQLSvc/sql02.example.com:INST1
+          - MSSQLSvc/sqlfci01.example.com:14330
+        plan_expected_gmsa:
+          - MSSQLSvc/sqlfci02.example.com:1433
+          - MSSQLSvc/sqlfci02.example.com
+
+    - name: Refuse each kind of input the plan can't apply
+      ansible.builtin.include_tasks: mssql_prereqs_reject.yml
+      loop:
+        - case: a user without a password
+          accounts: [{name: svc-a}]
+          expect: "Users without a password: \\['svc-a'\\]"
+        - case: a gMSA without dns_hostname
+          accounts: [{name: gmsa-a, type: gmsa}]
+          expect: "gMSAs without dns_hostname: \\['gmsa-a'\\]"
+        - case: a gMSA name over 15 characters
+          accounts: [{name: gmsa-much-too-long, type: gmsa, dns_hostname: x.example.com}]
+          expect: "at most 15\\): \\['gmsa-much-too-long'\\]"
+        - case: a host name with a space
+          accounts: [{name: svc-b, password: x, spn_sets: [{hosts: ['sql 01.example.com']}]}]
+          expect: "letters, digits, '.' and '-': \\['sql 01.example.com'\\]"
+        - case: an instance name starting with a digit
+          accounts: [{name: svc-c, password: x, spn_sets: [{hosts: [sql01.example.com], instance: 1BAD}]}]
+          expect: "Invalid instance names: \\['1BAD'\\]"
+        - case: an extra SPN with a wildcard
+          accounts: [{name: svc-d, password: x, extra_spns: ['MSSQLSvc/*']}]
+          expect: "a backslash: \\['MSSQLSvc/\\*'\\]"
+        - case: one SPN on two accounts
+          accounts:
+            - {name: svc-e, password: x, spn_sets: [{hosts: [sql09.example.com]}]}
+            - {name: svc-f, password: x, extra_spns: [MSSQLSvc/SQL09.example.com:1433]}
+          expect: "one account\\): \\['mssqlsvc/sql09.example.com:1433'\\]"
+        - case: a name listed twice
+          accounts: [{name: svc-g, password: x}, {name: SVC-G, password: y}]
+          expect: "Names listed more than once: \\['svc-g'\\]"
+      loop_control:
+        loop_var: plan_case
+        label: "{{ plan_case.case }}"

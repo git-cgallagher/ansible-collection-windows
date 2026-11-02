@@ -1,0 +1,215 @@
+---
+argument_specs:
+  main:
+    short_description: Create the Active Directory accounts and Kerberos SPNs SQL Server runs under
+    description:
+      - Creates or converges the service accounts SQL Server instances run under, as domain user accounts
+        (C(microsoft.ad.user)) or group managed service accounts (gMSAs, C(microsoft.ad.service_account)), with the
+        C(MSSQLSvc) service principal names (SPNs) Kerberos needs. It also manages security groups, for example the
+        SQL Server administrators or the hosts allowed to retrieve a gMSA's password.
+      - Builds each account's SPNs from host names, port and instance name. A default instance gets
+        C(MSSQLSvc/<host>:<port>) and C(MSSQLSvc/<host>), a named instance C(MSSQLSvc/<host>:<port>) and
+        C(MSSQLSvc/<host>:<instance>).
+      - Before writing anything, it fails when an SPN is listed for two accounts or another account in Active
+        Directory already holds it, since a duplicate SPN breaks Kerberos for both accounts.
+      - When a gMSA is listed it checks for the forest's KDS root key, and creates one only when asked.
+      - Never removes accounts, groups, SPNs, password-retrieval principals or group members that the variables
+        don't list, unless O(mssql_prereqs_exclusive) makes each list exact or an item asks for V(absent).
+      - Supports check mode; check mode and O(mssql_prereqs_report_only) report every change without making it.
+      - Runs once, from the first host in the play, which must be a domain controller or a member server with the
+        ActiveDirectory PowerShell module (C(RSAT-AD-PowerShell)). It needs no SQL Server.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      mssql_prereqs_accounts:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - The service accounts, in any mix of domain users and gMSAs.
+          - Each account's password is looked up by name inside the task that uses it, so it never appears in a
+            loop's result.
+        options:
+          name:
+            type: str
+            required: true
+            description:
+              - For a domain user, its C(sAMAccountName) and name (at most 20 characters). For a gMSA, its name
+                (at most 15 characters); Active Directory adds C($) to its C(sAMAccountName).
+              - Letters, digits, C(.), C(_) and C(-) only.
+          type:
+            type: str
+            choices: [user, gmsa]
+            default: user
+            description:
+              - V(user) is a domain user account with a password; V(gmsa) a group managed service account, whose
+                password Active Directory manages.
+          password:
+            type: str
+            no_log: true
+            description:
+              - The domain user's password. Required for a V(user) that is V(present).
+              - Only set when the account is created (C(update_password=on_create)), so a run never resets the
+                password the SQL Server services were installed with.
+          path:
+            type: str
+            default: ''
+            description:
+              - Distinguished name of the OU or container. Empty means the domain's default for new objects, and
+                leaves an existing account where it is.
+          description:
+            type: str
+            default: ''
+            description:
+              - The account's description.
+          upn:
+            type: str
+            default: ''
+            description:
+              - User principal name of a domain user, for example V(svc-sqldb@example.com). Empty leaves it unset.
+          dns_hostname:
+            type: str
+            default: ''
+            description:
+              - The gMSA's C(dNSHostName), for example V(gmsa-sqldb.example.com). Required for a V(gmsa) that is
+                V(present).
+          retrieve_password:
+            type: list
+            elements: str
+            default: []
+            description:
+              - Principals allowed to retrieve the gMSA's password, by C(sAMAccountName) or distinguished name. That
+                is the SQL Server hosts' computer accounts (V(SQL01$)), or a group of them, which may be one this role
+                creates in O(mssql_prereqs_groups).
+              - A computer account named directly takes effect at once; a host added to a group only after a reboot
+                or a Kerberos ticket purge.
+          spn_sets:
+            type: list
+            elements: dict
+            default: []
+            description:
+              - The instances this account runs, each as host names plus port and instance; the role builds the
+                C(MSSQLSvc) SPNs from them.
+              - List every name clients use, for example each replica host and the availability group listener, or
+                a failover cluster instance's network name.
+            options:
+              hosts:
+                type: list
+                elements: str
+                required: true
+                description:
+                  - Fully qualified host names, for example V(sql01.example.com). Letters, digits, C(.) and C(-) only.
+              port:
+                type: int
+                default: 1433
+                description:
+                  - The TCP port the instance listens on.
+              instance:
+                type: str
+                default: MSSQLSERVER
+                description:
+                  - The instance name; V(MSSQLSERVER) is the default instance.
+              short_names:
+                type: bool
+                default: false
+                description:
+                  - Also build the SPNs for each host's short name (its first label), for clients that connect by it.
+          extra_spns:
+            type: list
+            elements: str
+            default: []
+            description:
+              - More SPNs, verbatim, for example one with a port another instance listens on.
+          state:
+            type: str
+            choices: [present, absent]
+            default: present
+            description:
+              - V(absent) deletes the account.
+      mssql_prereqs_groups:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - Security groups, created or converged before the accounts.
+        options:
+          name:
+            type: str
+            required: true
+            description:
+              - The group's name and C(sAMAccountName).
+          scope:
+            type: str
+            choices: [domainlocal, global, universal]
+            default: global
+            description:
+              - The group's scope.
+          path:
+            type: str
+            default: ''
+            description:
+              - Distinguished name of the OU or container. Empty means the domain's default for new objects, and
+                leaves an existing group where it is.
+          description:
+            type: str
+            default: ''
+            description:
+              - The group's description.
+          members:
+            type: list
+            elements: str
+            default: []
+            description:
+              - Members, by C(sAMAccountName) or distinguished name, for example V(SQL01$) or V(GG-DBA).
+          state:
+            type: str
+            choices: [present, absent]
+            default: present
+            description:
+              - V(absent) deletes the group.
+      mssql_prereqs_exclusive:
+        type: bool
+        default: false
+        description:
+          - V(false) adds the listed SPNs, password-retrieval principals and group members and leaves any others
+            alone.
+          - V(true) makes each list the exact set, removing what it doesn't list. An empty list then clears the
+            attribute. Use it only for accounts and groups that exist just for SQL Server.
+      mssql_prereqs_kds_root_key:
+        type: str
+        choices: [check, create, skip]
+        default: check
+        description:
+          - What to do about the forest's KDS root key, which gMSAs need. Only looked at when an account is a gMSA.
+          - V(check) fails before any change when the forest has none. V(create) adds one when the forest has none;
+            that is a forest-wide change, meant for labs. V(skip) doesn't look.
+          - A key becomes usable 10 hours after its effective time.
+      mssql_prereqs_kds_root_key_effective_time_hours:
+        type: int
+        default: 10
+        description:
+          - Hours from now until a key that O(mssql_prereqs_kds_root_key=create) adds becomes effective.
+      mssql_prereqs_domain_server:
+        type: str
+        default: ''
+        description:
+          - Domain controller the C(microsoft.ad) modules talk to. Empty means the target's own domain.
+      mssql_prereqs_domain_username:
+        type: str
+        default: ''
+        description:
+          - Account the C(microsoft.ad) modules use. Empty means the connection user, which works on a domain
+            controller; from a member server, set it (the WinRM double hop).
+          - The KDS root key tasks always run as the connection user, which needs Domain Admin rights for them.
+      mssql_prereqs_domain_password:
+        type: str
+        default: ''
+        no_log: true
+        description:
+          - Password of O(mssql_prereqs_domain_username). Keep it in a vault.
+      mssql_prereqs_report_only:
+        type: bool
+        default: false
+        description:
+          - Run the tasks that write in check mode, so the role reports every change without making it. C(--check)
+            implies it.

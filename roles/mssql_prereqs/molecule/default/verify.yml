@@ -1,0 +1,245 @@
+---
+# Every check reads Active Directory through its own PowerShell (the
+# ActiveDirectory module), never through the microsoft.ad modules the role
+# uses. Order: what converge created, the duplicate-SPN refusal, a report-only
+# plan, then the list modes (add keeps an SPN the role doesn't list, exclusive
+# removes it, and a repeat changes nothing).
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    # Returns users, gmsas and groups keyed by name (SPNs lower-cased), the
+    # names it couldn't find, and the forest's KDS root key count.
+    lab_read_script: |
+      param([string[]]$Users, [string[]]$Gmsas, [string[]]$Groups)
+      $ErrorActionPreference = 'Stop'
+      $Ansible.Changed = $false
+      Import-Module ActiveDirectory
+      $state = [ordered]@{
+          users = [ordered]@{}
+          gmsas = [ordered]@{}
+          groups = [ordered]@{}
+          missing = @()
+          kds_keys = @(Get-KdsRootKey).Count
+      }
+      foreach ($name in $Users) {
+          $user = Get-ADUser -Filter "sAMAccountName -eq '$name'" -Properties servicePrincipalName, PasswordNeverExpires, CannotChangePassword
+          if ($null -eq $user) {
+              $state.missing += $name
+              continue
+          }
+          $state.users[$name] = [ordered]@{
+              spns = @($user.servicePrincipalName | ForEach-Object { $_.ToLowerInvariant() })
+              password_never_expires = [bool]$user.PasswordNeverExpires
+              cannot_change_password = [bool]$user.CannotChangePassword
+              enabled = [bool]$user.Enabled
+          }
+      }
+      foreach ($name in $Gmsas) {
+          $sam = $name + '$'
+          $gmsa = Get-ADServiceAccount -Filter "sAMAccountName -eq '$sam'" `
+              -Properties servicePrincipalName, DNSHostName, PrincipalsAllowedToRetrieveManagedPassword, 'msDS-SupportedEncryptionTypes'
+          if ($null -eq $gmsa) {
+              $state.missing += $name
+              continue
+          }
+          $state.gmsas[$name] = [ordered]@{
+              spns = @($gmsa.servicePrincipalName | ForEach-Object { $_.ToLowerInvariant() })
+              dns_hostname = [string]$gmsa.DNSHostName
+              retrievers = @($gmsa.PrincipalsAllowedToRetrieveManagedPassword |
+                  ForEach-Object { (Get-ADObject -Identity $_ -Properties sAMAccountName).sAMAccountName })
+              encryption_types = [int]$gmsa.'msDS-SupportedEncryptionTypes'
+          }
+      }
+      foreach ($name in $Groups) {
+          $group = Get-ADGroup -Filter "sAMAccountName -eq '$name'"
+          if ($null -eq $group) {
+              $state.missing += $name
+              continue
+          }
+          $state.groups[$name] = @(Get-ADGroupMember -Identity $group | ForEach-Object { $_.SamAccountName })
+      }
+      $state
+    lab_users: [svc-sqldb-lab, svc-sqlinst-lab]
+    lab_extra_spn: "MSSQLSvc/extra.{{ lab_domain }}:1433"
+  tasks:
+    # --- what converge created -------------------------------------------------
+    - name: Read the accounts, gMSA and groups
+      ansible.windows.win_powershell:
+        script: "{{ lab_read_script }}"
+        parameters:
+          Users: "{{ lab_users }}"
+          Gmsas: [gmsa-sqlagt]
+          Groups: "{{ lab_groups | map(attribute='name') | list }}"
+        depth: 5
+      register: lab_read
+
+    - name: Check them against lab_accounts and lab_groups
+      ansible.builtin.assert:
+        that:
+          - lab_ad.missing | length == 0
+          - lab_ad.users['svc-sqldb-lab'].spns | sort == lab_expected_spns['svc-sqldb-lab'] | map('lower') | sort
+          - lab_ad.users['svc-sqlinst-lab'].spns | sort == lab_expected_spns['svc-sqlinst-lab'] | map('lower') | sort
+          - lab_ad.users.values() | map(attribute='password_never_expires') | select | list | length == 2
+          - lab_ad.users.values() | map(attribute='cannot_change_password') | select | list | length == 2
+          - lab_ad.users.values() | map(attribute='enabled') | select | list | length == 2
+          - lab_ad.gmsas['gmsa-sqlagt'].spns | sort == lab_expected_spns['gmsa-sqlagt'] | map('lower') | sort
+          - lab_ad.gmsas['gmsa-sqlagt'].dns_hostname == 'gmsa-sqlagt.' ~ lab_domain
+          - lab_ad.gmsas['gmsa-sqlagt'].retrievers == ['GG-SQL-Hosts-Lab']
+          # aes128 (0x8) + aes256 (0x10)
+          - lab_ad.gmsas['gmsa-sqlagt'].encryption_types == 24
+          - lab_ad.groups['GG-SQL-Hosts-Lab'] == ['Domain Controllers']
+          - lab_ad.groups['GG-SQL-Admins-Lab'] == ['vagrant']
+          - lab_ad.kds_keys >= 1
+        fail_msg: "Active Directory holds {{ lab_ad | to_json }}"
+      vars:
+        lab_ad: "{{ lab_read.output[0] }}"
+
+    # --- an SPN another account holds -----------------------------------------
+    - name: Refuse an SPN another account already holds
+      block:
+        - name: Ask for the squatter's SPN on a new account
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.mssql_prereqs
+          vars:
+            mssql_prereqs_groups: []
+            mssql_prereqs_accounts:
+              - name: svc-dup-lab
+                password: "{{ lab_sql.password }}"
+                spn_sets:
+                  - hosts: ["squat.{{ lab_domain }}"]
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: mssql_prereqs gave svc-dup-lab an SPN {{ lab_sql.squatter }} holds
+      rescue:
+        - name: Keep the refusal
+          ansible.builtin.set_fact:
+            lab_refusal: "{{ ansible_failed_result }}"
+
+        - name: Read whether the account was created
+          ansible.windows.win_powershell:
+            script: "{{ lab_read_script }}"
+            parameters:
+              Users: [svc-dup-lab]
+            depth: 5
+          register: lab_dup_read
+
+        - name: Check the refusal named the holder and wrote nothing
+          ansible.builtin.assert:
+            that:
+              - lab_refusal.msg | default('') is search(lab_sql.squatter)
+              - lab_refusal.msg | default('') is search(lab_sql.squatted_spn | lower)
+              - lab_dup_read.output[0].missing == ['svc-dup-lab']
+            fail_msg: "Refusal {{ lab_refusal.msg | default(lab_refusal) | string }}; read {{ lab_dup_read.output[0] | to_json }}"
+
+    # --- report only -------------------------------------------------------------
+    - name: Plan a new account without creating it
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+      vars:
+        mssql_prereqs_report_only: true
+        mssql_prereqs_accounts: "{{ lab_accounts + [lab_planned] }}"
+        lab_planned:
+          name: svc-plan-lab
+          password: "{{ lab_sql.password }}"
+          spn_sets:
+            - hosts: ["sql03.{{ lab_domain }}"]
+
+    - name: Read whether the planned account exists
+      ansible.windows.win_powershell:
+        script: "{{ lab_read_script }}"
+        parameters:
+          Users: [svc-plan-lab]
+        depth: 5
+      register: lab_plan_read
+
+    - name: Check the plan reported the account and created nothing
+      ansible.builtin.assert:
+        that:
+          - mssql_prereqs__users_result is changed
+          - mssql_prereqs__users_result.results | selectattr('changed') | map(attribute='item.name') | list == ['svc-plan-lab']
+          - mssql_prereqs__gmsas_result is not changed
+          - mssql_prereqs__groups_result is not changed
+          - lab_plan_read.output[0].missing == ['svc-plan-lab']
+        fail_msg: >-
+          Plan: users {{ mssql_prereqs__users_result.results | selectattr('changed') | map(attribute='item.name') | list }},
+          gMSAs changed {{ mssql_prereqs__gmsas_result.changed }}, groups changed {{ mssql_prereqs__groups_result.changed }};
+          read {{ lab_plan_read.output[0] | to_json }}
+
+    # --- add keeps an SPN the role doesn't list; exclusive removes it ----------
+    - name: Give svc-sqldb-lab an SPN outside lab_accounts
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name, [string]$Spn)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $user = Get-ADUser -Identity $Name -Properties servicePrincipalName
+          if ($user.servicePrincipalName -notcontains $Spn) {
+              Set-ADUser -Identity $Name -ServicePrincipalNames @{ Add = $Spn }
+              $Ansible.Changed = $true
+          }
+        parameters:
+          Name: svc-sqldb-lab
+          Spn: "{{ lab_extra_spn }}"
+
+    - name: Converge again, adding only
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+
+    - name: Read the SPNs after adding only
+      ansible.windows.win_powershell:
+        script: "{{ lab_read_script }}"
+        parameters:
+          Users: [svc-sqldb-lab]
+        depth: 5
+      register: lab_add_read
+
+    - name: Check the extra SPN stayed and nothing changed
+      ansible.builtin.assert:
+        that:
+          - lab_extra_spn | lower in lab_add_read.output[0].users['svc-sqldb-lab'].spns
+          - mssql_prereqs__users_result is not changed
+          - mssql_prereqs__gmsas_result is not changed
+          - mssql_prereqs__groups_result is not changed
+        fail_msg: "Read {{ lab_add_read.output[0] | to_json }}"
+
+    - name: Converge with exclusive lists
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+      vars:
+        mssql_prereqs_exclusive: true
+
+    - name: Read the SPNs after the exclusive run
+      ansible.windows.win_powershell:
+        script: "{{ lab_read_script }}"
+        parameters:
+          Users: [svc-sqldb-lab]
+        depth: 5
+      register: lab_exclusive_read
+
+    - name: Check exclusive removed only the extra SPN
+      ansible.builtin.assert:
+        that:
+          - lab_exclusive_read.output[0].users['svc-sqldb-lab'].spns | sort == lab_expected_spns['svc-sqldb-lab'] | map('lower') | sort
+          - mssql_prereqs__users_result is changed
+          # The gMSA's and the groups' lists were already exact.
+          - mssql_prereqs__gmsas_result is not changed
+          - mssql_prereqs__groups_result is not changed
+        fail_msg: "Read {{ lab_exclusive_read.output[0] | to_json }}"
+
+    - name: Converge with exclusive lists again
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+      vars:
+        mssql_prereqs_exclusive: true
+
+    - name: Check the repeat changed nothing
+      ansible.builtin.assert:
+        that:
+          - mssql_prereqs__users_result is not changed
+          - mssql_prereqs__gmsas_result is not changed
+          - mssql_prereqs__groups_result is not changed
+        fail_msg: >-
+          A repeat exclusive run changed users {{ mssql_prereqs__users_result.changed }},
+          gMSAs {{ mssql_prereqs__gmsas_result.changed }}, groups {{ mssql_prereqs__groups_result.changed }}

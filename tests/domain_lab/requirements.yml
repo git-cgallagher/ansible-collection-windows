@@ -1,5 +1,5 @@
 collections:
   - name: ansible.windows   # win_powershell, win_file, win_regedit, win_reboot (and the roles under test)
     version: '>=2.0.0'
-  - name: microsoft.ad      # git_cgallagher.molecule.ad_forest promotes the VM with microsoft.ad.domain
-    version: '>=1.6.0'
+  - name: microsoft.ad      # ad_forest promotes the VM (microsoft.ad.domain); mssql_prereqs needs kds_root_key (1.11.0)
+    version: '>=1.11.0'

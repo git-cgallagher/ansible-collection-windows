@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.12.0 — 2026-11-02
+
+A new area, **SQL Server**, starts with the role `mssql_prereqs` (issue #48
+plans the rest: `mssql` for standalone instances and FCIs, `mssql_ag` for
+availability groups, and the `wsfc` changes they need).
+
+- `mssql_prereqs` creates or converges the Active Directory accounts SQL
+  Server runs under, before SQL Server is installed. Domain user accounts
+  (password set only on creation, never expires, user can't change it) and
+  gMSAs (DNS host name, AES-only Kerberos, the principals allowed to retrieve
+  the password) come from one list. Each account gets the `MSSQLSvc` SPNs
+  built from its host names, port and instance name: default and named
+  instances, short names and extra SPNs. Optional security groups are created
+  first, so a gMSA can name one of them.
+- Nothing is written until the whole list validates and Active Directory has
+  been read. An SPN listed twice, or already held by another account, stops
+  the run and names the holder. With a gMSA listed, the forest's KDS root key
+  is checked (`check`), created (`create`, for labs) or ignored (`skip`).
+- Lists add by default; `mssql_prereqs_exclusive: true` makes the SPN,
+  retrieve-password and group-member lists exact. Passwords never appear in a
+  loop item, and `mssql_prereqs_report_only` (or `--check`) plans without
+  writing.
+- `tasks/plan.yml` (defaults, SPNs, validation) needs no Windows host, so the
+  `argument-specs` workflow tests it, every refusal included. A new
+  `domain-lab` job, `molecule (mssql_prereqs)`, runs the role against a fresh
+  forest.
+- **New dependency:** `microsoft.ad` 1.11.0 or later (in `galaxy.yml` and
+  `requirements.yml`), for `kds_root_key`; gMSAs need its `service_account`.
+  The lab's requirements move to the same minimum.
+
 ## 0.10.1 — 2026-11-02
 
 No module or role changes. The domain labs move to molecule-git-cgallagher

@@ -1,0 +1,112 @@
+---
+- name: Promote the VM to the first DC of a new forest
+  ansible.builtin.import_playbook: ../../../../tests/domain_lab/promote.yml
+
+- name: Prepare the forest for the role
+  hosts: all
+  gather_facts: false
+  tasks:
+    # A re-run of prepare on the same VM (molecule prepare --force) has to
+    # start converge from nothing; on a fresh VM these change nothing.
+    - name: Remove the user accounts a previous run created
+      microsoft.ad.user:
+        identity: "{{ item }}"
+        state: absent
+      loop: [svc-sqldb-lab, svc-sqlinst-lab, svc-dup-lab, svc-plan-lab]
+
+    - name: Remove the gMSA a previous run created
+      microsoft.ad.service_account:
+        identity: gmsa-sqlagt$
+        state: absent
+
+    - name: Remove the groups a previous run created
+      microsoft.ad.group:
+        identity: "{{ item }}"
+        state: absent
+      loop: [GG-SQL-Hosts-Lab, GG-SQL-Admins-Lab]
+
+    # verify.yml asks the role for this SPN on another account and expects a
+    # refusal that names this one.
+    - name: Create the account that already holds an SPN
+      microsoft.ad.user:
+        identity: "{{ lab_sql.squatter }}"
+        name: "{{ lab_sql.squatter }}"
+        sam_account_name: "{{ lab_sql.squatter }}"
+        password: "{{ lab_sql.password }}"
+        update_password: on_create
+        spn:
+          set: ["{{ lab_sql.squatted_spn }}"]
+
+    - name: Count the forest's KDS root keys
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          @(Get-KdsRootKey).Count
+      register: lab_kds_before
+
+    # Only on a fresh forest, before a key exists: check refuses the gMSA, and
+    # create plans a key (in check mode: a real key would only become usable
+    # 10 hours later, and the gMSA needs one now).
+    - name: Exercise the role before the forest has a KDS root key
+      when: lab_kds_before.output[0] | int == 0
+      block:
+        - name: Refuse a gMSA when the forest has no key
+          block:
+            - name: Run the role with check
+              ansible.builtin.include_role:
+                name: git_cgallagher.windows.mssql_prereqs
+              vars:
+                mssql_prereqs_kds_root_key: check
+
+            - name: Fail because the role ran on
+              ansible.builtin.fail:
+                msg: mssql_prereqs created a gMSA in a forest without a KDS root key
+          rescue:
+            - name: Check the role named the missing key
+              ansible.builtin.assert:
+                that: ansible_failed_result.msg | default('') is search('no KDS root key')
+                fail_msg: "Unexpected failure: {{ ansible_failed_result | to_json }}"
+
+        - name: Plan a key with create (report only)
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.mssql_prereqs
+          vars:
+            mssql_prereqs_kds_root_key: create
+            mssql_prereqs_report_only: true
+
+        - name: Check create planned a key and nothing was written
+          ansible.builtin.assert:
+            that:
+              - mssql_prereqs__kds_created is changed
+              - mssql_prereqs__users_result is changed
+              - mssql_prereqs__gmsas_result is changed
+              - mssql_prereqs__groups_result is changed
+            fail_msg: >-
+              The report-only run planned: KDS root key {{ mssql_prereqs__kds_created.changed | default('?') }},
+              users {{ mssql_prereqs__users_result.changed | default('?') }},
+              gMSAs {{ mssql_prereqs__gmsas_result.changed | default('?') }},
+              groups {{ mssql_prereqs__groups_result.changed | default('?') }}
+
+        - name: Count the KDS root keys after the plan
+          ansible.windows.win_powershell:
+            script: |
+              $Ansible.Changed = $false
+              @(Get-KdsRootKey).Count
+          register: lab_kds_after_plan
+
+        - name: Check the plan created no key
+          ansible.builtin.assert:
+            that: lab_kds_after_plan.output[0] | int == 0
+            fail_msg: The report-only run created a KDS root key
+
+    # The lab's own key, backdated so gMSAs work at once (the role's create
+    # mode makes keys that become usable only after the 10-hour wait).
+    - name: Create a KDS root key usable now (lab only)
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          if (@(Get-KdsRootKey).Count -eq 0) {
+              $null = Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+              $Ansible.Changed = $true
+          }

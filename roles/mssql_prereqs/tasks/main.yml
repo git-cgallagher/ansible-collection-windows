@@ -1,0 +1,176 @@
+---
+# Runs once, from the first host in the play: a domain controller, or a member
+# server with the ActiveDirectory PowerShell module. plan.yml fills in the
+# defaults, builds the SPNs and validates the whole list without touching
+# Active Directory; then this file reads (the KDS root keys, the SPNs on other
+# accounts) and only then writes: groups, the KDS root key, gMSAs, domain
+# users. Groups come first so a gMSA's retrieve_password can name one of them.
+- name: Plan the accounts and their SPNs
+  ansible.builtin.import_tasks: plan.yml
+  run_once: true
+
+- name: Check Active Directory, then create the accounts and their SPNs
+  run_once: true
+  block:
+    - name: Read the forest's KDS root keys
+      microsoft.ad.kds_root_key_info: {}
+      register: mssql_prereqs__kds
+      when:
+        - mssql_prereqs__need_kds | bool
+        - mssql_prereqs_kds_root_key != 'skip'
+
+    - name: Require a KDS root key before creating gMSAs
+      ansible.builtin.assert:
+        that: mssql_prereqs__kds.kds_root_keys | length > 0
+        fail_msg: >-
+          The forest has no KDS root key, which gMSAs need. Create one (Add-KdsRootKey; a key becomes usable 10 hours
+          after its effective time), or set mssql_prereqs_kds_root_key to create.
+        quiet: true
+      when:
+        - mssql_prereqs__need_kds | bool
+        - mssql_prereqs_kds_root_key == 'check'
+
+    # One query per account: any other object holding one of its SPNs. The
+    # filter leaves out the account itself, or a re-run would find its own SPNs.
+    - name: Look for the SPNs on other accounts
+      microsoft.ad.object_info:
+        ldap_filter: >-
+          (&(|{{ mssql_prereqs__spns[item.name] | map('regex_replace', '^', '(servicePrincipalName=')
+          | map('regex_replace', '$', ')') | join('') }})(!(sAMAccountName={{ item.name }}{{ '$' if item.type == 'gmsa' else '' }})))
+        properties: [sAMAccountName, servicePrincipalName]
+        domain_server: "{{ mssql_prereqs_domain_server | default(omit, true) }}"
+        domain_username: "{{ mssql_prereqs_domain_username | default(omit, true) }}"
+        domain_password: "{{ mssql_prereqs_domain_password | default(omit, true) }}"
+      loop: "{{ mssql_prereqs__accounts | selectattr('state', 'equalto', 'present') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: mssql_prereqs__spns[item.name] | length > 0
+      register: mssql_prereqs__spn_holders
+
+    - name: Refuse SPNs another account already holds
+      ansible.builtin.assert:
+        that: mssql_prereqs__clashes | length == 0
+        fail_msg: >-
+          These SPNs already belong to other accounts, and an SPN on two accounts breaks Kerberos for both. Remove
+          them there first, or from mssql_prereqs_accounts: {{ mssql_prereqs__clashes | join('; ') }}.
+        quiet: true
+      vars:
+        # One "<account> wants <SPNs> (held by <holder>)" per clash. A
+        # single-valued attribute may come back as a string, hence the flatten.
+        # Built in a namespace: a template of nothing but loop tags renders to
+        # None, not '', when the loop outputs nothing (seen on ansible-core 2.21).
+        mssql_prereqs__clashes: >-
+          {%- set found = namespace(lines=[]) -%}
+          {%- for result in mssql_prereqs__spn_holders.results | default([]) if result.objects | default([]) | length > 0 -%}
+          {%- for holder in result.objects -%}
+          {%- set wanted = ([holder.servicePrincipalName | default([])] | flatten | map('lower') | list)
+                | intersect(mssql_prereqs__spns[result.item.name] | map('lower') | list) -%}
+          {%- set found.lines = found.lines + [result.item.name ~ ' wants ' ~ (wanted | join(', ')) ~ ' (held by '
+                ~ (holder.sAMAccountName | default(holder.DistinguishedName)) ~ ')'] -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ found.lines }}
+
+    - name: Create or converge the groups
+      microsoft.ad.group:
+        identity: "{{ item.name }}"
+        name: "{{ item.name }}"
+        scope: "{{ item.scope | default('global') }}"
+        category: security
+        path: "{{ item.path | default(omit, true) }}"
+        description: "{{ item.description | default(omit, true) }}"
+        members: "{{ mssql_prereqs__members if mssql_prereqs__members else omit }}"
+        state: "{{ item.state | default('present') }}"
+        domain_server: "{{ mssql_prereqs_domain_server | default(omit, true) }}"
+        domain_username: "{{ mssql_prereqs_domain_username | default(omit, true) }}"
+        domain_password: "{{ mssql_prereqs_domain_password | default(omit, true) }}"
+      vars:
+        # An empty list is sent only when the lists are exclusive: an empty
+        # "set" clears the attribute.
+        mssql_prereqs__members: >-
+          {{ {mssql_prereqs__list_mode: item.members | default([])}
+             if item.state | default('present') == 'present'
+                and (item.members | default([]) | length > 0 or mssql_prereqs_exclusive | bool)
+             else {} }}
+      loop: "{{ mssql_prereqs_groups }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: mssql_prereqs__groups_result
+      check_mode: "{{ mssql_prereqs__check_mode }}"
+
+    - name: Create a KDS root key when the forest has none
+      microsoft.ad.kds_root_key:
+        effective_time_hours: "{{ mssql_prereqs_kds_root_key_effective_time_hours }}"
+        state: present
+      register: mssql_prereqs__kds_created
+      when:
+        - mssql_prereqs__need_kds | bool
+        - mssql_prereqs_kds_root_key == 'create'
+      check_mode: "{{ mssql_prereqs__check_mode }}"
+
+    - name: Create or converge the gMSAs
+      microsoft.ad.service_account:
+        # A gMSA's sAMAccountName ends in "$"; the module doesn't add it to identity.
+        identity: "{{ item.name }}$"
+        name: "{{ item.name }}"
+        path: "{{ item.path | default(omit, true) }}"
+        description: "{{ item.description | default(omit, true) }}"
+        dns_hostname: "{{ item.dns_hostname | default(omit, true) }}"
+        kerberos_encryption_types: "{{ {'set': ['aes128', 'aes256']} if item.state == 'present' else omit }}"
+        allowed_to_retrieve_password: "{{ mssql_prereqs__retrievers if mssql_prereqs__retrievers else omit }}"
+        spn: "{{ mssql_prereqs__spn_change if mssql_prereqs__spn_change else omit }}"
+        state: "{{ item.state }}"
+        domain_server: "{{ mssql_prereqs_domain_server | default(omit, true) }}"
+        domain_username: "{{ mssql_prereqs_domain_username | default(omit, true) }}"
+        domain_password: "{{ mssql_prereqs_domain_password | default(omit, true) }}"
+      vars:
+        mssql_prereqs__retrievers: >-
+          {{ {mssql_prereqs__list_mode: item.retrieve_password}
+             if item.state == 'present' and (item.retrieve_password | length > 0 or mssql_prereqs_exclusive | bool)
+             else {} }}
+        mssql_prereqs__spn_change: >-
+          {{ {mssql_prereqs__list_mode: mssql_prereqs__spns[item.name]}
+             if item.state == 'present' and (mssql_prereqs__spns[item.name] | length > 0 or mssql_prereqs_exclusive | bool)
+             else {} }}
+      loop: "{{ mssql_prereqs__accounts | selectattr('type', 'equalto', 'gmsa') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: mssql_prereqs__gmsas_result
+      check_mode: "{{ mssql_prereqs__check_mode }}"
+
+    - name: Create or converge the domain user accounts
+      microsoft.ad.user:
+        identity: "{{ item.name }}"
+        name: "{{ item.name }}"
+        sam_account_name: "{{ item.name }}"
+        upn: "{{ item.upn | default(omit, true) }}"
+        path: "{{ item.path | default(omit, true) }}"
+        description: "{{ item.description | default(omit, true) }}"
+        # Looked up by name, so the loop's item never carries it; the module
+        # keeps it out of its own output.
+        password: "{{ (mssql_prereqs_accounts | selectattr('name', 'equalto', item.name) | first).password | default(omit, true) }}"
+        update_password: on_create
+        password_never_expires: true
+        user_cannot_change_password: true
+        spn: "{{ mssql_prereqs__spn_change if mssql_prereqs__spn_change else omit }}"
+        state: "{{ item.state }}"
+        domain_server: "{{ mssql_prereqs_domain_server | default(omit, true) }}"
+        domain_username: "{{ mssql_prereqs_domain_username | default(omit, true) }}"
+        domain_password: "{{ mssql_prereqs_domain_password | default(omit, true) }}"
+      vars:
+        mssql_prereqs__spn_change: >-
+          {{ {mssql_prereqs__list_mode: mssql_prereqs__spns[item.name]}
+             if item.state == 'present' and (mssql_prereqs__spns[item.name] | length > 0 or mssql_prereqs_exclusive | bool)
+             else {} }}
+      loop: "{{ mssql_prereqs__accounts | selectattr('type', 'equalto', 'user') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: mssql_prereqs__users_result
+      check_mode: "{{ mssql_prereqs__check_mode }}"
+
+    - name: Report the accounts and their SPNs
+      ansible.builtin.debug:
+        msg:
+          - "planned only: {{ mssql_prereqs__check_mode }}"
+          - "accounts: {{ mssql_prereqs__accounts | map(attribute='name') | list }}"
+          - "SPNs: {{ mssql_prereqs__spns }}"

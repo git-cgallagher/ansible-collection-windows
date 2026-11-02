@@ -76,6 +76,7 @@ jobs:
           - {name: gpo_backup, workdir: roles/gpo_backup, scenario: default, vm: dc01}
           - {name: gpo_import, workdir: roles/gpo_import, scenario: default, vm: dc01}
           - {name: wsfc, workdir: roles/wsfc, scenario: default, vm: dc01}
+          - {name: mssql_prereqs, workdir: roles/mssql_prereqs, scenario: default, vm: dc01}
           - {name: iis, workdir: tests/integration, scenario: iis, vm: iis01}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

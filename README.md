@@ -7,6 +7,7 @@ Each area's roles and modules carry its prefix.
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; module `gpo_export` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
 | [Failover clustering](#failover-clustering) | role `wsfc`, module `wsfc_cluster` | Build a Windows Server Failover Cluster and converge its networks, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups |
+| [SQL Server](#sql-server) | role `mssql_prereqs` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
@@ -306,6 +307,39 @@ actions are the diff) and without ever removing what the options don't list.
         wsfc_quorum: {type: file_share_witness, path: '\\fs01.example.com\witness$\AGCLU01'}
         wsfc_become_user: EXAMPLE\svc-cluster-build
         wsfc_become_password: "{{ vault_cluster_build_password }}"
+```
+
+## SQL Server
+
+`mssql_prereqs` creates the Active Directory side of a SQL Server
+deployment, before SQL Server is installed: the service accounts, as domain
+users or group managed service accounts (gMSAs), and the `MSSQLSvc` SPNs
+Kerberos needs, built from host names, port and instance name. It refuses an
+SPN another account already holds, checks the forest's KDS root key when a
+gMSA is listed, and plans without writing under `--check`. It runs once, on
+a domain controller (or a member server with the ActiveDirectory PowerShell
+module). The [role README](roles/mssql_prereqs/README.md) covers SPNs for
+standalone instances, FCIs and availability groups, gMSAs and the KDS root
+key, and the add and exclusive list modes. The roles that install and
+cluster SQL Server itself are planned in
+[issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48).
+
+```yaml
+- name: SQL Server prerequisites in Active Directory
+  hosts: dc01.example.com
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.windows.mssql_prereqs
+      vars:
+        mssql_prereqs_accounts:
+          - name: svc-sqldb-ag01
+            password: "{{ vault_svc_sqldb_ag01 }}"
+            spn_sets:
+              - hosts: [sql01.example.com, sql02.example.com, ag01-lsn.example.com]
+          - name: gmsa-sqlagt-ag01
+            type: gmsa
+            dns_hostname: gmsa-sqlagt-ag01.example.com
+            retrieve_password: [SQL01$, SQL02$]
 ```
 
 ## IIS
