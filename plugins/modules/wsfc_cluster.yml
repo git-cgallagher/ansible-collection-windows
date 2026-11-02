@@ -3,7 +3,8 @@ DOCUMENTATION:
   short_description: Create a Windows Server Failover Cluster and converge its configuration
   description:
     - Creates a Windows Server Failover Cluster from the nodes named, or adds the nodes an existing cluster is missing, and
-      brings the cluster's networks, common properties, named shared disks and quorum witness in line with the options.
+      brings the cluster's networks, sites, node votes, common properties, named shared disks and quorum witness in line
+      with the options.
     - Runs on one of the cluster's nodes (the managing node), which needs the Failover Clustering feature and its
       PowerShell tools (C(Failover-Clustering), C(RSAT-Clustering-PowerShell)). It reaches the cluster through a node name,
       never the cluster name, so a cluster without an administrative access point works too.
@@ -11,10 +12,10 @@ DOCUMENTATION:
       cluster yet it runs C(Test-Cluster) (unless O(validate=false)), then C(New-Cluster) with C(-NoStorage). When some are
       missing from the cluster it validates and runs C(Add-ClusterNode) for them. Nodes in the cluster that O(nodes) doesn't
       name are reported in a warning and left in place.
-    - Never removes nodes, disks, networks or witnesses that the options don't list.
+    - Never removes nodes, sites, disks, networks or witnesses that the options don't list.
     - Every action is listed in RV(actions), and in diff mode as the diff. In check mode the actions are planned and nothing
-      is changed; a cluster that doesn't exist yet stops the plan after its creation, because its networks, properties,
-      disks and quorum can't be read before it exists.
+      is changed; a cluster that doesn't exist yet stops the plan after its creation, because its networks, sites,
+      properties, disks and quorum can't be read before it exists.
   version_added: 0.7.0
   author:
     - Chris Gallagher (@git-cgallagher)
@@ -113,6 +114,23 @@ DOCUMENTATION:
           description:
             - Azure service endpoint for V(cloud_witness); leave it out for the public cloud (C(core.windows.net)).
           type: str
+        credential:
+          description:
+            - The account the cluster connects to a V(file_share_witness) share with, for a share outside the domain such as
+              one on a NAS (Windows Server 2019 and later). Leave it out for a share the cluster name object can reach.
+            - A credential can't be read back, so it is only sent when the witness is set or its path changes.
+          type: dict
+          suboptions:
+            username:
+              description:
+                - The account's name, in the form the share's host expects.
+              type: str
+              required: true
+            password:
+              description:
+                - The account's password. Never logged or returned.
+              type: str
+              required: true
     networks:
       description:
         - Cluster networks to name and give a role, matched by subnet. Networks not listed are left alone, and a subnet no
@@ -145,6 +163,48 @@ DOCUMENTATION:
           V(CrossSubnetDelay) for multi-subnet availability groups, or V(ClusterLogSize).
         - Values are compared as strings with the current value; only differing properties are set. A name the cluster
           doesn't have fails the task.
+      type: dict
+    sites:
+      description:
+        - Site fault domains to create, and the nodes in each. With sites, a group fails over to a node in its own site
+          before one in another, and heartbeats between sites can be tuned with the C(CrossSiteDelay) and
+          C(CrossSiteThreshold) common properties (see O(properties)).
+        - Sites match by name, without case. A missing site is created, and a listed node in another site, or in none, is
+          moved into its own. A site the cluster has that this doesn't list is reported in a warning and left in place,
+          and so is the site of a node no site lists.
+        - Nodes and sites share one set of fault domain names, so a site can't have a node's name.
+        - The fault domain cmdlets act on the cluster of the node they run on, so a check-mode run that would add the
+          managing node to the cluster leaves sites to the next run, with a warning.
+      type: list
+      elements: dict
+      suboptions:
+        name:
+          description:
+            - Site name, for example V(DC1).
+          type: str
+          required: true
+        nodes:
+          description:
+            - The nodes in the site, by name. A node belongs to one site, and must be in the cluster or in O(nodes).
+          type: list
+          elements: str
+        description:
+          description:
+            - Site description, for example the datacenter's location. Kept as it is when this is left out.
+          type: str
+    preferred_site:
+      description:
+        - The cluster's preferred site (its C(PreferredSite) property), for example the primary datacenter. Groups start in
+          it on a cold start, and in a tie between sites, dynamic quorum takes votes from the other sites first so the
+          preferred site keeps the cluster running.
+        - One of O(sites), or a site the cluster already has. Set it here or in O(properties), not both; leave it out to
+          keep the current value.
+      type: str
+    node_weights:
+      description:
+        - Node votes (C(NodeWeight)) by node name. V(1) gives a node a quorum vote and V(0) takes it away, for example from
+          disaster recovery nodes that mustn't keep the cluster running on their own. Nodes not listed keep their vote.
+        - Dynamic quorum still adjusts the votes of the nodes that have one.
       type: dict
     disks:
       description:
@@ -265,6 +325,30 @@ EXAMPLES: |
         type: cloud_witness
         account_name: examplewitness
         access_key: "{{ vault_witness_access_key }}"
+
+  - name: Build an availability group's cluster on a subnet stretched across two datacenters, with a witness in a third
+    git_cgallagher.windows.wsfc_cluster:
+      name: AGCLU02
+      nodes: [AG11, AG12, AG21, AG22]
+      static_addresses: [10.10.10.70]
+      validate_ignore: [Storage]
+      sites:
+        - {name: DC1, nodes: [AG11, AG12], description: Primary datacenter}
+        - {name: DC2, nodes: [AG21, AG22], description: Secondary datacenter}
+      preferred_site: DC1
+      properties:
+        CrossSiteDelay: 1000
+        CrossSiteThreshold: 20
+      quorum:
+        type: file_share_witness
+        path: \\witness.example.com\witness$\AGCLU02
+
+  - name: Take the quorum vote from a disaster recovery node
+    git_cgallagher.windows.wsfc_cluster:
+      name: AGCLU01
+      nodes: [AG01, AG02, AG03]
+      node_weights:
+        AG03: 0
 
   - name: Plan the changes to an existing cluster without making them
     git_cgallagher.windows.wsfc_cluster:

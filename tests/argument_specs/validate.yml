@@ -71,11 +71,27 @@
           wsfc_networks:
             - {subnet: 10.10.10.0/24, name: Client, role: cluster_and_client, metric: 1000}
           wsfc_properties: {SameSubnetThreshold: 20}
+          wsfc_sites:
+            - {name: DC1, nodes: [sql01], description: Primary datacenter}
+            - {name: DC2, nodes: [sql02]}
+            - {name: DC3}
+          wsfc_preferred_site: DC1
+          wsfc_node_weights: {sql02: 0}
           wsfc_disks:
             - {name: SQL Data, unique_id: 60003FF44DC75ADC8C3A5E1C1A0A9B01, initialize: true, file_system: ReFS}
           wsfc_report_only: true
           wsfc_become_user: EXAMPLE\svc-cluster-build
           wsfc_become_password: example-not-secret
+
+    - name: Accept a wsfc file share witness with a credential
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_cluster }}"
+        provided_arguments:
+          wsfc_name: SQLCLU01
+          wsfc_quorum:
+            type: file_share_witness
+            path: '\\nas01.example.com\witness'
+            credential: {username: witness, password: example-not-secret}
 
     # --- invalid input is rejected by the roles themselves --------------------------
     - name: Accept a minimal wsfc_fileserver call
@@ -255,6 +271,67 @@
             that:
               - ansible_failed_result.argument_errors is not defined
               - ansible_failed_result.msg | default('') is search('needs a type')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a wsfc site without a name
+      block:
+        - name: Include wsfc with a nameless site
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+          vars:
+            wsfc_name: SQLCLU01
+            wsfc_sites:
+              - nodes: [sql01]
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc accepted a site without a name
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('name')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a wsfc witness credential without a password
+      block:
+        - name: Include wsfc with a passwordless witness credential
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+          vars:
+            wsfc_name: SQLCLU01
+            wsfc_quorum:
+              type: file_share_witness
+              path: '\\nas01.example.com\witness'
+              credential: {username: witness}
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc accepted a witness credential without a password
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('password')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    # A spec can't limit a dict's values; the role's first task does.
+    - name: Reject a wsfc node weight other than 0 or 1
+      block:
+        - name: Include wsfc with a node weight of 2
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+          vars:
+            wsfc_name: SQLCLU01
+            wsfc_node_weights: {sql01: 2}
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: wsfc accepted a node weight of 2
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('must be 0 or 1')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
     - name: Reject a wsfc disk without a unique_id

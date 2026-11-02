@@ -8,10 +8,11 @@
       - wsfc_name | length <= 15
       - wsfc_manage_node | length == 0 or wsfc_manage_node in ansible_play_hosts_all
       - wsfc_quorum | length == 0 or wsfc_quorum.type | default('', true) | length > 0
+      - wsfc_node_weights | dict2items | map(attribute='value') | map('string') | reject('in', ['0', '1']) | list | length == 0
     fail_msg: >-
       wsfc_name must be non-empty and at most 15 characters (a NetBIOS name),
-      wsfc_manage_node, when set, must be a host in this play, and wsfc_quorum, when
-      set, needs a type
+      wsfc_manage_node, when set, must be a host in this play, wsfc_quorum, when
+      set, needs a type, and every wsfc_node_weights value must be 0 or 1
     quiet: true
 
 # --- every node ------------------------------------------------------------------
@@ -64,6 +65,9 @@
     quorum: "{{ wsfc_quorum }}"
     networks: "{{ wsfc_networks }}"
     properties: "{{ wsfc_properties }}"
+    sites: "{{ wsfc_sites }}"
+    preferred_site: "{{ wsfc_preferred_site }}"
+    node_weights: "{{ wsfc_node_weights }}"
     disks: "{{ wsfc_disks }}"
   vars:
     wsfc_node_names: >-

@@ -29,8 +29,9 @@ Its second area is **failover clustering** (0.3.0):
 
 - `roles/wsfc` — install Failover Clustering on every host in the
   play, then from one managing node validate, create the cluster (or add
-  missing nodes) and converge networks, common properties, named shared
-  disks and the quorum witness, through the `wsfc_cluster` module
+  missing nodes) and converge networks, sites and node votes (0.13.0),
+  common properties, named shared disks and the quorum witness, through the
+  `wsfc_cluster` module
   (`plugins/modules/wsfc_cluster.ps1`, which was the role's
   `files/converge_cluster.ps1` until 0.7.0). It's the base
   for file servers, SQL Server FCIs and AGs; it doesn't install SQL Server or
@@ -153,11 +154,13 @@ role):
   drift fix, then the `wsfc_cluster` module's integration target
   (`tests/integration/targets/wsfc_cluster`, with `setup_wsfc`): its own
   cluster planned in check mode, created, converged and drifted, with the
-  repeat-changes-nothing check after each change, and the error messages.
+  repeat-changes-nothing check after each change, and the error messages;
+  then sites, a preferred site and the node's vote the same way (0.13.0).
 - `roles/wsfc_fileserver/molecule/default`: **three VMs** on a lab network
   (dc01 = DC + iSCSI target + client, node1/node2 joined): `wsfc` builds a
   two-node cluster (AD access point, static address, storage validation, two
-  formatted iSCSI disks, disk witness, management network role 0), then
+  formatted iSCSI disks, disk witness, management network role 0, a site
+  per node with DC1 preferred and node2's vote taken), then
   `wsfc_fileserver` a file server with two shares; idempotence, `validate`
   from dc01, `failover` there and back, and a report-only plan and drift fix.
   It's `wsfc`'s multi-node coverage and the slowest job (about 35 minutes
@@ -216,7 +219,8 @@ Not covered by the lab yet (issue #16 unless noted):
   multi-query WMI filters aren't supported (#13)
 - `wsfc` (#19): adding a node to an existing cluster (the lab creates both
   in one `New-Cluster`), the `Dns` access point, multi-subnet clusters, CSVs,
-  file share and cloud witnesses, and a failing `Test-Cluster` (its failure
+  file share and cloud witnesses (and a file share witness's `credential`),
+  failover between sites, and a failing `Test-Cluster` (its failure
   detection matches `ClusterNotApproved` in the warning stream, unconfirmed).
   The three-VM scenario covers the rest of what #19 listed.
 - `wsfc_fileserver`: Scale-Out File Server (not built), adding a disk to an
@@ -259,7 +263,14 @@ lab to the scripts — and record the surprise below as a gotcha.
   `Get-DeletedGpoEntry`), the import decision (`Get-GpoImportReason`) and the
   link plan (`Get-GpoLinkPlan`). A module keeps only what talks to Windows
   (and `Ansible.Basic`); new pure logic goes in the util, with a test.
-  `wsfc_cluster.ps1` shares nothing with them.
+- The clustering modules share `plugins/module_utils/_WsfcCommon.psm1`
+  (0.13.0, issue #48's W9): the helpers that were inside `wsfc_cluster.ps1`
+  (`Get-ShortName`, `Get-Setting`, `Get-ResourceTypeName`,
+  `Test-NetworkMatch`) and the site and vote planners (`Get-WsfcSitePlan`,
+  `Get-WsfcNodeWeightPlan`), which take what the cluster reports as plain
+  hashtables and return the changes. The coming `wsfc_group` module and the
+  SQL Server modules use it too, rather than copies. Lists in it are made
+  with `[System.Collections.Generic.List[object]]::new()` (see Gotchas).
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -371,7 +382,8 @@ lab to the scripts — and record the surprise below as a gotcha.
   owner dropped the hygiene gate PR 46 first proposed, 2026-11-01): it's a
   rule every change follows, so a PR that adds or changes a role or module
   adds or updates its tests in the same PR. Still owed: the unit tests of
-  `wsfc_cluster`, `iis_mime_type` and `iis_mime_type_info` (issue #47).
+  `iis_mime_type` and `iis_mime_type_info` (issue #47); `wsfc_cluster`'s
+  arrived with 0.13.0.
 - **A module's unit tests** are Pester 5, in
   `tests/unit/plugins/modules/<name>.Tests.ps1`, with shared code's in
   `tests/unit/plugins/module_utils/<util>.Tests.ps1`; the `powershell` CI job
@@ -523,6 +535,43 @@ ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **pwsh 7.6 can't `@()` a `List[object]` made with `New-Object`.**
+  `@($list)` throws `ArgumentException: Argument types do not match` (from
+  `PSToObjectArrayBinder`) when `$list` came from `New-Object
+  System.Collections.Generic.List[object]`, whose result is wrapped in a
+  PSObject; a `List[string]` and a list made with `::new()` are fine. The
+  Pester run in ansible-test's container (pwsh 7.6.0) caught it in
+  `_WsfcCommon.psm1` (0.13.0); Windows PowerShell 5.1 doesn't have the bug.
+  In code Pester runs, make lists with
+  `[System.Collections.Generic.List[object]]::new()`.
+
+- **The fault domain cmdlets are CIM cmdlets without `-Cluster`.**
+  `Get-`/`New-`/`Set-ClusterFaultDomain` act on the cluster of the node they
+  run on, so `wsfc_cluster` plans sites only once the managing node is a
+  member. Their reference doesn't document the returned objects. The lab
+  (Windows Server 2022; PR #55's integration target logs every property)
+  showed `root/MSCLUSTER:MSCluster_FaultDomain` instances whose CIM `Type`
+  is numeric (Site 1000, Node 4000) while PowerShell's `Type` property reads
+  `Site`/`Node`. `ParentName` holds the parent's name; `Parent` and
+  `FaultDomain` hold a CIM reference, whose string is
+  `MSCluster_FaultDomain (Id = "…")`, never a name. A node's fault domain is
+  named by its short computer name, and `(Get-Cluster).PreferredSite` reads
+  back as the site's name, a string. The module still takes types from the
+  documented `-Type` filter, matches nodes by short name (Microsoft's
+  examples also show FQDNs) and translates a preferred site given as an ID:
+  cheap insurance for other versions. The parameters are
+  `-FaultDomainType` (alias `-Type`) and `-FaultDomain` (alias `-Parent`).
+  The labs' read scripts read sites through `Get-ClusterFaultDomainXML`, a
+  different path from the module's.
+
+- **A domain cluster starts with a site of its own.** On the three-VM lab
+  (Windows Server 2022, AD access point) `New-Cluster` created
+  `Site 10.42.0.0/24`, named after the nodes' subnet, with both nodes in
+  it; the one-node workgroup cluster got none. `wsfc_sites` moves the nodes
+  out, and the empty site stays, reported on each run (nothing is ever
+  removed). The labs log `AutoAssignNodeSite`; whether the cluster later
+  re-places nodes on its own is unconfirmed (the idempotence run saw none).
 
 - **A cluster lab's shared disks come from an iSCSI target on the DC**, not
   from the driver: `FS-iSCSITarget-Server` on dc01 serves VHDX virtual disks,
