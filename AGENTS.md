@@ -691,3 +691,10 @@ ansible-galaxy collection build --force
   (`Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)`, in
   `mssql_prereqs`' prepare). `mssql_prereqs_kds_root_key: create` makes a
   key that waits the 10 hours.
+- **`Get-KdsRootKey` emits `$null` when the forest has no key**, so a plain
+  `@(Get-KdsRootKey).Count` is 1 on a fresh forest. PR #52's first lab run
+  (2026-11-02) skipped its pre-key tests and its own key creation that way,
+  and the role then rightly found no key. Count with
+  `@(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count`.
+  (`microsoft.ad.kds_root_key_info` is fine: it loops over the cmdlet's
+  output, and PowerShell doesn't iterate over a lone `$null`.)

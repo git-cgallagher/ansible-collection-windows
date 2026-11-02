@@ -37,11 +37,14 @@
         spn:
           set: ["{{ lab_sql.squatted_spn }}"]
 
+    # Get-KdsRootKey emits $null when the forest has no key, so a plain
+    # @(Get-KdsRootKey).Count is 1 then (PR #52's first lab run); count
+    # only real keys.
     - name: Count the forest's KDS root keys
       ansible.windows.win_powershell:
         script: |
           $Ansible.Changed = $false
-          @(Get-KdsRootKey).Count
+          @(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count
       register: lab_kds_before
 
     # Only on a fresh forest, before a key exists: check refuses the gMSA, and
@@ -91,7 +94,7 @@
           ansible.windows.win_powershell:
             script: |
               $Ansible.Changed = $false
-              @(Get-KdsRootKey).Count
+              @(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count
           register: lab_kds_after_plan
 
         - name: Check the plan created no key
@@ -106,7 +109,7 @@
         script: |
           $ErrorActionPreference = 'Stop'
           $Ansible.Changed = $false
-          if (@(Get-KdsRootKey).Count -eq 0) {
+          if (@(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count -eq 0) {
               $null = Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
               $Ansible.Changed = $true
           }

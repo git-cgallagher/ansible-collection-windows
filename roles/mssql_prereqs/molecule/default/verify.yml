@@ -20,7 +20,7 @@
           gmsas = [ordered]@{}
           groups = [ordered]@{}
           missing = @()
-          kds_keys = @(Get-KdsRootKey).Count
+          kds_keys = @(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count
       }
       foreach ($name in $Users) {
           $user = Get-ADUser -Filter "sAMAccountName -eq '$name'" -Properties servicePrincipalName, PasswordNeverExpires, CannotChangePassword
