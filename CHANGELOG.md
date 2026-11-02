@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.1 — 2026-11-02
+
+No module or role changes. The domain labs move to molecule-git-cgallagher
+**v0.3.2** (`setup-molecule` and `vm-screendump` pinned to `3cefe7f`), whose
+`quiet_vm` no longer fails a prepare step when Windows refuses to stop
+Windows Update right after first boot
+([ansible-collection-molecule#18](https://github.com/git-cgallagher/ansible-collection-molecule/issues/18),
+seen in this repo's PR #46 `gpo_import` lab): it disables the service first,
+retries the stop, and warns instead of failing if Windows still refuses. It
+also waits out Windows Update Medic re-enabling the service shortly after
+boot. The local install lines in `AGENTS.md` and `tests/domain_lab/README.md`
+move to v0.3.2.
+
 ## 0.10.0 — 2026-11-01
 
 Every module has its own integration target (issue #44).
