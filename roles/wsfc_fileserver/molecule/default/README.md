@@ -41,7 +41,10 @@ commands run as the domain account `vagrant@gpolab.test` through `runas`
 become (the box's `vagrant` account became a Domain Admin when dc01 was
 promoted).
 
-Memory: three VMs at 2.5 GB each on GitHub's 16 GB runner. At 3 GB each, one
-run lost dc01's QEMU process during its first boot (an out-of-memory kill,
-unconfirmed); the workflow now prints host memory and kernel OOM kills when a
-job fails.
+Memory: three VMs at 2.5 GB each on GitHub's 16 GB runner, with about 9.7 GB
+left. On 2 of the first 9 runs one VM's QEMU process vanished during its first
+boot, and create waited out its 180 polls; the workflow's failure-only memory
+step showed no OOM kill, so the cause is unknown. The driver doesn't yet record
+why QEMU exited
+([ansible-collection-molecule issue 13](https://github.com/git-cgallagher/ansible-collection-molecule/issues/13)).
+Re-run the job when it happens.
