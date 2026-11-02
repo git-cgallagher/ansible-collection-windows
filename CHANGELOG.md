@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.13.0 — 2026-11-02
+
+Clusters across datacenters: the first `wsfc` changes the SQL Server roles
+need (issue #48, phase 1).
+
+- `wsfc_cluster` has three new options, and the `wsfc` role a variable for
+  each. `sites` (`wsfc_sites`) creates site fault domains and moves each
+  listed node into its own. `preferred_site` (`wsfc_preferred_site`) sets the
+  cluster's `PreferredSite`. `node_weights` (`wsfc_node_weights`) gives a node
+  its quorum vote (`NodeWeight`) or takes it away. Unlisted sites are reported
+  and left in place, and unlisted nodes keep their site and vote. Every
+  refusal (a node in two sites, an unknown preferred site, a weight other
+  than 0 or 1) comes before any site or vote changes. A domain cluster may
+  already have put its nodes in a site named after their subnet
+  (`Site 10.42.0.0/24` in the lab); `wsfc_sites` moves them, and that site
+  stays, reported, until you remove it or list it.
+- A file share witness can take a `credential` (`wsfc_quorum.credential`),
+  for a share outside the domain such as one on a NAS (Windows Server 2019
+  and later). It can't be read back, so it is only sent when the witness is
+  set or its path changes. Not lab-tested yet.
+- The `wsfc` README covers two datacenters (sites, the preferred site, votes,
+  cross-site heartbeats), a vSphere profile of common properties from
+  Broadcom's guidance, and Windows Server 2025's two-node shared-disk issue
+  and SMB signing for the witness.
+- The cluster helpers move from `wsfc_cluster.ps1` into
+  `plugins/module_utils/_WsfcCommon.psm1`, with the site and vote planners,
+  so Pester tests them without a cluster
+  (`tests/unit/plugins/modules/wsfc_cluster.Tests.ps1`).
+- Tests: the module's integration target plans, applies and repeats sites, a
+  preferred site and a vote, fixes out-of-band drift and checks each refusal;
+  `wsfc_fileserver`'s two-node lab puts its nodes in two sites, prefers the
+  first and takes node2's vote.
+
 ## 0.12.0 — 2026-11-02
 
 A new area, **SQL Server**, starts with the role `mssql_prereqs` (issue #48

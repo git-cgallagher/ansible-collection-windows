@@ -15,15 +15,17 @@ it runs the collection's `wsfc_cluster` module
 2. runs `Test-Cluster` whenever nodes are about to join, then `New-Cluster`
    (always `-NoStorage`) or `Add-ClusterNode` for the nodes it's missing;
 3. names cluster networks and sets their role and metric, matched by subnet;
-4. sets cluster common properties (heartbeat thresholds and the like);
-5. adds named shared disks, optionally formatting RAW ones first and adding
+4. creates site fault domains and places the nodes in them, and sets the
+   preferred site and the nodes' quorum votes;
+5. sets cluster common properties (heartbeat thresholds and the like);
+6. adds named shared disks, optionally formatting RAW ones first and adding
    them to Cluster Shared Volumes;
-6. sets the quorum witness: none, disk, file share or Azure cloud witness.
+7. sets the quorum witness: none, disk, file share or Azure cloud witness.
 
 Safety behaviour:
 
-- nodes, disks, networks and witnesses the variables don't list are never
-  removed; extra ones are reported as warnings. The one exception: a cluster
+- nodes, sites, disks, networks and witnesses the variables don't list are
+  never removed; extra ones are reported as warnings. The one exception: a cluster
   name address on a network in `wsfc_ignore_networks` is removed (never the
   name's last address), because `New-Cluster` can add one there despite
   `-IgnoreNetwork`, and the name would register it in DNS;
@@ -42,8 +44,8 @@ path on the managing node).
 The cluster task supports check mode for real: under `--check` the module
 reads the cluster, lists the actions it would take (as the task's diff too,
 with `--diff`) and writes nothing. On a cluster that doesn't exist yet the
-plan stops after its creation, because its networks, properties, disks and
-quorum can't be read before it exists, and `--check` leaves the feature
+plan stops after its creation, because its networks, sites, properties, disks
+and quorum can't be read before it exists, and `--check` leaves the feature
 uninstalled, so on a bare node the plan is just "create the cluster".
 
 `wsfc_report_only: true` runs only the cluster task in check mode. The
@@ -74,9 +76,12 @@ list item's keys, are in the argument spec.
 | `wsfc_allow_reboot` | `false` | Reboot a node when the feature install needs it, instead of failing |
 | `wsfc_validate` | `true` | Run `Test-Cluster` before creating the cluster or adding nodes |
 | `wsfc_validate_ignore` | `[]` | `Test-Cluster` categories to skip, for example `Storage` |
-| `wsfc_quorum` | `{}` | `type` (`node_majority`, `disk_witness`, `file_share_witness`, `cloud_witness`) plus `disk`, `path`, or `account_name`/`access_key`/`endpoint`; empty = leave it |
+| `wsfc_quorum` | `{}` | `type` (`node_majority`, `disk_witness`, `file_share_witness`, `cloud_witness`) plus `disk`, `path` (and a `credential` for a share outside the domain), or `account_name`/`access_key`/`endpoint`; empty = leave it |
 | `wsfc_networks` | `[]` | `subnet` (CIDR) plus `name`, `role` (`none`, `cluster`, `cluster_and_client`), `metric` |
 | `wsfc_properties` | `{}` | Cluster common properties, for example `SameSubnetThreshold` |
+| `wsfc_sites` | `[]` | Site fault domains: `name`, and optionally `nodes` (computer names) and `description` |
+| `wsfc_preferred_site` | `''` | The cluster's preferred site; empty = leave it |
+| `wsfc_node_weights` | `{}` | Node votes by computer name, `1` or `0`; unlisted nodes keep theirs |
 | `wsfc_disks` | `[]` | `name`, `unique_id`, and optionally `csv`, `initialize`, `file_system`, `allocation_unit_size`, `label`, `drive_letter` |
 | `wsfc_report_only` | `false` | Run the cluster task in check mode while the feature install runs for real (`--check` implies it) |
 | `wsfc_become_user` | `''` | Run the cluster task as this account (`runas`); see below |
@@ -127,7 +132,89 @@ wsfc_properties:
 ```
 
 `RegisterAllProvidersIP` and `HostRecordTTL` belong to the AG listener's
-network name, which SQL Server creates, so this role doesn't set them.
+network name, which SQL Server creates, so this role doesn't set them yet.
+Group and resource settings like these are planned for a `wsfc_groups`
+variable ([issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48)).
+
+### Two datacenters: sites, the preferred site and votes
+
+A cluster across datacenters should know which nodes share one.
+`wsfc_sites` creates a site fault domain per datacenter and moves each node
+into its own; then a group fails over to a node in its own site before one
+in another. `wsfc_preferred_site` names the primary datacenter: groups start
+there on a cold start, and in a tie between the sites, dynamic quorum takes
+votes from the other site first, so the preferred site keeps the cluster
+running. A file share witness in a third site breaks the tie in the first
+place:
+
+```yaml
+wsfc_sites:
+  - {name: DC1, nodes: [AG11, AG12], description: Primary datacenter}
+  - {name: DC2, nodes: [AG21, AG22], description: Secondary datacenter}
+wsfc_preferred_site: DC1
+wsfc_quorum:
+  type: file_share_witness
+  path: \\witness.dc3.example.com\witness$\AGCLU02
+```
+
+Sites match by name, without case, and a node's site follows `nodes`. A
+site the cluster has that `wsfc_sites` doesn't list is reported and left in
+place, and so is the site of a node no site lists. Sites need the managing
+node to be in the cluster: under `--check` against a cluster the managing
+node is about to join, they are planned on the next run.
+
+A domain cluster may already have a site when `wsfc_sites` first runs: in
+the lab, `New-Cluster` on Windows Server 2022 created one named after the
+nodes' subnet (`Site 10.42.0.0/24`) and put both nodes in it. `wsfc_sites`
+moves the nodes into your sites, and the emptied site stays, reported on
+each run. List it in `wsfc_sites` without nodes to keep it quietly, or
+remove it once with `Remove-ClusterFaultDomain -Name 'Site 10.42.0.0/24'`.
+
+Heartbeats between sites can be tuned with `CrossSiteDelay` (default 1000
+ms) and `CrossSiteThreshold` (default 20) in `wsfc_properties`. Whether they
+or the same-subnet values apply to nodes on one subnet stretched across two
+sites is **unconfirmed**, so on a stretched subnet set both, as in the
+vSphere profile below.
+
+`wsfc_node_weights` takes the quorum vote from nodes that mustn't keep the
+cluster running on their own, for example disaster recovery replicas:
+`{AG31: 0}`. Unlisted nodes keep their vote.
+
+### On vSphere
+
+Broadcom's guidance for clusters of vSphere VMs
+([KB 313472](https://knowledge.broadcom.com/external/article/313472/))
+recommends these common properties, the "vSphere profile":
+
+```yaml
+wsfc_properties:
+  QuorumArbitrationTimeMax: 60   # with clustered VMDKs
+  SameSubnetThreshold: 10
+  CrossSubnetThreshold: 20
+  RouteHistoryLength: 40
+```
+
+The same KB says a cluster with shared disks must stay inside one vCenter
+Server. Broadcom treats a cluster without them, such as an availability
+group's, like any other VMs ([KB 2147661](https://kb.vmware.com/kb/2147661)),
+but doesn't say whether one may span linked vCenters: ask Broadcom before
+relying on it. On **Windows Server 2025** KB 313472 lists a known issue:
+shutting down the active node of a **two-node** cluster with shared disks
+can take the cluster down.
+
+Windows Server 2025 also signs every outbound SMB connection by default, so
+a file share witness must accept SMB signing. Windows file servers do; check
+a NAS. A NAS outside the domain needs `wsfc_quorum.credential`, an account
+the share's host knows:
+
+```yaml
+wsfc_quorum:
+  type: file_share_witness
+  path: \\nas01.dc3.example.com\witness
+  credential:
+    username: witness
+    password: "{{ vault_witness_password }}"
+```
 
 Shared disks are matched by `UniqueId` because disk numbers differ between
 nodes. Read it on the managing node:
@@ -187,9 +274,14 @@ taken out of cluster use, two shared disks formatted on first use (one with
 a drive letter), a disk witness and the double hop through `runas` become,
 then an idempotent re-run.
 
+The same lab puts the two nodes in two sites (`DC1` and `DC2`), makes `DC1`
+the preferred site and takes `node2`'s vote, and the module's integration
+target checks sites, the preferred site and votes on its one-node cluster.
+
 Still not lab-tested ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)):
 adding a node to an existing cluster, the `Dns` access point, multi-subnet
-clusters, Cluster Shared Volumes, file share and cloud witnesses, and a
-failing `Test-Cluster`. The lab ignores `Test-Cluster`'s network tests,
+clusters, Cluster Shared Volumes, file share and cloud witnesses (with or
+without a `credential`), failover between sites, and a failing
+`Test-Cluster`. The lab ignores `Test-Cluster`'s network tests,
 because every lab VM's management NIC has the same address (QEMU user
 networking). Try those in a lab of your own first.

@@ -33,6 +33,13 @@
           - lab_c.disks | map(attribute='state') | unique == ['Online']
           - (lab_c.networks | selectattr('name', 'equalto', 'Management') | first).role == 0
           - (lab_c.networks | selectattr('name', 'equalto', 'Lab') | first).role == 3
+          # New-Cluster put both nodes in a site of its own, named after
+          # their subnet (Site 10.42.0.0/24); wsfc moved them out and leaves
+          # the empty site in place.
+          - lab_c.sites | select('match', 'DC[12]:') | list == ['DC1:NODE1', 'DC2:NODE2']
+          - lab_c.sites | reject('match', 'DC[12]:') | reject('match', '.*:$') | list == []
+          - lab_c.preferred_site == 'DC1'
+          - lab_c.node_weights == ['NODE1=1', 'NODE2=0']
         fail_msg: "Cluster state: {{ lab_c | to_nice_json }}"
       vars:
         lab_c: "{{ lab_state.result }}"

@@ -11,6 +11,18 @@ $quorum = Get-ClusterQuorum -Cluster $conn
 $group = Get-ClusterGroup -Cluster $conn -Name $FileServer
 $owner = [string]$group.OwnerNode.Name
 
+# Sites from the topology XML, as "site:node,node" strings (win_powershell
+# renders deeper nesting as type names).
+$topology = [xml]((@(Get-ClusterFaultDomainXML) | ForEach-Object { [string]$_ }) -join "`n")
+$sites = @($topology.SelectNodes('//Site') | ForEach-Object {
+        $siteNodes = @($_.SelectNodes('.//Node') | ForEach-Object { ($_.GetAttribute('Name') -split '\.')[0].ToUpperInvariant() } | Sort-Object)
+        '{0}:{1}' -f $_.GetAttribute('Name'), ($siteNodes -join ',')
+    } | Sort-Object)
+# The preferred site, translated when the cluster reports a fault domain's ID.
+$preferredSite = [string]$cluster.PreferredSite
+$preferredById = @(Get-ClusterFaultDomain | Where-Object { $_.PSObject.Properties['Id'] -and [string]$_.Id -eq $preferredSite })
+if ($preferredSite -and $preferredById.Count -eq 1) { $preferredSite = [string]$preferredById[0].Name }
+
 # Shares scoped to a clustered name are visible only on the node that owns it.
 # (A script block in a variable: PSScriptAnalyzer misreads an inline one's
 # parameters as variables from the calling scope.)
@@ -40,6 +52,11 @@ $Ansible.Result = @{
     name = [string]$cluster.Name
     nodes = @($clusterNodes | ForEach-Object { [string]$_.Name } | Sort-Object)
     node_states = @($clusterNodes | ForEach-Object { [string]$_.State } | Sort-Object -Unique)
+    node_weights = @($clusterNodes | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name, [int]$_.NodeWeight })
+    sites = $sites
+    preferred_site = $preferredSite
+    # Whether the cluster places nodes in sites by itself (a diagnostic).
+    auto_assign_node_site = [string]$cluster.AutoAssignNodeSite
     witness = [string]$quorum.QuorumResource.Name
     disks = @(Get-ClusterResource -Cluster $conn | Where-Object { [string]$_.ResourceType -eq 'Physical Disk' } |
             ForEach-Object { @{ name = [string]$_.Name; group = [string]$_.OwnerGroup.Name; state = [string]$_.State } })
