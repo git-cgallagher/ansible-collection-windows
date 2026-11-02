@@ -167,7 +167,10 @@ role):
   when it passes; its `molecule test` limit is 120 minutes, the job's 150).
   First passed end to end on 2026-11-02 (PR #36, 697ddc7), after eleven red
   runs whose lessons are the gotchas below. A VM's QEMU occasionally
-  vanishes during first boot (ansible-collection-molecule issue 13): re-run.
+  vanished during first boot (ansible-collection-molecule issue 13). Since the
+  driver's v0.4.0 that fails at the next poll, and `<vm>-qemu.log` says how QEMU
+  stopped (printed by the failure step's `vm-screendump`, kept in the
+  diagnostics artifact): re-run, and keep the log.
 
 They share the lab in `tests/domain_lab/` and the Molecule base config
 `.config/molecule/config.yml` (see Conventions). The promotion is
@@ -503,8 +506,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.3.2"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.3.2
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.4.0"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.4.0
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)

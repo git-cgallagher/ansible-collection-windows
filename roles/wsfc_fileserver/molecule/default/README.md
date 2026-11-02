@@ -44,7 +44,9 @@ promoted).
 Memory: three VMs at 2.5 GB each on GitHub's 16 GB runner, with about 9.7 GB
 left. On 2 of the first 9 runs one VM's QEMU process vanished during its first
 boot, and create waited out its 180 polls; the workflow's failure-only memory
-step showed no OOM kill, so the cause is unknown. The driver doesn't yet record
-why QEMU exited
-([ansible-collection-molecule issue 13](https://github.com/git-cgallagher/ansible-collection-molecule/issues/13)).
-Re-run the job when it happens.
+step showed no OOM kill. Since the driver's v0.4.0
+([ansible-collection-molecule issue 13](https://github.com/git-cgallagher/ansible-collection-molecule/issues/13))
+the first-boot wait fails at the next poll instead, and `<vm>-qemu.log` in the
+lab directory says how QEMU stopped (an exit status, or the signal that killed
+it). The failure step's `vm-screendump` prints its end, and the diagnostics
+artifact keeps it. Re-run the job, and keep that log if it happens again.
