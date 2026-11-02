@@ -66,18 +66,44 @@ next to it. Each boots a real Windows Server 2022 VM under KVM, promotes it
 to a DC and runs its role against it (the `domain-lab` workflow, one job per
 role):
 
-- `roles/gpo_backup/molecule/default`: the export, its manifest and backup
-  folders, an unchanged domain shipping nothing, a check-mode run predicting
-  a changed GPO while leaving the working directory byte-for-byte as it was
-  (and not creating a missing one), and that GPO then shipping alone, the
-  list check mode planned.
-- `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
-  report-only plan (check mode: predicts the drift, writes nothing, no state
-  file, preflight facts pass and the probe file is gone), a report-only plan
-  against an ACL-denied `state_dir` that fails in the preflight, the
-  cpassword refusal, import, idempotence, verify (including a check-mode
-  re-plan with zero actions and no change), re-export round trip, and an
-  import through a migration table.
+- `roles/gpo_backup/molecule/default`: the role's behaviour: the export
+  fetched and unpacked into the repo (the manifest and every fixture GPO's
+  backup folder), an unchanged domain shipping nothing, a check-mode run of
+  the role predicting a changed GPO with the fetch skipped and the repo
+  untouched, and that GPO then shipping alone with its repo folder replaced.
+  Then the `gpo_export` module's integration target
+  (`tests/integration/targets/gpo_export`, with `setup_gpo_lab`), which owns
+  the module's checks since 0.10.0: check mode against a missing working
+  directory (every GPO planned, the parent probed, nothing created), the
+  real export (the zip's layout, the state file, the manifest against the
+  fixture: links in precedence order, enforced and disabled links,
+  block-inheritance, filtering, the WMI filter, status), the repeat, check
+  mode leaving the working directory byte-for-byte as it was, a changed GPO
+  shipping alone, a new and a deleted GPO, the `gpo_names` filter (deletion
+  detection skipped, the other GPOs' state kept) and the failures (a missing
+  `domain`, an ACL-denied working directory, one with no existing parent,
+  two GPOs mapping to one folder name), in a working directory of its own.
+- `roles/gpo_import/molecule/default`: the role's behaviour: seed, export,
+  out-of-band drift, report-only plan (the role's `gpo_import_report_only`:
+  predicts the drift, recreates nothing, writes no state file), import,
+  idempotence, verify (the domain read through GPMC, the effective password
+  policy, a check-mode re-plan of the role with zero actions and no change,
+  the re-export round trip) and an import through a migration table staged
+  from a relative path. Then the `gpo_import` module's integration target
+  (`tests/integration/targets/gpo_import`, with `setup_gpo_lab`), which owns
+  the module's checks since 0.10.0: the authored domain exported and
+  unpacked into a source directory of its own, the first plan (every GPO
+  "never imported", the preflight facts, no state file, no probe file, the
+  domain untouched down to GPO versions), the import, the repeat, the
+  fixture's drift, the plans against it (the defaults failing on the missing
+  WMI filter with the unmanaged link noticed, then `create_wmi_filters` and
+  `remove_unmanaged_links` planning the fixes, and nothing touched), the
+  forced converge back to the authored state and the repeat, the migration
+  table (the import key, the repeat, the import without it), and the
+  failures (a missing `source_dir`, a missing migration table, the cpassword
+  refusal, an incomplete backup folder, a missing manifest, a GPO missing
+  from both domain and export, an ACL-denied `state_dir`), each leaving the
+  domain and the state file as they were.
 - `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
@@ -101,9 +127,10 @@ own copy of that step. The lab first passed on
 issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
 ansible-lint/yamllint, ansible-test sanity (including pslint; stable
 ansible-core branches only, no `devel` canary since 2026-11-01 by owner
-decision), PowerShell
-parse + PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs`
-workflow. Known gaps found by review are tracked as repo issues and listed
+decision), PowerShell parse + PSScriptAnalyzer and the modules' Pester unit
+tests (the `powershell` job), the `hygiene` job (a `cpassword` grep), and the
+`argument-specs` workflow. Known gaps found
+by review are tracked as repo issues and listed
 in the README's "What this doesn't do (yet)".
 
 The IIS modules are lab-tested the same way, by their integration targets:
@@ -167,10 +194,17 @@ lab to the scripts — and record the surprise below as a gotcha.
   `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28) and
   `import_gpos.ps1` became `gpo_import` (0.6.0, issue #29) and
   `converge_cluster.ps1` became `wsfc_cluster` (0.7.0, issue #27).
-- The GPO modules `gpo_export.ps1` and `gpo_import.ps1` duplicate a small
-  `# region common` helper block — keep the copies in sync (a shared
-  `plugins/module_utils/_GpoCommon.psm1` is the follow-up now that both are
-  modules). `wsfc_cluster.ps1` shares nothing with them.
+- The GPO modules share `plugins/module_utils/_GpoCommon.psm1` (0.10.0; it
+  was a `# region common` block copied into both): the pure logic, with no
+  Ansible.Basic, AD or GPMC calls, so Pester tests it without a domain. That's
+  hashing (`Get-DirContentHash`, whose line format is the recorded state's
+  basis and is pinned by a unit test: never change it), the zip, the
+  manifest's encodings (WMI filter `msWMI-Parm2`, relative DNs and trustee
+  names), the export's state decisions (`Get-CarriedOverGpoState`,
+  `Get-DeletedGpoEntry`), the import decision (`Get-GpoImportReason`) and the
+  link plan (`Get-GpoLinkPlan`). A module keeps only what talks to Windows
+  (and `Ansible.Basic`); new pure logic goes in the util, with a test.
+  `wsfc_cluster.ps1` shares nothing with them.
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -273,27 +307,76 @@ lab to the scripts — and record the surprise below as a gotcha.
   `appcmd.exe` uses), which ships with the `Web-Server` feature itself, and
   call it only through `_IisConfig.psm1`'s `Invoke-IisComMember` and
   `Set-IisElementValue`, never as `$element.Method()` (see Gotchas).
-- **A module's tests are an ansible-test integration target named after
-  it** (`gpo_export` is the exception: it needs a domain, so the `gpo_backup`
-  scenario, which calls it through the role, is its test), in
+- **The testing standard** (owner rules, 2026-11-01, issue #44 and its
+  comment): **every role has a Molecule scenario** in
+  `roles/<role>/molecule/<scenario>/` with converge, idempotence and verify
+  (see the Molecule bullet), and **every module has an ansible-test
+  integration target and Pester unit tests**. A role's scenario that happens
+  to call a module doesn't count for the module. No CI step checks this (the
+  owner dropped the hygiene gate PR 46 first proposed, 2026-11-01): it's a
+  rule every change follows, so a PR that adds or changes a role or module
+  adds or updates its tests in the same PR. Still owed: the unit tests of
+  `wsfc_cluster`, `iis_mime_type` and `iis_mime_type_info` (issue #47).
+- **A module's unit tests** are Pester 5, in
+  `tests/unit/plugins/modules/<name>.Tests.ps1`, with shared code's in
+  `tests/unit/plugins/module_utils/<util>.Tests.ps1`; the `powershell` CI job
+  runs them all with `Invoke-Pester` (see Commands). They test the module's
+  pure logic (hashing, manifest and state decisions, plan computation,
+  argument normalisation) without Windows or a domain, by importing the
+  `plugins/module_utils/` file that holds it: extract a module's pure
+  functions there rather than dot-sourcing the module (its body runs
+  `Ansible.Basic`'s `Create` at once). Each module's file also checks its
+  wiring: it loads the util, defines none of the util's functions itself, and
+  calls nothing but its own functions, the util, PowerShell and the cmdlets
+  of the Windows modules it needs. Tests use `$TestDrive` and must pass on
+  pwsh on Linux and on Windows PowerShell 5.1 (`[Environment]::NewLine`
+  where a format depends on it). Where behaviour must not drift (a hash
+  format, a manifest encoding), pin a known value.
+- **A module's integration target** is named after it, in
   `tests/integration/targets/<module>/`: `aliases` (`windows`),
-  `meta/main.yml` (depends on the area's `setup_<area>` target) and `tasks/`.
+  `meta/main.yml` (depends on the area's `setup_<area>` target) and
+  `tasks/main.yml`. Each target covers at least: check mode
+  predicts and writes nothing (assert the on-disk and in-domain state
+  unchanged, and the preflight facts where the module has them); the real
+  run applies the change and returns the documented result shape (every
+  result key the `.yml` sidecar promises is present); a repeat run reports
+  `changed: false`; each documented failure path (the `fail_json` messages),
+  argument validation included; and the module's own options (a filter, a
+  flag). The target's own setup and cleanup follow the idempotency contract
+  too: a second run of the target on the same host is clean, so everything
+  it creates it removes (`block`/`always`), in directories of its own, apart
+  from the roles' defaults. Its reads go through the area's `setup_<area>`
+  scripts (PowerShell against the real thing), never through the module
+  under test, nor through a sibling module where a direct read exists.
   They're plain role tasks with no ansible-test-only variables, so they run
   both through `ansible-test windows-integration` against any Windows host
-  and through Molecule in CI. One Molecule scenario per lab platform runs
-  them, from `tests/integration`, whose `../../` depth matches
-  `roles/<role>`, so the base config's relative paths hold: the IIS one is
+  and through Molecule in CI, from the scenario of the lab that has the right
+  Windows box: one Molecule scenario per lab platform runs them, from
+  `tests/integration`, whose `../../` depth matches `roles/<role>`, so the
+  base config's relative paths hold: the IIS one is
   `tests/integration/molecule/iis/`. Its converge includes the targets as
   roles and drops Molecule's idempotence step, because the targets change
   things on purpose and check each module's idempotence themselves. The IIS
   targets check IIS through `setup_iis/files/read_mime_map.ps1` (appcmd.exe
-  and the configuration files' XML), never through the module under test.
-  The exception is `wsfc_cluster`'s target: a cluster needs the workgroup
-  prerequisites `roles/wsfc/molecule/default/prepare.yml` sets, so that
-  scenario's verify.yml runs the target last (`ANSIBLE_ROLES_PATH` in its
-  molecule.yml points at `tests/integration/targets`), after the role's own
-  checks; the target removes the role's cluster, builds its own and removes
-  it. Its reads go through `setup_wsfc/files/cluster_state.ps1`.
+  and the configuration files' XML). A target that needs a role's lab runs
+  last from that role's scenario's verify.yml, after the role's own checks
+  (`ANSIBLE_ROLES_PATH` in its molecule.yml points at
+  `tests/integration/targets`): `wsfc_cluster` from `roles/wsfc` (a cluster
+  needs the workgroup prerequisites its prepare.yml sets; the target removes
+  the role's cluster, builds its own and removes it, reading through
+  `setup_wsfc/files/cluster_state.ps1`), `gpo_export` from `roles/gpo_backup`
+  and `gpo_import` from `roles/gpo_import` (both need the promoted, seeded
+  domain; `setup_gpo_lab` reads the domain's name from the host, checks the
+  fixture is seeded, never seeds, since the fixture reports a change on every
+  run, and provides `files/read_domain.ps1`, GPMC and AD, `read_export.ps1`,
+  the zip and state file, and `new_migtable.ps1`; its `setup_gpo_lab_dir`,
+  `C:\ProgramData\gpo-iac-test`, keeps the targets apart from the roles'
+  state under `C:\ProgramData\gpo-iac`). The role scenarios keep role
+  behaviour (staging, fetch/unpack, variables, `*_report_only`, the
+  converge/idempotence of the role) and leave the module's behaviour to the
+  targets. `gpo_import`'s target builds its source with `gpo_export`
+  (the manifest is the two modules' contract) and its oracle is
+  `read_domain.ps1`, so a `gpo_export` bug can't hide a `gpo_import` one.
   `setup_iis` creates the test website and application with
   `community.windows`'s IIS modules; that collection is a **test dependency**
   in `tests/integration/requirements.yml` (installed by ansible-test and by
@@ -328,6 +411,11 @@ yamllint . && ansible-lint
 # auto-fixes brace/whitespace/indentation findings (how 0.1.0 was styled):
 S=$(python3 -c 'import ansible_test, pathlib; print(pathlib.Path(ansible_test.__file__).parent / "_util/controller/sanity/pslint/settings.psd1")')
 pwsh -c "Invoke-ScriptAnalyzer -Path roles -Recurse -Settings '$S'"
+
+# the modules' Pester unit tests, as the powershell CI job runs them; without
+# a local pwsh, in ansible-test's container (Pester 5.5+ is installed if missing)
+docker run --rm -v "$PWD:/work:ro" -w /work --entrypoint pwsh quay.io/ansible/default-test-container:v2.21-4 -c \
+  'Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck; $c = New-PesterConfiguration; $c.Run.Path = "tests/unit"; $c.Run.Exit = $true; Invoke-Pester -Configuration $c'
 
 # argument specs (what the argument-specs workflow runs, in the image:
 # .github/ci/runtime.sh bash -c '…' with the same lines): build + install the

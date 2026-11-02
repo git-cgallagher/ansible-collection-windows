@@ -1,0 +1,31 @@
+---
+# The domain lab the GPO targets run against: the domain controller the roles'
+# Molecule scenarios promote and seed (tests/domain_lab). tasks/main.yml reads
+# the domain's name from the host (setup_gpo_lab_domain) and checks the
+# fixture is seeded; it never seeds, because the fixture reports a change on
+# every run and a target's setup has to be clean on a second run.
+
+# The fixture's names: the Molecule base config's lab_fixture, read from
+# .config/molecule/config.yml when the inventory doesn't define it (a run
+# through ansible-test windows-integration).
+setup_gpo_lab_fixture: >-
+  {{ lab_fixture | default((lookup('ansible.builtin.file', role_path ~ '/../../../../.config/molecule/config.yml')
+     | from_yaml).provisioner.inventory.group_vars.all.lab_fixture) }}
+
+# The targets' own directory on the host: each target keeps its working,
+# source and state directories under it, apart from the roles' defaults under
+# C:\ProgramData\gpo-iac, and removes them when it's done.
+setup_gpo_lab_dir: 'C:\ProgramData\gpo-iac-test'
+
+# The targets' own reads (files/). The targets are this role's siblings, so the
+# calling target's role_path finds them. read_domain.ps1 reads the domain
+# through GPMC and AD, read_export.ps1 reads an export's zip, state file and
+# working directory, and new_migtable.ps1 builds a migration table with GPMC's
+# API: none of them goes through the modules under test.
+setup_gpo_lab_read_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/read_domain.ps1') }}"
+setup_gpo_lab_read_export_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/read_export.ps1') }}"
+setup_gpo_lab_migtable_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/new_migtable.ps1') }}"
+
+# The shared lab fixture (tests/domain_lab): gpo_import's target drifts the
+# domain with its -Action Drift.
+setup_gpo_lab_fixture_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../../../domain_lab/files/lab_fixture.ps1') }}"

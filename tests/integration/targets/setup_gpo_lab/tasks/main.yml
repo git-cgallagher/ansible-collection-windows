@@ -1,0 +1,56 @@
+---
+# Reads the lab domain's name from the host and checks the fixture is seeded.
+# Idempotent and read-only, so every GPO target can depend on it
+# (meta/main.yml): it changes nothing on the host or in the domain apart from
+# creating the targets' directory.
+#
+# The host must be a domain controller (or a management host) of the lab
+# domain with RSAT's GroupPolicy and ActiveDirectory modules, promoted and
+# seeded the way the roles' Molecule scenarios do it (tests/domain_lab/
+# promote.yml and seed.yml).
+- name: Read the domain's name and its PDC emulator
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      Import-Module ActiveDirectory
+      $domain = Get-ADDomain
+      [ordered]@{ dns_root = $domain.DNSRoot; pdc = $domain.PDCEmulator; root_dn = $domain.DistinguishedName }
+  register: setup_gpo_lab_ad
+
+- name: Remember the domain
+  ansible.builtin.set_fact:
+    setup_gpo_lab_domain: "{{ setup_gpo_lab_ad.output[0].dns_root }}"
+    setup_gpo_lab_pdc: "{{ setup_gpo_lab_ad.output[0].pdc }}"
+    setup_gpo_lab_root_dn: "{{ setup_gpo_lab_ad.output[0].root_dn }}"
+
+- name: Read the domain through GPMC and AD
+  ansible.windows.win_powershell:
+    script: "{{ setup_gpo_lab_read_script }}"
+    parameters:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+    depth: 8
+  register: setup_gpo_lab_domain_read
+
+- name: Check the fixture is seeded
+  ansible.builtin.assert:
+    that:
+      - setup_gpo_lab_fixture.gpo_baseline in setup_gpo_lab_t.gpos
+      - setup_gpo_lab_fixture.gpo_rdp in setup_gpo_lab_t.gpos
+      - setup_gpo_lab_fixture.gpo_password in setup_gpo_lab_t.gpos
+      - setup_gpo_lab_fixture.gpo_server_admins in setup_gpo_lab_t.gpos
+      - setup_gpo_lab_fixture.gpo_ws_admins in setup_gpo_lab_t.gpos
+      - setup_gpo_lab_fixture.wmi_filter in setup_gpo_lab_t.wmi_filters
+      - "'OU=Servers,OU=' ~ setup_gpo_lab_fixture.ou in setup_gpo_lab_t.soms"
+      - "'OU=Workstations,OU=' ~ setup_gpo_lab_fixture.ou in setup_gpo_lab_t.soms"
+    fail_msg: >-
+      The lab fixture isn't seeded in {{ setup_gpo_lab_domain }}: run tests/domain_lab/seed.yml
+      (the roles' Molecule scenarios do, in prepare). Found GPOs {{ setup_gpo_lab_t.gpos.keys() | list }},
+      WMI filters {{ setup_gpo_lab_t.wmi_filters.keys() | list }}, SOMs {{ setup_gpo_lab_t.soms.keys() | list }}
+  vars:
+    setup_gpo_lab_t: "{{ setup_gpo_lab_domain_read.result.topology }}"
+
+- name: Create the targets' directory
+  ansible.windows.win_file:
+    path: "{{ setup_gpo_lab_dir }}"
+    state: directory
