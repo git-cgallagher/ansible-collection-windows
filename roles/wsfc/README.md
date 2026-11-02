@@ -163,6 +163,13 @@ place, and so is the site of a node no site lists. Sites need the managing
 node to be in the cluster: under `--check` against a cluster the managing
 node is about to join, they are planned on the next run.
 
+A domain cluster may already have a site when `wsfc_sites` first runs: in
+the lab, `New-Cluster` on Windows Server 2022 created one named after the
+nodes' subnet (`Site 10.42.0.0/24`) and put both nodes in it. `wsfc_sites`
+moves the nodes into your sites, and the emptied site stays, reported on
+each run. List it in `wsfc_sites` without nodes to keep it quietly, or
+remove it once with `Remove-ClusterFaultDomain -Name 'Site 10.42.0.0/24'`.
+
 Heartbeats between sites can be tuned with `CrossSiteDelay` (default 1000
 ms) and `CrossSiteThreshold` (default 20) in `wsfc_properties`. Whether they
 or the same-subnet values apply to nodes on one subnet stretched across two

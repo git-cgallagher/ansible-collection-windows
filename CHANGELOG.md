@@ -12,7 +12,10 @@ need (issue #48, phase 1).
   its quorum vote (`NodeWeight`) or takes it away. Unlisted sites are reported
   and left in place, and unlisted nodes keep their site and vote. Every
   refusal (a node in two sites, an unknown preferred site, a weight other
-  than 0 or 1) comes before any site or vote changes.
+  than 0 or 1) comes before any site or vote changes. A domain cluster may
+  already have put its nodes in a site named after their subnet
+  (`Site 10.42.0.0/24` in the lab); `wsfc_sites` moves them, and that site
+  stays, reported, until you remove it or list it.
 - A file share witness can take a `credential` (`wsfc_quorum.credential`),
   for a share outside the domain such as one on a NAS (Windows Server 2019
   and later). It can't be read back, so it is only sent when the witness is

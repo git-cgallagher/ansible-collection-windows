@@ -427,9 +427,11 @@
           foreach ($d in @(Get-ClusterFaultDomain)) {
               @($d.PSObject.Properties | ForEach-Object { '{0}={1} [{2}]' -f $_.Name, (@($_.Value) -join ','), $_.TypeNameOfValue }) -join '; '
           }
-          $preferred = (Get-Cluster -Name $env:COMPUTERNAME).PreferredSite
+          $cluster = Get-Cluster -Name $env:COMPUTERNAME
+          $preferred = $cluster.PreferredSite
           if ($null -eq $preferred) { 'PreferredSite is null' }
           else { 'PreferredSite={0} [{1}]' -f $preferred, $preferred.GetType().FullName }
+          'AutoAssignNodeSite={0}' -f $cluster.AutoAssignNodeSite
       register: wsfc_cluster_fault_domains
 
     - name: Show them

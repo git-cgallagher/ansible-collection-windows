@@ -542,22 +542,33 @@ ansible-galaxy collection build --force
   `_WsfcCommon.psm1` (0.13.0); Windows PowerShell 5.1 doesn't have the bug.
   In code Pester runs, make lists with
   `[System.Collections.Generic.List[object]]::new()`.
+
 - **The fault domain cmdlets are CIM cmdlets without `-Cluster`.**
   `Get-`/`New-`/`Set-ClusterFaultDomain` act on the cluster of the node they
   run on, so `wsfc_cluster` plans sites only once the managing node is a
-  member. Their reference doesn't document the returned properties, so the
-  module takes each fault domain's type from the documented `-Type` filter
-  (one query per type) rather than from its own type property, and reads
-  the parent under every name it is known by (`ParentName`, `Parent`,
-  `FaultDomain`, or `ParentId` through the IDs). The integration target logs
-  every property the cmdlet returns, so a lab run settles the question. Microsoft's own examples
-  name a node's fault domain both `server01` and `server01.contoso.com`, so
-  nodes are matched by short name and moved by the name the cluster has.
-  The parameters are `-FaultDomainType` (alias `-Type`) and `-FaultDomain`
-  (alias `-Parent`). Whether `(Get-Cluster).PreferredSite` reads back as the
-  site's name or its ID is unconfirmed, so both the module and the lab's
-  read scripts translate an ID. The lab's read scripts read sites through
-  `Get-ClusterFaultDomainXML` instead, a different path from the module's.
+  member. Their reference doesn't document the returned objects. The lab
+  (Windows Server 2022; PR #55's integration target logs every property)
+  showed `root/MSCLUSTER:MSCluster_FaultDomain` instances whose CIM `Type`
+  is numeric (Site 1000, Node 4000) while PowerShell's `Type` property reads
+  `Site`/`Node`. `ParentName` holds the parent's name; `Parent` and
+  `FaultDomain` hold a CIM reference, whose string is
+  `MSCluster_FaultDomain (Id = "…")`, never a name. A node's fault domain is
+  named by its short computer name, and `(Get-Cluster).PreferredSite` reads
+  back as the site's name, a string. The module still takes types from the
+  documented `-Type` filter, matches nodes by short name (Microsoft's
+  examples also show FQDNs) and translates a preferred site given as an ID:
+  cheap insurance for other versions. The parameters are
+  `-FaultDomainType` (alias `-Type`) and `-FaultDomain` (alias `-Parent`).
+  The labs' read scripts read sites through `Get-ClusterFaultDomainXML`, a
+  different path from the module's.
+
+- **A domain cluster starts with a site of its own.** On the three-VM lab
+  (Windows Server 2022, AD access point) `New-Cluster` created
+  `Site 10.42.0.0/24`, named after the nodes' subnet, with both nodes in
+  it; the one-node workgroup cluster got none. `wsfc_sites` moves the nodes
+  out, and the empty site stays, reported on each run (nothing is ever
+  removed). The labs log `AutoAssignNodeSite`; whether the cluster later
+  re-places nodes on its own is unconfirmed (the idempotence run saw none).
 
 - **A cluster lab's shared disks come from an iSCSI target on the DC**, not
   from the driver: `FS-iSCSITarget-Server` on dc01 serves VHDX virtual disks,

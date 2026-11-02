@@ -55,6 +55,8 @@ $Ansible.Result = @{
     node_weights = @($clusterNodes | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name, [int]$_.NodeWeight })
     sites = $sites
     preferred_site = $preferredSite
+    # Whether the cluster places nodes in sites by itself (a diagnostic).
+    auto_assign_node_site = [string]$cluster.AutoAssignNodeSite
     witness = [string]$quorum.QuorumResource.Name
     disks = @(Get-ClusterResource -Cluster $conn | Where-Object { [string]$_.ResourceType -eq 'Physical Disk' } |
             ForEach-Object { @{ name = [string]$_.Name; group = [string]$_.OwnerGroup.Name; state = [string]$_.State } })
