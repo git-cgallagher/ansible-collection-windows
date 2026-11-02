@@ -118,9 +118,10 @@
 
 # Scenario: promoting a GPO between environments. Restricted Groups members are
 # SIDs in a security setting, so Import-GPO translates them through a migration
-# table. Mapping the workstation admins group onto the helpdesk group inside
-# one domain exercises the same mechanism (and gpo_import's migration-table and
-# filtered/forced paths) that maps lab groups onto production ones.
+# table. The role's part is staging a table named relative to the repo
+# (gpo_import_migration_table) and passing gpo_import_gpos and gpo_import_force
+# through; the module's migration-table behaviour (the table in the import
+# key, a missing table) is the gpo_import integration target below.
 - name: Import through a migration table
   hosts: all
   gather_facts: false
@@ -130,7 +131,7 @@
   tasks:
     - name: Build a migration table from the Workstation Local Admins GPO (GPMC API)
       ansible.windows.win_powershell:
-        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/new_migtable.ps1') }}"
+        script: "{{ lookup('ansible.builtin.file', lab_tests_dir ~ '/../integration/targets/setup_gpo_lab/files/new_migtable.ps1') }}"
         parameters:
           Domain: "{{ lab_domain }}"
           GpoName: "{{ lab_fixture.gpo_ws_admins }}"
@@ -191,24 +192,6 @@
       vars:
         lab_out: "{{ lab_members_mapped.output | first }}"
 
-    # Positive change detection: every other "nothing ships" assertion would
-    # also pass if hashing silently returned ''. The mapped import really
-    # changed this GPO's content, so a backup now has to ship it. (Into
-    # gpo-repo-after: gpo-repo is the source the next import restores from.)
-    - name: Export the domain after the mapped import
-      ansible.builtin.include_role:
-        name: git_cgallagher.windows.gpo_backup
-      vars:
-        gpo_backup_domain: "{{ lab_domain }}"
-        gpo_backup_repo_dir: "{{ lab_dir }}/gpo-repo-after"
-
-    - name: Check the changed GPO, and only it, was exported
-      ansible.builtin.assert:
-        that:
-          - gpo_backup_export.changed
-          - gpo_backup_export.shipped | map(attribute='name') | list == [lab_fixture.gpo_ws_admins]
-        fail_msg: "Expected exactly {{ lab_fixture.gpo_ws_admins }} to ship: {{ gpo_backup_export.shipped }}"
-
     - name: Import it again without the migration table
       ansible.builtin.include_role:
         name: git_cgallagher.windows.gpo_import
@@ -232,3 +215,16 @@
         fail_msg: "After the unmapped import: {{ lab_out }}"
       vars:
         lab_out: "{{ lab_members_restored.output | first }}"
+
+# The module's own integration target, from tests/integration/targets
+# (ANSIBLE_ROLES_PATH in molecule.yml), with setup_gpo_lab: it exports the
+# authored domain into a source directory of its own, plans and imports it,
+# drifts the domain with the fixture and converges it back, then the migration
+# table and every documented failure, and leaves the domain as it found it.
+- name: Run the gpo_import target
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the gpo_import target
+      ansible.builtin.include_role:
+        name: gpo_import

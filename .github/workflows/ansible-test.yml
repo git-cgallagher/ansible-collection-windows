@@ -94,8 +94,8 @@ jobs:
   powershell:
     # The roles' and modules' PowerShell runs on Windows hosts CI doesn't
     # have, so at minimum: parse every script and module util (a syntax error
-    # must not ship green) and gate on PSScriptAnalyzer errors; warnings are
-    # printed for review.
+    # must not ship green), gate on PSScriptAnalyzer errors (warnings are
+    # printed for review), and run the modules' Pester unit tests.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -121,6 +121,18 @@ jobs:
           $findings = 'roles', 'tests', 'plugins' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
           $findings | Format-Table -AutoSize | Out-String -Width 400 | Write-Host
           if ($findings | Where-Object Severity -eq 'Error') { exit 1 }
+      # The modules' unit tests (tests/unit/plugins/), Pester 5: the pure logic
+      # in plugins/module_utils, without Windows or a domain.
+      - name: Run the unit tests
+        shell: pwsh
+        run: |
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests/unit'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
 
   hygiene:
     # GPO backups are XML; a committed backup fixture carrying a GPP

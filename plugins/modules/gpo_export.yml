@@ -37,7 +37,8 @@ DOCUMENTATION:
     gpo_names:
       description:
         - Limit the export to these GPO display names. Empty exports every GPO.
-        - Deleted-GPO detection is skipped while filtering, because an unselected GPO is not a deleted one.
+        - Deleted-GPO detection is skipped while filtering, because an unselected GPO is not a deleted one, and the state
+          file keeps the unselected GPOs' hashes, so the next unfiltered export ships only what changed since.
       type: list
       elements: str
       default: []

@@ -6,3 +6,8 @@
 # under this file.
 scenario:
   name: default
+provisioner:
+  env:
+    # verify.yml ends by running the gpo_import module's integration target
+    # (tests/integration/targets/) as a role; setup_gpo_lab is its dependency.
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/integration/targets

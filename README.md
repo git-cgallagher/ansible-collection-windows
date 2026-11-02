@@ -15,9 +15,12 @@ Each area's roles and modules carry its prefix.
 > controller, within one domain; `wsfc` by building a one-node
 > workgroup cluster; and `wsfc_fileserver` (with `wsfc`'s multi-node paths) in
 > a three-VM lab: a domain controller that serves iSCSI disks and a two-node
-> cluster with a file server that it fails over and back. Multi-subnet
-> clusters, cloud and file share witnesses and Cluster Shared Volumes aren't
-> lab-tested yet
+> cluster with a file server that it fails over and back. Every module has an
+> integration target of its own (`tests/integration/targets/<module>`), run
+> from those scenarios: check mode, the real change, the repeat, and every
+> documented failure. The GPO modules' logic also has Pester unit tests
+> (`tests/unit`). Multi-subnet clusters, cloud and file share witnesses and
+> Cluster Shared Volumes aren't lab-tested yet
 > ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
 > and neither is importing GPOs into a *different* domain
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),
