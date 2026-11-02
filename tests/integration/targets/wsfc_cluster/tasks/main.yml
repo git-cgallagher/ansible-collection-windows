@@ -28,6 +28,12 @@
     wsfc_cluster_test_metric: 31000
     wsfc_cluster_test_same_subnet: 25
     wsfc_cluster_test_cross_subnet: 30
+    wsfc_cluster_test_site1: WSFCTESTDC1
+    wsfc_cluster_test_site2: WSFCTESTDC2
+    wsfc_cluster_test_sites:
+      - {name: "{{ wsfc_cluster_test_site1 }}", nodes: ["{{ ansible_facts.hostname }}"], description: Test site one}
+      - {name: "{{ wsfc_cluster_test_site2 }}"}
+    wsfc_cluster_host: "{{ ansible_facts.hostname | upper }}"
   block:
     # --- create ----------------------------------------------------------------
     - name: Plan the cluster's creation (check mode)
@@ -363,6 +369,229 @@
           - wsfc_cluster_bad_quorum is not changed
           - wsfc_cluster_read_after_errors.result == wsfc_cluster_read_converged.result
         fail_msg: "{{ wsfc_cluster_read_after_errors.result | string }}"
+
+    # --- sites, the preferred site and node votes --------------------------------------
+    # One node: it goes into the first site and the second stays empty. Its
+    # vote is listed at the value it has; taking a vote away needs a second
+    # node, which wsfc_fileserver's two-node lab does.
+    - name: Plan the sites, the preferred site and the vote (check mode)
+      git_cgallagher.windows.wsfc_cluster: &wsfc_cluster_sites_args
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        sites: "{{ wsfc_cluster_test_sites }}"
+        preferred_site: "{{ wsfc_cluster_test_site1 }}"
+        node_weights: "{{ {ansible_facts.hostname: 1} }}"
+      check_mode: true
+      diff: true
+      register: wsfc_cluster_sites_check
+
+    - name: Read the cluster after the check-mode sites
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_sites_check
+
+    - name: Check check mode planned the sites and wrote nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_sites_check is changed
+          - wsfc_cluster_sites_check.actions | length == 4
+          - wsfc_cluster_sites_check.actions[0] == 'create site ' ~ wsfc_cluster_test_site1
+          - wsfc_cluster_sites_check.actions[1] == 'create site ' ~ wsfc_cluster_test_site2
+          - wsfc_cluster_sites_check.actions[2] == 'move node ' ~ wsfc_cluster_host ~ ' from no site to site ' ~ wsfc_cluster_test_site1
+          - wsfc_cluster_sites_check.actions[3] is search("^set the cluster's preferred site from '.*' to '" ~ wsfc_cluster_test_site1 ~ "'$")
+          - wsfc_cluster_sites_check.diff.prepared.splitlines() == wsfc_cluster_sites_check.actions
+          - wsfc_cluster_read_sites_check.result == wsfc_cluster_read_converged.result
+        fail_msg: "{{ wsfc_cluster_sites_check }} / {{ wsfc_cluster_read_sites_check.result }}"
+
+    - name: Create the sites, place the node and prefer the first site
+      git_cgallagher.windows.wsfc_cluster: *wsfc_cluster_sites_args
+      diff: true
+      register: wsfc_cluster_sites
+
+    - name: Read the cluster after the sites
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_sites
+
+    - name: Check the sites, the node's site, the preferred site and the vote
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_sites is changed
+          - wsfc_cluster_sites.actions == wsfc_cluster_sites_check.actions
+          - wsfc_cluster_read_sites.result.sites | map(attribute='name') | sort == [wsfc_cluster_test_site1, wsfc_cluster_test_site2]
+          - wsfc_cluster_site1.description == 'Test site one'
+          - wsfc_cluster_site1.nodes | map('regex_replace', '\\..*$', '') | map('upper') | list == [wsfc_cluster_host]
+          - wsfc_cluster_site2.nodes == []
+          - wsfc_cluster_read_sites.result.preferred_site | upper == wsfc_cluster_test_site1
+          - wsfc_cluster_read_sites.result.node_weights == [1]
+        fail_msg: "{{ wsfc_cluster_sites }} / {{ wsfc_cluster_read_sites.result }}"
+      vars:
+        wsfc_cluster_site1: "{{ wsfc_cluster_read_sites.result.sites | selectattr('name', 'equalto', wsfc_cluster_test_site1) | first }}"
+        wsfc_cluster_site2: "{{ wsfc_cluster_read_sites.result.sites | selectattr('name', 'equalto', wsfc_cluster_test_site2) | first }}"
+
+    - name: Create the sites again
+      git_cgallagher.windows.wsfc_cluster: *wsfc_cluster_sites_args
+      register: wsfc_cluster_sites_again
+
+    - name: Check the repeat changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_sites_again is not changed
+          - wsfc_cluster_sites_again.actions == []
+        fail_msg: "{{ wsfc_cluster_sites_again | string }}"
+
+    - name: List only the first site
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        sites: "{{ wsfc_cluster_test_sites[:1] }}"
+      register: wsfc_cluster_sites_partial
+
+    - name: Check the unlisted site was reported and left in place
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_sites_partial is not changed
+          - wsfc_cluster_sites_partial.warnings | select('search', 'Site ' ~ wsfc_cluster_test_site2 ~ " isn't in sites") | list | length == 1
+        fail_msg: "{{ wsfc_cluster_sites_partial | string }}"
+
+    - name: Drift a site's description, the node's site and the preferred site out-of-band
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Site1, [string]$Site2)
+          $ErrorActionPreference = 'Stop'
+          Import-Module -Name FailoverClusters
+          Set-ClusterFaultDomain -Name $Site1 -Description 'Drifted'
+          # The node's own fault domain, whichever form its name takes.
+          $node = @(Get-ClusterFaultDomain -Type Node | Where-Object { ($_.Name -split '\.')[0] -eq $env:COMPUTERNAME })
+          if ($node.Count -ne 1) { throw "Found $($node.Count) node fault domains for $env:COMPUTERNAME" }
+          Set-ClusterFaultDomain -Name $node[0].Name -FaultDomain $Site2
+          $cluster = Get-Cluster -Name $env:COMPUTERNAME
+          $cluster.PreferredSite = $Site2
+        parameters:
+          Site1: "{{ wsfc_cluster_test_site1 }}"
+          Site2: "{{ wsfc_cluster_test_site2 }}"
+
+    - name: Plan the site fixes (check mode)
+      git_cgallagher.windows.wsfc_cluster: *wsfc_cluster_sites_args
+      check_mode: true
+      register: wsfc_cluster_sites_drift_check
+
+    - name: Read the cluster after the plan
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_sites_drifted
+
+    - name: Check the plan has exactly the three fixes and the drift is still there
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_sites_drift_check is changed
+          - >-
+            wsfc_cluster_sites_drift_check.actions == [
+              "set site " ~ wsfc_cluster_test_site1 ~ "'s description from 'Drifted' to 'Test site one'",
+              "move node " ~ wsfc_cluster_host ~ " from " ~ wsfc_cluster_test_site2 ~ " to site " ~ wsfc_cluster_test_site1,
+              "set the cluster's preferred site from '" ~ wsfc_cluster_test_site2 ~ "' to '" ~ wsfc_cluster_test_site1 ~ "'"]
+          - wsfc_cluster_read_sites_drifted.result.preferred_site | upper == wsfc_cluster_test_site2
+          - wsfc_cluster_read_sites_drifted.result != wsfc_cluster_read_sites.result
+        fail_msg: "{{ wsfc_cluster_sites_drift_check }} / {{ wsfc_cluster_read_sites_drifted.result }}"
+
+    - name: Fix the site drift
+      git_cgallagher.windows.wsfc_cluster: *wsfc_cluster_sites_args
+      register: wsfc_cluster_sites_drift_fix
+
+    - name: Read the cluster after the site fixes
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_sites_fixed
+
+    - name: Check the site drift was fixed, and only that
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_sites_drift_fix is changed
+          - wsfc_cluster_sites_drift_fix.actions == wsfc_cluster_sites_drift_check.actions
+          - wsfc_cluster_read_sites_fixed.result == wsfc_cluster_read_sites.result
+        fail_msg: "{{ wsfc_cluster_sites_drift_fix }} / {{ wsfc_cluster_read_sites_fixed.result }}"
+
+    - name: Name a preferred site that doesn't exist
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        preferred_site: WSFCNOSUCHSITE
+      register: wsfc_cluster_bad_preferred
+      failed_when: >-
+        "isn't one of the sites or an existing site" not in (wsfc_cluster_bad_preferred.msg | default(''))
+
+    - name: Put the node in two sites
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        sites:
+          - {name: "{{ wsfc_cluster_test_site1 }}", nodes: ["{{ ansible_facts.hostname }}"]}
+          - {name: "{{ wsfc_cluster_test_site2 }}", nodes: ["{{ ansible_facts.hostname }}"]}
+      register: wsfc_cluster_two_sites
+      failed_when: "'a node belongs to one site' not in (wsfc_cluster_two_sites.msg | default(''))"
+
+    - name: Set the preferred site two ways
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        preferred_site: "{{ wsfc_cluster_test_site1 }}"
+        properties:
+          PreferredSite: "{{ wsfc_cluster_test_site1 }}"
+      register: wsfc_cluster_preferred_twice
+      failed_when: "'not both' not in (wsfc_cluster_preferred_twice.msg | default(''))"
+
+    - name: Give a vote to a node outside the cluster
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        node_weights:
+          WSFCNOSUCHNODE: 0
+      register: wsfc_cluster_bad_weight_node
+      failed_when: >-
+        "in node_weights isn't in the cluster" not in (wsfc_cluster_bad_weight_node.msg | default(''))
+
+    - name: Give the node a weight of 2
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        node_weights: "{{ {ansible_facts.hostname: 2} }}"
+      register: wsfc_cluster_bad_weight
+      failed_when: "'must be 0 or 1' not in (wsfc_cluster_bad_weight.msg | default(''))"
+
+    - name: Read the cluster after the site failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_read_script }}"
+        depth: 5
+      register: wsfc_cluster_read_after_site_errors
+
+    - name: Check the site failures changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_bad_preferred is not changed
+          - wsfc_cluster_two_sites is not changed
+          - wsfc_cluster_preferred_twice is not changed
+          - wsfc_cluster_bad_weight_node is not changed
+          - wsfc_cluster_bad_weight is not changed
+          - wsfc_cluster_read_after_site_errors.result == wsfc_cluster_read_sites.result
+        fail_msg: "{{ wsfc_cluster_read_after_site_errors.result | string }}"
   always:
     - name: Remove the test cluster
       ansible.windows.win_powershell:

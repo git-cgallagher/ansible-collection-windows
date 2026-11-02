@@ -91,6 +91,14 @@ provisioner:
         wsfc_quorum:
           type: disk_witness
           disk: Witness
+        # A site per node, as a cluster across two datacenters has, with
+        # node1's preferred and node2 without a vote. The lab never stops a
+        # node, so node1's vote (and the witness) keep the cluster up.
+        wsfc_sites:
+          - {name: DC1, nodes: [NODE1], description: Lab site one}
+          - {name: DC2, nodes: [NODE2]}
+        wsfc_preferred_site: DC1
+        wsfc_node_weights: {NODE2: 0}
         wsfc_become_user: "{{ lab_admin_user }}"
         wsfc_become_password: "{{ lab_admin_password }}"
         wsfc_fileserver_name: "{{ lab_fileserver.name }}"

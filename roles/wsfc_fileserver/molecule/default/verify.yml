@@ -33,6 +33,9 @@
           - lab_c.disks | map(attribute='state') | unique == ['Online']
           - (lab_c.networks | selectattr('name', 'equalto', 'Management') | first).role == 0
           - (lab_c.networks | selectattr('name', 'equalto', 'Lab') | first).role == 3
+          - lab_c.sites == ['DC1:NODE1', 'DC2:NODE2']
+          - lab_c.preferred_site == 'DC1'
+          - lab_c.node_weights == ['NODE1=1', 'NODE2=0']
         fail_msg: "Cluster state: {{ lab_c | to_nice_json }}"
       vars:
         lab_c: "{{ lab_state.result }}"

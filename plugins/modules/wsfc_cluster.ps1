@@ -4,6 +4,7 @@
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
 #AnsibleRequires -CSharpUtil Ansible.Basic
+#AnsibleRequires -PowerShell ..module_utils._WsfcCommon
 
 # Create a Windows Server Failover Cluster, or bring an existing one in line
 # with the options. Runs on one of the cluster's nodes (the managing node)
@@ -17,6 +18,9 @@
 #      nodes are reported, never evicted
 #   3. cluster networks: name, role and metric, matched by subnet; then
 #      remove cluster name addresses on ignored networks (never the last)
+#   3c. site fault domains and the nodes in them, the preferred site, and
+#      node votes (NodeWeight); before the properties, so a PreferredSite
+#      there can name a site this run creates
 #   4. cluster common properties
 #   5. named shared disks: optional first-time format of RAW disks,
 #      Add-ClusterDisk, rename, optional Cluster Shared Volume
@@ -50,6 +54,13 @@ $spec = @{
                 account_name = @{ type = 'str' }
                 access_key = @{ type = 'str'; no_log = $true }
                 endpoint = @{ type = 'str' }
+                credential = @{
+                    type = 'dict'
+                    options = @{
+                        username = @{ type = 'str'; required = $true }
+                        password = @{ type = 'str'; required = $true; no_log = $true }
+                    }
+                }
             }
             required_if = @(
                 @('type', 'disk_witness', @('disk')),
@@ -68,6 +79,17 @@ $spec = @{
             }
         }
         properties = @{ type = 'dict' }
+        sites = @{
+            type = 'list'
+            elements = 'dict'
+            options = @{
+                name = @{ type = 'str'; required = $true }
+                nodes = @{ type = 'list'; elements = 'str' }
+                description = @{ type = 'str' }
+            }
+        }
+        preferred_site = @{ type = 'str' }
+        node_weights = @{ type = 'dict' }
         disks = @{
             type = 'list'
             elements = 'dict'
@@ -120,6 +142,13 @@ if ($null -eq $quorum) { $quorum = @{} }
 $properties = $module.Params.properties
 if ($null -eq $properties) { $properties = @{} }
 
+$sites = Get-ListParam 'sites'
+$preferredSite = [string]$module.Params.preferred_site
+$nodeWeights = $module.Params.node_weights
+if ($null -eq $nodeWeights) { $nodeWeights = @{} }
+
+# Get-ShortName, Get-Setting, Get-ResourceTypeName, Test-NetworkMatch and the
+# site and node-weight planners come from plugins/module_utils/_WsfcCommon.psm1.
 $actions = New-Object System.Collections.Generic.List[string]
 $script:validationReport = ''
 $script:created = $false
@@ -129,42 +158,6 @@ function Invoke-Change {
     param([string]$Description, [scriptblock]$Change)
     $actions.Add($Description)
     if (-not $checkMode) { & $Change }
-}
-
-function Get-ShortName {
-    param([string]$Computer)
-    ($Computer -split '\.')[0].ToUpperInvariant()
-}
-
-# A sub-option that was left out is $null; an empty string counts as left out
-# too, so a role can pass '' for "not set".
-function Get-Setting {
-    param($Object, [string]$Key, $Default = $null)
-    if ($null -ne $Object -and $Object.ContainsKey($Key) -and $null -ne $Object[$Key] -and [string]$Object[$Key] -ne '') {
-        return $Object[$Key]
-    }
-    $Default
-}
-
-function Get-ResourceTypeName {
-    param($Resource)
-    $type = $Resource.ResourceType
-    if ($null -ne $type -and $type.PSObject.Properties['Name']) { return [string]$type.Name }
-    [string]$type
-}
-
-function Test-NetworkMatch {
-    param($Network, [string]$Subnet, [int]$Prefix)
-    $pairs = @(
-        @(@($Network.Ipv4Addresses), @($Network.Ipv4PrefixLengths)),
-        @(@($Network.Ipv6Addresses), @($Network.Ipv6PrefixLengths))
-    )
-    foreach ($pair in $pairs) {
-        for ($i = 0; $i -lt $pair[0].Count; $i++) {
-            if ([string]$pair[0][$i] -eq $Subnet -and [int]$pair[1][$i] -eq $Prefix) { return $true }
-        }
-    }
-    $false
 }
 
 # Test-Cluster doesn't throw when a test fails; it ends with a warning that
@@ -382,6 +375,98 @@ function Invoke-Main {
         }
     }
 
+    # --- 3c. sites, the preferred site, node votes -------------------------------
+    # The fault domain cmdlets are CIM cmdlets with no -Cluster parameter: they
+    # act on the cluster of the node they run on. In a check-mode run that adds
+    # this node, it isn't a member yet, so they are planned for later.
+    # Everything is planned first, so a refusal changes nothing.
+    $memberNow = @(Get-ClusterNode -Cluster $conn | ForEach-Object { Get-ShortName $_.Name })
+    if ($properties.Keys -contains 'PreferredSite' -and $preferredSite) {
+        throw 'Set the preferred site with preferred_site or with properties.PreferredSite, not both'
+    }
+    $sitePlan = $null
+    $currentPreferred = ''
+    if ($sites.Count -gt 0 -or $preferredSite) {
+        if ($memberNow -notcontains $local) {
+            $module.Warn("Sites and the preferred site are planned once $local is in the cluster")
+        }
+        else {
+            $raw = @(Get-ClusterFaultDomain)
+            $byId = @{}
+            foreach ($d in $raw) {
+                $id = Get-FirstProperty -Object $d -Names 'Id'
+                if ($id) { $byId[$id] = Get-FirstProperty -Object $d -Names 'Name' }
+            }
+            $records = @($raw | ForEach-Object { ConvertTo-WsfcFaultDomain -FaultDomain $_ -ById $byId })
+            # In check mode the nodes this run would add aren't members yet.
+            $planNodes = $memberNow
+            if ($checkMode) { $planNodes = @($memberNow + @($wanted | Where-Object { $memberNow -notcontains $_ })) }
+            $sitePlan = Get-WsfcSitePlan -Sites $sites -FaultDomains $records -ClusterNodes $planNodes
+            if ($preferredSite) {
+                $known = @($sites | ForEach-Object { ([string]$_['name']).ToUpperInvariant() }) +
+                @($records | Where-Object { [string]$_.type -eq 'Site' } | ForEach-Object { ([string]$_.name).ToUpperInvariant() })
+                if ($known -notcontains $preferredSite.ToUpperInvariant()) {
+                    throw "preferred_site $preferredSite isn't one of the sites or an existing site"
+                }
+                # Read as a name; an ID is translated, in case a version
+                # reports the site that way.
+                $currentPreferred = [string](Get-Cluster -Name $conn).PreferredSite
+                if ($byId.ContainsKey($currentPreferred)) { $currentPreferred = [string]$byId[$currentPreferred] }
+            }
+        }
+    }
+    $weightPlan = @()
+    if ($nodeWeights.Count -gt 0) {
+        $currentWeights = @{}
+        foreach ($n in @(Get-ClusterNode -Cluster $conn)) { $currentWeights[(Get-ShortName $n.Name)] = [int]$n.NodeWeight }
+        # In check mode a node this run would add has the default vote of 1.
+        if ($checkMode) {
+            foreach ($w in @($wanted | Where-Object { -not $currentWeights.ContainsKey($_) })) { $currentWeights[$w] = 1 }
+        }
+        $wantedWeights = @{}
+        foreach ($k in @($nodeWeights.Keys)) { $wantedWeights[[string]$k] = $nodeWeights[$k] }
+        $weightPlan = @(Get-WsfcNodeWeightPlan -Weights $wantedWeights -Current $currentWeights)
+    }
+
+    if ($null -ne $sitePlan) {
+        foreach ($w in $sitePlan.Warnings) { $module.Warn($w) }
+        foreach ($step in $sitePlan.Actions) {
+            switch ($step.Kind) {
+                'CreateSite' {
+                    Invoke-Change "create site $($step.Name)" {
+                        $siteParams = @{ Name = $step.Name; FaultDomainType = 'Site' }
+                        if ($step.Description) { $siteParams.Description = $step.Description }
+                        $null = New-ClusterFaultDomain @siteParams
+                    }
+                }
+                'SetDescription' {
+                    Invoke-Change "set site $($step.Name)'s description from '$($step.From)' to '$($step.To)'" {
+                        Set-ClusterFaultDomain -Name $step.Name -Description $step.To
+                    }
+                }
+                'SetParent' {
+                    $from = $step.From
+                    if (-not $from) { $from = 'no site' }
+                    Invoke-Change "move node $($step.Node) from $from to site $($step.To)" {
+                        Set-ClusterFaultDomain -Name $step.FaultDomain -FaultDomain $step.To
+                    }
+                }
+            }
+        }
+        if ($preferredSite -and $currentPreferred -ne $preferredSite) {
+            Invoke-Change "set the cluster's preferred site from '$currentPreferred' to '$preferredSite'" {
+                $c = Get-Cluster -Name $conn
+                $c.PreferredSite = $preferredSite
+            }
+        }
+    }
+    foreach ($step in $weightPlan) {
+        Invoke-Change "set node $($step.Node)'s vote (NodeWeight) from $($step.From) to $($step.To)" {
+            $clusterNode = Get-ClusterNode -Cluster $conn -Name $step.Node
+            $clusterNode.NodeWeight = [uint32]$step.To
+        }
+    }
+
     # --- 4. common properties --------------------------------------------------
     $clusterObject = Get-Cluster -Name $conn
     foreach ($propName in @($properties.Keys)) {
@@ -502,9 +587,23 @@ function Invoke-Main {
                 if ($witnessType -eq 'File Share Witness') {
                     $currentPath = [string]($witness | Get-ClusterParameter -Name SharePath).Value
                 }
+                # A credential can't be read back, so it is only sent when the
+                # witness is set or its path changes (Windows Server 2019 and
+                # later: a share outside the domain).
+                $witnessCredential = Get-Setting -Object $quorum -Key 'credential'
                 if ($currentPath -ne $sharePath) {
-                    Invoke-Change "set the quorum witness to file share $sharePath" {
-                        $null = Set-ClusterQuorum -Cluster $conn -FileShareWitness $sharePath
+                    $asUser = ''
+                    if ($witnessCredential) { $asUser = " as $($witnessCredential['username'])" }
+                    Invoke-Change "set the quorum witness to file share $sharePath$asUser" {
+                        $witnessParams = @{ Cluster = $conn; FileShareWitness = $sharePath }
+                        if ($witnessCredential) {
+                            $secure = New-Object System.Security.SecureString
+                            foreach ($ch in ([string]$witnessCredential['password']).ToCharArray()) { $secure.AppendChar($ch) }
+                            $secure.MakeReadOnly()
+                            $witnessParams.Credential = New-Object System.Management.Automation.PSCredential(
+                                [string]$witnessCredential['username'], $secure)
+                        }
+                        $null = Set-ClusterQuorum @witnessParams
                     }
                 }
             }
