@@ -86,9 +86,13 @@
         domain_password: "{{ mssql_prereqs_domain_password | default(omit, true) }}"
       vars:
         # An empty list is sent only when the lists are exclusive: an empty
-        # "set" clears the attribute.
+        # "set" clears the attribute. In check mode a member that is a group
+        # this run creates doesn't exist yet: warn about it, don't fail.
         mssql_prereqs__members: >-
-          {{ {mssql_prereqs__list_mode: item.members | default([])}
+          {{ {mssql_prereqs__list_mode: item.members | default([]),
+              'lookup_failure_action': 'warn' if mssql_prereqs__check_mode | bool
+                and (item.members | default([]) | map('lower') | list | intersect(mssql_prereqs__planned_groups)) | length > 0
+                else 'fail'}
              if item.state | default('present') == 'present'
                 and (item.members | default([]) | length > 0 or mssql_prereqs_exclusive | bool)
              else {} }}
@@ -124,8 +128,13 @@
         domain_username: "{{ mssql_prereqs_domain_username | default(omit, true) }}"
         domain_password: "{{ mssql_prereqs_domain_password | default(omit, true) }}"
       vars:
+        # In check mode a group this run creates doesn't exist yet (the
+        # groups task only planned it): warn about it, don't fail the plan.
         mssql_prereqs__retrievers: >-
-          {{ {mssql_prereqs__list_mode: item.retrieve_password}
+          {{ {mssql_prereqs__list_mode: item.retrieve_password,
+              'lookup_failure_action': 'warn' if mssql_prereqs__check_mode | bool
+                and (item.retrieve_password | map('lower') | list | intersect(mssql_prereqs__planned_groups)) | length > 0
+                else 'fail'}
              if item.state == 'present' and (item.retrieve_password | length > 0 or mssql_prereqs_exclusive | bool)
              else {} }}
         mssql_prereqs__spn_change: >-

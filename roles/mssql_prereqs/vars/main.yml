@@ -27,6 +27,14 @@ mssql_prereqs__with_password: >-
   {{ mssql_prereqs_accounts | selectattr('password', 'defined') | rejectattr('password', 'none')
      | rejectattr('password', 'equalto', '') | map(attribute='name') | list }}
 
+# The groups this run creates or converges, lower-cased. In check mode they
+# may not exist yet, so a gMSA or group that names one looks its principals up
+# with lookup_failure_action warn instead of failing the plan.
+mssql_prereqs__planned_groups: >-
+  {{ ((mssql_prereqs_groups | rejectattr('state', 'defined') | map(attribute='name') | list)
+      + (mssql_prereqs_groups | selectattr('state', 'defined') | selectattr('state', 'equalto', 'present')
+         | map(attribute='name') | list)) | map('lower') | list }}
+
 # True when a gMSA is to be created or converged, which needs a KDS root key.
 mssql_prereqs__need_kds: >-
   {{ mssql_prereqs__accounts | selectattr('type', 'equalto', 'gmsa')

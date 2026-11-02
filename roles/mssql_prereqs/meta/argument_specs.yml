@@ -83,6 +83,8 @@ argument_specs:
                 creates in O(mssql_prereqs_groups).
               - A computer account named directly takes effect at once; a host added to a group only after a reboot
                 or a Kerberos ticket purge.
+              - In check mode a group this run creates doesn't exist yet, so when the list names one, its lookup
+                warns instead of failing.
           spn_sets:
             type: list
             elements: dict
@@ -161,6 +163,8 @@ argument_specs:
             default: []
             description:
               - Members, by C(sAMAccountName) or distinguished name, for example V(SQL01$) or V(GG-DBA).
+              - A member that is another group in O(mssql_prereqs_groups) must come earlier in the list. In check
+                mode it doesn't exist yet, so the lookup warns instead of failing.
           state:
             type: str
             choices: [present, absent]

@@ -120,6 +120,13 @@ every change without making it. The `microsoft.ad` modules predict their
 changes, and the reads (the KDS root keys, the SPN lookup) run as usual, so a
 report-only run still fails on a missing key or a duplicate SPN.
 
+A group the same run would create doesn't exist yet in check mode, yet the
+modules still look principals up. So when a gMSA's `retrieve_password` or a
+group's `members` names one of `mssql_prereqs_groups`, the plan looks that
+list up with `lookup_failure_action: warn`: the lookup warns instead of
+failing. Any other unknown principal in the same list then only warns too,
+in check mode only.
+
 ## Variables
 
 All variables are documented in

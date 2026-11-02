@@ -706,3 +706,9 @@ ansible-galaxy collection build --force
   `@(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count`.
   (`microsoft.ad.kds_root_key_info` is fine: it loops over the cmdlet's
   output, and PowerShell doesn't iterate over a lone `$null`.)
+- **The `microsoft.ad` modules resolve principals even in check mode.** A
+  gMSA whose `allowed_to_retrieve_password` names a group the same run only
+  *plans* failed `mssql_prereqs`' report-only plan with "Failed to find the AD
+  object DNs" (PR #52's second lab run, 2026-11-02). The role now passes
+  `lookup_failure_action: warn` in check mode for a list that names one of its
+  own groups (gMSA retrievers and group members), and `fail` otherwise.

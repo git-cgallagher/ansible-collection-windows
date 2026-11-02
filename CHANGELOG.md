@@ -21,7 +21,8 @@ availability groups, and the `wsfc` changes they need).
 - Lists add by default; `mssql_prereqs_exclusive: true` makes the SPN,
   retrieve-password and group-member lists exact. Passwords never appear in a
   loop item, and `mssql_prereqs_report_only` (or `--check`) plans without
-  writing.
+  writing. A group the same run creates doesn't exist yet during a plan, so a
+  gMSA or group naming one is looked up with a warning, not a failure.
 - `tasks/plan.yml` (defaults, SPNs, validation) needs no Windows host, so the
   `argument-specs` workflow tests it, every refusal included. A new
   `domain-lab` job, `molecule (mssql_prereqs)`, runs the role against a fresh
