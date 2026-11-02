@@ -417,6 +417,25 @@
         depth: 5
       register: wsfc_cluster_read_sites
 
+    # The cmdlets' reference doesn't document the objects they return, so
+    # put them in the log: every property with its value and type.
+    - name: Read the fault domains and the preferred site as the cmdlets return them
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module -Name FailoverClusters
+          foreach ($d in @(Get-ClusterFaultDomain)) {
+              @($d.PSObject.Properties | ForEach-Object { '{0}={1} [{2}]' -f $_.Name, (@($_.Value) -join ','), $_.TypeNameOfValue }) -join '; '
+          }
+          $preferred = (Get-Cluster -Name $env:COMPUTERNAME).PreferredSite
+          if ($null -eq $preferred) { 'PreferredSite is null' }
+          else { 'PreferredSite={0} [{1}]' -f $preferred, $preferred.GetType().FullName }
+      register: wsfc_cluster_fault_domains
+
+    - name: Show them
+      ansible.builtin.debug:
+        var: wsfc_cluster_fault_domains.output
+
     - name: Check the sites, the node's site, the preferred site and the vote
       ansible.builtin.assert:
         that:

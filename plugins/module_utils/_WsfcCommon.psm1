@@ -100,19 +100,22 @@ Function ConvertTo-WsfcFaultDomain {
     one is read under the names it is known to have (the type as Type or
     FaultDomainType, the parent as ParentName, Parent or FaultDomain) and an
     absent one is ''. ById maps fault domain IDs to names, for a parent that
-    is only given as ParentId.
+    is only given as ParentId. Type, when given, is used instead of the
+    object's own type property (the module learns it from the cmdlet's
+    documented -Type filter).
     #>
     [CmdletBinding()]
-    param ($FaultDomain, [hashtable]$ById = @{})
+    param ($FaultDomain, [hashtable]$ById = @{}, [string]$Type = '')
 
     $parent = Get-FirstProperty -Object $FaultDomain -Names 'ParentName', 'Parent', 'FaultDomain'
     if (-not $parent) {
         $parentId = Get-FirstProperty -Object $FaultDomain -Names 'ParentId'
         if ($parentId -and $ById.ContainsKey($parentId)) { $parent = [string]$ById[$parentId] }
     }
+    if (-not $Type) { $Type = Get-FirstProperty -Object $FaultDomain -Names 'Type', 'FaultDomainType' }
     @{
         name = Get-FirstProperty -Object $FaultDomain -Names 'Name'
-        type = Get-FirstProperty -Object $FaultDomain -Names 'Type', 'FaultDomainType'
+        type = $Type
         parent = $parent
         description = Get-FirstProperty -Object $FaultDomain -Names 'Description'
     }

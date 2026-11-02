@@ -76,6 +76,11 @@ Describe 'ConvertTo-WsfcFaultDomain' {
         $b.description | Should -Be 'Ellijay'
     }
 
+    It 'takes the type it is given over the object''s own' {
+        $d = ConvertTo-WsfcFaultDomain -FaultDomain ([pscustomobject]@{ Name = 'DC1'; Type = 1000 }) -Type 'Site'
+        $d.type | Should -Be 'Site'
+    }
+
     It 'resolves a parent given only by ID' {
         $d = ConvertTo-WsfcFaultDomain -FaultDomain ([pscustomobject]@{ Name = 'NODE2'; Type = 'Node'; ParentId = 'id-7' }) -ById @{ 'id-7' = 'DC2' }
         $d.parent | Should -Be 'DC2'

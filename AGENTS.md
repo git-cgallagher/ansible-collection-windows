@@ -546,9 +546,11 @@ ansible-galaxy collection build --force
   `Get-`/`New-`/`Set-ClusterFaultDomain` act on the cluster of the node they
   run on, so `wsfc_cluster` plans sites only once the managing node is a
   member. Their reference doesn't document the returned properties, so the
-  module reads each one under every name it is known by (the type as `Type`
-  or `FaultDomainType`, the parent as `ParentName`, `Parent` or
-  `FaultDomain`, or `ParentId` through the IDs). Microsoft's own examples
+  module takes each fault domain's type from the documented `-Type` filter
+  (one query per type) rather than from its own type property, and reads
+  the parent under every name it is known by (`ParentName`, `Parent`,
+  `FaultDomain`, or `ParentId` through the IDs). The integration target logs
+  every property the cmdlet returns, so a lab run settles the question. Microsoft's own examples
   name a node's fault domain both `server01` and `server01.contoso.com`, so
   nodes are matched by short name and moved by the name the cluster has.
   The parameters are `-FaultDomainType` (alias `-Type`) and `-FaultDomain`

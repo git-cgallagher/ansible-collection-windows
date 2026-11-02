@@ -397,7 +397,19 @@ function Invoke-Main {
                 $id = Get-FirstProperty -Object $d -Names 'Id'
                 if ($id) { $byId[$id] = Get-FirstProperty -Object $d -Names 'Name' }
             }
-            $records = @($raw | ForEach-Object { ConvertTo-WsfcFaultDomain -FaultDomain $_ -ById $byId })
+            # Each record's type comes from the documented -Type filter, not
+            # from its own type property, whose form the reference doesn't
+            # give. A type with no fault domains may answer "no match", which
+            # isn't an error here: the unfiltered read above succeeded.
+            $kindByName = @{}
+            foreach ($kind in 'Site', 'Rack', 'Chassis', 'Node') {
+                foreach ($d in @(Get-ClusterFaultDomain -Type $kind -ErrorAction SilentlyContinue)) {
+                    $kindByName[[string]$d.Name] = $kind
+                }
+            }
+            $records = @($raw | ForEach-Object {
+                    ConvertTo-WsfcFaultDomain -FaultDomain $_ -ById $byId -Type ([string]$kindByName[[string]$_.Name])
+                })
             # In check mode the nodes this run would add aren't members yet.
             $planNodes = $memberNow
             if ($checkMode) { $planNodes = @($memberNow + @($wanted | Where-Object { $memberNow -notcontains $_ })) }
