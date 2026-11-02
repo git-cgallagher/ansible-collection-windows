@@ -447,8 +447,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.3.1"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.3.1
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.3.2"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.3.2
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)

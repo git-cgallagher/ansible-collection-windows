@@ -108,7 +108,7 @@ jobs:
           docker run --rm "$image" cat /usr/share/ansible-runtime/constraints.txt > .cache/constraints.txt
 
       - name: Set up Molecule, the driver, KVM and QEMU
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@d894cf0d27719d8f26a3256cd23b562510d8ab08  # v0.3.1
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@3cefe7f27d47aada6dc88b56ad2a4a42c5f33260  # v0.3.2
         timeout-minutes: 15
         with:
           constraints: .cache/constraints.txt
@@ -134,7 +134,7 @@ jobs:
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@d894cf0d27719d8f26a3256cd23b562510d8ab08  # v0.3.1
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@3cefe7f27d47aada6dc88b56ad2a4a42c5f33260  # v0.3.2
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}
