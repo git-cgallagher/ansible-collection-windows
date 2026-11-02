@@ -9,9 +9,8 @@
 # Run by the validate and failover entry points on the client host. Changes
 # nothing that outlives it except the markers, which check removes.
 #
-# Each share is retried for up to -RetrySeconds: in the lab, writes from the
-# client to a file server created two minutes earlier were refused with
-# "Access is denied" and the same writes a minute later succeeded.
+# Each share is retried for up to -RetrySeconds, for a client whose first
+# connection to a just-moved file server lands mid-failover.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -25,17 +24,14 @@ param(
 
     [string]$Marker = '',
 
-    [int]$RetrySeconds = 180
+    [int]$RetrySeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
 
-# .NET file calls rather than the FileSystem provider (Set-Content,
-# Get-Content, Test-Path): in the lab the provider's calls on a clustered
-# share were refused with "Access is denied" while plain writes worked. Each
-# step names itself in the error.
+# .NET file calls, each step named in its error (write, read, delete).
 function Invoke-Step {
     param([string]$Step, [scriptblock]$Action)
     try {
@@ -72,10 +68,8 @@ $results = [System.Collections.Generic.List[object]]::new()
 foreach ($share in $Shares) {
     $unc = "\\$Server\$share"
     $entry = [ordered]@{ share = $share; unc = $unc; ok = $false; error = ''; error_type = ''; attempts = 0 }
-    # No existence check on the share root: in the lab, querying
-    # \\<name>\<share> itself failed (Test-Path "Access is denied",
-    # Directory.Exists false) while writing files into it worked. The write
-    # is the check; its error says why a share is unreachable.
+    # The write is the reachability check; its error says why a share is
+    # unreachable.
     $markerFile = $unc + '\.wsfc_fileserver-failover-' + $Marker + '.txt'
     $markerChecked = $false
     $deadline = (Get-Date).AddSeconds($RetrySeconds)

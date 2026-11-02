@@ -14,7 +14,7 @@ nodes (`hosts` = the nodes), with the cluster work done once, on one node:
 | Entry point | What it does | Changes |
 |---|---|---|
 | `main` (default) | Installs the File Server role service on every node; creates the file server (`Add-ClusterFileServerRole`) on named cluster disks, or converges an existing one: disks it lacks, online state, preferred owners; converges SMB shares scoped to its name | Yes; check mode and `wsfc_fileserver_report_only` only report |
-| `validate` | Checks the role is online, then from a client host writes, reads back and deletes a probe file in every share through `\\<name>\<share>`, retrying each share for up to three minutes (a just-created file server can refuse writes at first) | No |
+| `validate` | Checks the role is online, then from a client host writes, reads back and deletes a probe file in every share through `\\<name>\<share>`, retrying each share for up to a minute | No |
 | `failover` | Writes a marker into every share from the client, moves the role to another node (`Move-ClusterGroup`), waits for it to come online, then proves from the client that every marker reads back and each share takes a new write; reports how long the move took | Moves the role; check mode only reports |
 
 `failover` is a planned move, as for patching or maintenance; it doesn't
@@ -67,7 +67,9 @@ to an account that administers the cluster; the role runs those tasks with
 `runas` become, which logs on locally with the credentials. The client checks
 use the same account, which needs permission to create and delete files in
 each share it checks. As with `wsfc`, the role sets `become` on those tasks
-itself, overriding a play-level `become`.
+itself, overriding a play-level `become`. It resolves the account on the
+cluster node and hands it to the client as a fact, so the client host doesn't
+need the role's variables in its own inventory groups.
 
 ## Example
 

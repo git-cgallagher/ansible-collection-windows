@@ -502,25 +502,21 @@ ansible-galaxy collection build --force
   ignored network (step 3b), never the last one. The same run passed
   create, prepare, converge (cluster and file server) and idempotence.
 
-- **Don't check a clustered share's root before using it.** From the lab's
-  client, querying `\\FSLAB\<share>` itself failed: `Test-Path` threw
-  `UnauthorizedAccessException: Access is denied` (four three-VM runs) and
-  `[System.IO.Directory]::Exists` returned false (the fifth), while the same
-  account in the same kind of logon wrote, read and deleted files in the
-  share by name, FQDN and IP, with Kerberos tickets for `cifs/FSLAB`
-  (2026-11-01, PR #36). The next run dropped the root check and the
-  probe's own write was refused too, while the diagnostics' identical writes
-  about a minute later worked, so the likelier cause is time: the client
-  first reached the file server about two minutes after converge created it.
-  Ruled out by the run after: four and five retries over three minutes were
-  all refused, and the diagnostics' writes right after still worked. What
-  differed was that the probe read the file back with `Get-Content`, and the
-  failing calls so far (`Test-Path`, `Directory.Exists`, `Get-Content`) are
-  all reads. The probe now uses `[System.IO.File]` calls, names the failing
-  step in its error, and keeps the retries; the diagnostics try each step
-  (provider and .NET reads, a listing, the root `Test-Path`) separately.
-  `wsfc_fileserver`'s probe now just writes, reads back and deletes, and
-  reports the write's error.
+- **A delegated task takes `become` from the host it's delegated to.**
+  `wsfc_fileserver`'s client checks run on a host outside the cluster's
+  inventory group (dc01 in the lab, whose role variables are in `group_vars`
+  `lab_nodes`). Ansible resolved `become`, `become_user` and
+  `ansible_become_password` from dc01's variables, which fell back to the
+  role's empty defaults: no `runas`, a plain WinRM logon (which on a DC is the
+  same `GPOLAB\vagrant`, so the identity looked right) with no credentials to
+  pass on, and `Access is denied` on every share call (the double hop).
+  Module arguments, by contrast, came from the cluster node's variables. It cost
+  eight lab runs (2026-11-01/02, PR #36) and three wrong theories (the share
+  root, timing, provider reads) before a diagnostic task with its own
+  `become`, reading `group_vars` `all`, did every operation fine. The role now
+  `set_fact`s the resolved account on the cluster nodes and, with
+  `delegate_facts: true`, on the client, and the delegated tasks use those
+  facts.
 
 - **Don't take a node's computer name from `ansible_facts.hostname`.** On
   the three-VM lab's slow nodes, `ansible.windows.setup` (`min` subset)
