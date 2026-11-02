@@ -129,8 +129,11 @@ role):
   formatted iSCSI disks, disk witness, management network role 0), then
   `wsfc_fileserver` a file server with two shares; idempotence, `validate`
   from dc01, `failover` there and back, and a report-only plan and drift fix.
-  It's `wsfc`'s multi-node coverage and the slowest job (about an hour; its
-  `molecule test` limit is 120 minutes, the job's 150).
+  It's `wsfc`'s multi-node coverage and the slowest job (about 35 minutes
+  when it passes; its `molecule test` limit is 120 minutes, the job's 150).
+  First passed end to end on 2026-11-02 (PR #36, 697ddc7), after eleven red
+  runs whose lessons are the gotchas below. A VM's QEMU occasionally
+  vanishes during first boot (ansible-collection-molecule issue 13): re-run.
 
 They share the lab in `tests/domain_lab/` and the Molecule base config
 `.config/molecule/config.yml` (see Conventions). The promotion is
@@ -541,6 +544,14 @@ ansible-galaxy collection build --force
   gateway). The same run confirmed the rest of prepare: the domain, the
   joins, the iSCSI disks, `Test-Cluster` with storage tests and the `runas`
   double hop as `GPOLAB\vagrant`.
+
+- **`Set-GPInheritance` can return without an error and change nothing.** On
+  a fresh lab DC the drift's unblock of the Workstations OU once didn't take
+  (issue #50, PR #49's first `gpo_import` lab run), and the target's plan check
+  then failed far from the cause. `lab_fixture.ps1` sets inheritance only
+  through `Set-LabInheritance` (read back, retry, throw), and the target's
+  "Check the drift took" asserts it. Read back any other fixture write that a
+  later check depends on.
 
 - **`wsfc`'s cluster task sets `become` itself** (from
   `wsfc_become_user`), which overrides a play-level `become` for that
