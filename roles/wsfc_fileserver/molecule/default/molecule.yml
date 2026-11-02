@@ -16,9 +16,10 @@ driver:
   options:
     platform_defaults:
       # Three VMs on GitHub's 16 GB runner, with room to spare (about 9.7 GB
-      # stayed available). A VM's QEMU process occasionally vanishes during
-      # first boot; it isn't memory (no OOM kills): ansible-collection-molecule
-      # issue 13.
+      # stayed available). A VM's QEMU process occasionally vanished during
+      # first boot, and it wasn't memory (no OOM kills). Since the driver's
+      # v0.4.0 the run fails at the next poll, and <vm>-qemu.log in the lab
+      # directory says how QEMU stopped.
       memory_mb: 2560
 platforms:
   - name: dc01
@@ -40,9 +41,6 @@ provisioner:
   inventory:
     group_vars:
       all:
-        # Three VMs share the runner's 4 vCPUs during their first boot (the
-        # driver's two-VM self-test allows 120; one VM needs fewer).
-        windows_vm_first_boot_retries: 180
         lab_dc_address: 10.42.0.10
         # The domain account every cluster command runs as (runas become):
         # the box's vagrant account became a domain admin when dc01 was
