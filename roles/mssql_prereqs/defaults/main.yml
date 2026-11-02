@@ -1,0 +1,32 @@
+---
+# Every variable is documented in meta/argument_specs.yml
+# (`ansible-doc -t role git_cgallagher.windows.mssql_prereqs`).
+
+# Domain user accounts and gMSAs to create or converge, each with the SPNs its
+# spn_sets and extra_spns describe.
+mssql_prereqs_accounts: []
+
+# Security groups to create or converge, before the accounts, so a gMSA's
+# retrieve_password may name one.
+mssql_prereqs_groups: []
+
+# false: add the listed SPNs, password-retrieval principals and group members,
+# and leave any others alone. true: make each list the exact set.
+mssql_prereqs_exclusive: false
+
+# The forest's KDS root key, which gMSAs need: check (fail when there is
+# none), create (add one when there is none) or skip. Only looked at when an
+# account is a gMSA.
+mssql_prereqs_kds_root_key: check
+
+# Hours until a key that `create` adds becomes effective.
+mssql_prereqs_kds_root_key_effective_time_hours: 10
+
+# Domain controller and credentials for the microsoft.ad modules; empty = the
+# target's own domain, as the connection user.
+mssql_prereqs_domain_server: ''
+mssql_prereqs_domain_username: ''
+mssql_prereqs_domain_password: ''
+
+# Report what would change without changing anything. --check implies it.
+mssql_prereqs_report_only: false

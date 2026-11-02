@@ -1,0 +1,117 @@
+---
+# A previous include in the same play leaves these facts behind.
+- name: Start from empty
+  ansible.builtin.set_fact:
+    mssql_prereqs__accounts: []
+    mssql_prereqs__spns: {}
+
+# The loop runs over the accounts with their passwords removed, so no
+# result's `item` carries one: loop_control.label shortens only the summary
+# line, while -v output and registered results keep the whole item.
+- name: Fill in each account's defaults
+  ansible.builtin.set_fact:
+    mssql_prereqs__accounts: "{{ mssql_prereqs__accounts + [mssql_prereqs__account_defaults | combine(item)] }}"
+  loop: >-
+    {{ mssql_prereqs_accounts | map('dict2items') | map('rejectattr', 'key', 'equalto', 'password')
+       | map('list') | map('items2dict') | list }}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Build the SPNs each spn_sets entry describes
+  ansible.builtin.set_fact:
+    mssql_prereqs__spns: >-
+      {{ mssql_prereqs__spns | combine({item.0.name: (mssql_prereqs__spns[item.0.name] | default([]))
+         + (mssql_prereqs__spn_names | map('regex_replace', '^', 'MSSQLSvc/')
+            | map('regex_replace', '$', ':' ~ (item.1.port | default(1433))) | list)
+         + (mssql_prereqs__spn_names | map('regex_replace', '^', 'MSSQLSvc/')
+            | map('regex_replace', '$', mssql_prereqs__spn_suffix) | list)}) }}
+  vars:
+    # The host names, then (with short_names) each one's first label.
+    mssql_prereqs__spn_names: >-
+      {{ item.1.hosts + ((item.1.hosts | map('split', '.') | map('first') | list)
+         if item.1.short_names | default(false) | bool else []) }}
+    # A default instance's second SPN has no suffix; a named instance's
+    # carries the instance name.
+    mssql_prereqs__spn_suffix: >-
+      {{ '' if (item.1.instance | default('MSSQLSERVER')) | upper == 'MSSQLSERVER'
+         else ':' ~ item.1.instance }}
+  # Only accounts that are to exist get SPNs: one being deleted may give
+  # its SPNs up to another in the same run.
+  loop: "{{ mssql_prereqs__accounts | selectattr('state', 'equalto', 'present') | subelements('spn_sets') }}"
+  loop_control:
+    label: "{{ item.0.name }}: {{ item.1.hosts | join(', ') }}"
+
+- name: Add each account's extra SPNs and drop repeats
+  ansible.builtin.set_fact:
+    mssql_prereqs__spns: >-
+      {{ mssql_prereqs__spns | combine({item.name: ((mssql_prereqs__spns[item.name] | default([]))
+         + item.extra_spns) | unique}) }}
+  loop: "{{ mssql_prereqs__accounts | selectattr('state', 'equalto', 'present') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# meta/argument_specs.yml has checked types and choices; these checks need
+# the whole list. The character checks also keep the SPN lookup's LDAP
+# filter safe: none of '*', '(', ')' or '\' can reach it.
+- name: Require complete accounts and valid names
+  ansible.builtin.assert:
+    that:
+      - mssql_prereqs__bad_names | length == 0
+      - mssql_prereqs__repeated_names | length == 0
+      - mssql_prereqs__missing_passwords | length == 0
+      - mssql_prereqs__missing_dns_hostnames | length == 0
+      - mssql_prereqs__bad_hosts | length == 0
+      - mssql_prereqs__bad_instances | length == 0
+      - mssql_prereqs__bad_extra_spns | length == 0
+      - mssql_prereqs__repeated_spns | length == 0
+    fail_msg: >-
+      mssql_prereqs_accounts can't be applied.
+      Invalid names (letters, digits, '.', '_' and '-' only; users at most 20 characters, gMSAs at most 15):
+      {{ mssql_prereqs__bad_names }}.
+      Names listed more than once: {{ mssql_prereqs__repeated_names }}.
+      Users without a password: {{ mssql_prereqs__missing_passwords }}.
+      gMSAs without dns_hostname: {{ mssql_prereqs__missing_dns_hostnames }}.
+      Host names with characters other than letters, digits, '.' and '-': {{ mssql_prereqs__bad_hosts }}.
+      Invalid instance names: {{ mssql_prereqs__bad_instances }}.
+      extra_spns containing '*', '(', ')' or a backslash: {{ mssql_prereqs__bad_extra_spns }}.
+      SPNs listed more than once (an SPN belongs to one account): {{ mssql_prereqs__repeated_spns }}.
+    quiet: true
+  vars:
+    mssql_prereqs__bad_names: >-
+      {{ (mssql_prereqs__accounts | rejectattr('name', 'match', '^[A-Za-z0-9._-]+$') | map(attribute='name') | list)
+         + (mssql_prereqs__accounts | selectattr('type', 'equalto', 'user') | selectattr('name', 'match', '^.{21,}$')
+            | map(attribute='name') | list)
+         + (mssql_prereqs__accounts | selectattr('type', 'equalto', 'gmsa') | selectattr('name', 'match', '^.{16,}$')
+            | map(attribute='name') | list) }}
+    mssql_prereqs__all_names: "{{ mssql_prereqs__accounts | map(attribute='name') | map('lower') | list }}"
+    # Lists built in a namespace: a template of nothing but loop tags renders
+    # to None, not '', when the loop outputs nothing (seen on ansible-core 2.21).
+    mssql_prereqs__repeated_names: >-
+      {%- set found = namespace(names=[]) -%}
+      {%- for name in mssql_prereqs__all_names | unique
+            if mssql_prereqs__all_names | select('equalto', name) | list | length > 1 -%}
+      {%- set found.names = found.names + [name] -%}
+      {%- endfor -%}
+      {{ found.names }}
+    mssql_prereqs__missing_passwords: >-
+      {{ mssql_prereqs__accounts | selectattr('type', 'equalto', 'user') | selectattr('state', 'equalto', 'present')
+         | rejectattr('name', 'in', mssql_prereqs__with_password) | map(attribute='name') | list }}
+    mssql_prereqs__missing_dns_hostnames: >-
+      {{ mssql_prereqs__accounts | selectattr('type', 'equalto', 'gmsa') | selectattr('state', 'equalto', 'present')
+         | selectattr('dns_hostname', 'equalto', '') | map(attribute='name') | list }}
+    mssql_prereqs__spn_sets: "{{ mssql_prereqs__accounts | map(attribute='spn_sets') | flatten(levels=1) }}"
+    mssql_prereqs__bad_hosts: >-
+      {{ mssql_prereqs__spn_sets | map(attribute='hosts') | flatten | reject('match', '^[A-Za-z0-9.-]+$') | list }}
+    mssql_prereqs__bad_instances: >-
+      {{ mssql_prereqs__spn_sets | selectattr('instance', 'defined') | map(attribute='instance')
+         | reject('match', '^[A-Za-z_&][A-Za-z0-9_$]*$') | list }}
+    mssql_prereqs__bad_extra_spns: >-
+      {{ mssql_prereqs__accounts | map(attribute='extra_spns') | flatten | select('search', '[*()\\\\]') | list }}
+    mssql_prereqs__all_spns: "{{ mssql_prereqs__spns.values() | list | flatten | map('lower') | list }}"
+    mssql_prereqs__repeated_spns: >-
+      {%- set found = namespace(spns=[]) -%}
+      {%- for spn in mssql_prereqs__all_spns | unique
+            if mssql_prereqs__all_spns | select('equalto', spn) | list | length > 1 -%}
+      {%- set found.spns = found.spns + [spn] -%}
+      {%- endfor -%}
+      {{ found.spns }}

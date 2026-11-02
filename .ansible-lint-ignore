@@ -10,3 +10,5 @@ roles/wsfc/molecule/default/verify.yml var-naming[no-role-prefix] skip
 roles/wsfc_fileserver/molecule/default/prepare.yml var-naming[no-role-prefix] skip
 roles/wsfc_fileserver/molecule/default/converge.yml var-naming[no-role-prefix] skip
 roles/wsfc_fileserver/molecule/default/verify.yml var-naming[no-role-prefix] skip
+roles/mssql_prereqs/molecule/default/prepare.yml var-naming[no-role-prefix] skip
+roles/mssql_prereqs/molecule/default/verify.yml var-naming[no-role-prefix] skip

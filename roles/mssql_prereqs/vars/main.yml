@@ -1,0 +1,41 @@
+---
+# Internal values, not meant to be set. Each account's keys default to these
+# (meta/argument_specs.yml documents them); tasks/main.yml fills them in.
+mssql_prereqs__account_defaults:
+  type: user
+  path: ''
+  description: ''
+  upn: ''
+  dns_hostname: ''
+  retrieve_password: []
+  spn_sets: []
+  extra_spns: []
+  state: present
+
+# How the list options reach the microsoft.ad modules.
+mssql_prereqs__list_mode: "{{ 'set' if mssql_prereqs_exclusive | bool else 'add' }}"
+
+# mssql_prereqs_report_only is check mode for the tasks that write. The
+# "or ansible_check_mode" keeps --check honest: without it, report_only false
+# would template to check_mode false and those tasks would write during a
+# check run.
+mssql_prereqs__check_mode: "{{ mssql_prereqs_report_only | bool or ansible_check_mode }}"
+
+# The names of the accounts that carry a password; the passwords themselves
+# never leave mssql_prereqs_accounts.
+mssql_prereqs__with_password: >-
+  {{ mssql_prereqs_accounts | selectattr('password', 'defined') | rejectattr('password', 'none')
+     | rejectattr('password', 'equalto', '') | map(attribute='name') | list }}
+
+# The groups this run creates or converges, lower-cased. In check mode they
+# may not exist yet, so a gMSA or group that names one looks its principals up
+# with lookup_failure_action warn instead of failing the plan.
+mssql_prereqs__planned_groups: >-
+  {{ ((mssql_prereqs_groups | rejectattr('state', 'defined') | map(attribute='name') | list)
+      + (mssql_prereqs_groups | selectattr('state', 'defined') | selectattr('state', 'equalto', 'present')
+         | map(attribute='name') | list)) | map('lower') | list }}
+
+# True when a gMSA is to be created or converged, which needs a KDS root key.
+mssql_prereqs__need_kds: >-
+  {{ mssql_prereqs__accounts | selectattr('type', 'equalto', 'gmsa')
+     | selectattr('state', 'equalto', 'present') | list | length > 0 }}

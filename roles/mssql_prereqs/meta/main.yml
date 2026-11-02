@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  role_name: mssql_prereqs
+  author: Chris Gallagher
+  description: Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+dependencies: []

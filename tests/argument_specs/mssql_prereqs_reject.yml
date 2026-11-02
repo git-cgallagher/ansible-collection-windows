@@ -1,0 +1,21 @@
+---
+# Included by validate.yml once per case (plan_case: case, accounts, expect).
+- name: "Refuse {{ plan_case.case }}"
+  block:
+    - name: Plan the input
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs
+        tasks_from: plan
+      vars:
+        mssql_prereqs_accounts: "{{ plan_case.accounts }}"
+
+    - name: Fail because the plan accepted it
+      ansible.builtin.fail:
+        msg: "mssql_prereqs planned {{ plan_case.case }}"
+  rescue:
+    - name: Check the plan refused it, and said why
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_result.argument_errors is not defined
+          - ansible_failed_result.msg | default('') is search(plan_case.expect)
+        fail_msg: "{{ plan_case.case }}: {{ ansible_failed_result.msg | default(ansible_failed_result) | string }}"
