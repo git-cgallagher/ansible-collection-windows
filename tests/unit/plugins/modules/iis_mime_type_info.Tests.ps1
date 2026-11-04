@@ -65,7 +65,8 @@ Describe 'iis_mime_type_info''s wiring' {
     }
 
     It 'reads the level, its parent and what the level stores, and lists through the util' {
-        foreach ($name in 'ConvertTo-IisFileExtension', 'Resolve-IisConfigLevel', 'Get-IisMimeMapEntry', 'Get-IisStoredMimeMapExtension', 'Get-IisMimeTypeList') {
+        $names = 'ConvertTo-IisFileExtension', 'Resolve-IisConfigLevel', 'Get-IisMimeMapEntry', 'Get-IisStoredMimeMapExtension', 'Get-IisMimeTypeList'
+        foreach ($name in $names) {
             $script:text | Should -Match "$name "
         }
     }
@@ -153,7 +154,8 @@ Describe 'Get-IisMimeTypeList' {
             @{ Extension = '.apk'; Inherited = $false; Why = 'the parent doesn''t map it' }
             @{ Extension = '.log'; Inherited = $false; Why = 'the level stores its own copy of the parent''s mapping' }
         ) {
-            $list = Get-IisMimeTypeList -Entries $script:entries -ParentEntries $script:parent -Stored (New-Stored '.LOG') -ConfigPath $script:site -Extension $Extension
+            $stored = New-Stored '.LOG'
+            $list = Get-IisMimeTypeList -Entries $script:entries -ParentEntries $script:parent -Stored $stored -ConfigPath $script:site -Extension $Extension
             @($list).Count | Should -Be 1
             $list[0].inherited | Should -Be $Inherited
             $list[0].inherited | Should -BeOfType [bool]

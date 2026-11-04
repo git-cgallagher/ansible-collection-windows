@@ -57,7 +57,12 @@ Describe 'ConvertTo-IisComArgument' {
         }
         , $values | Should -BeOfType [object[]]
         $values.Count | Should -Be 3
-        $values[0].GetType().FullName | Should -Be 'System.String'
+        # GetTypeArray sees the array's own elements (PowerShell would report a
+        # wrapper's base type), and takes no $null.
+        $unwrapped = InModuleScope _IisConfig {
+            ConvertTo-IisComArgument -ArgumentList @(('x' | Add-Member -NotePropertyName a -NotePropertyValue 1 -PassThru), 3)
+        }
+        @([System.Type]::GetTypeArray($unwrapped) | ForEach-Object { $_.FullName }) | Should -Be @('System.String', 'System.Int32')
         $values[1] | Should -BeNullOrEmpty
         $values[2] | Should -Be 3
     }
@@ -166,7 +171,8 @@ Describe 'Get-IisSectionCollection' {
 Describe 'Get-IisMimeMapEntry' {
     BeforeEach {
         Register-IisFakeCom
-        $script:collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap ([ordered]@{ '.txt' = 'text/plain'; '.JSON' = 'application/json'; '.css' = 'text/css' }))
+        $map = New-IisFakeMimeMap ([ordered]@{ '.txt' = 'text/plain'; '.JSON' = 'application/json'; '.css' = 'text/css' })
+        $script:collection = New-IisFakeCollection -Elements @($map)
     }
 
     It 'returns every element with its index, extension and MIME type' {
@@ -334,7 +340,9 @@ Describe 'Get-IisStoredMimeMapExtension' {
         $shared = Join-Path $TestDrive "shared-$([guid]::NewGuid())"
         Set-Xml (Join-Path $shared 'applicationHost.config') @'
 <configuration>
-  <location path="Default Web Site"><system.webServer><staticContent><mimeMap fileExtension=".shared" mimeType="text/x-shared" /></staticContent></system.webServer></location>
+  <location path="Default Web Site">
+    <system.webServer><staticContent><mimeMap fileExtension=".shared" mimeType="text/x-shared" /></staticContent></system.webServer>
+  </location>
 </configuration>
 '@
         $env:IIS_UNIT_SHARED = $shared

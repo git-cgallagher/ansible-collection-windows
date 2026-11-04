@@ -223,12 +223,30 @@ Describe 'deciding against the map IIS serves at each level' {
     }
 
     It '<Case>' -ForEach @(
-        @{ Case = 'the server''s own mapping is no change'; Site = $null; App = $null; Ext = 'json'; State = 'present'; Mime = 'application/json'; Changed = $false; Before = 'application/json' }
-        @{ Case = 'the site''s inherited mapping is no change, not a copy'; Site = 'Default Web Site'; App = $null; Ext = 'TXT'; State = 'present'; Mime = 'text/plain'; Changed = $false; Before = 'text/plain' }
-        @{ Case = 'the site''s override is what it compares with'; Site = 'Default Web Site'; App = $null; Ext = '.json'; State = 'present'; Mime = 'application/json'; Changed = $true; Before = 'application/x-site' }
-        @{ Case = 'hiding an inherited mapping at the site is a change'; Site = 'Default Web Site'; App = $null; Ext = '.txt'; State = 'absent'; Mime = $null; Changed = $true; Before = 'text/plain' }
-        @{ Case = 'a mapping the application removed is a new one there'; Site = 'Default Web Site'; App = '/app1'; Ext = '.txt'; State = 'present'; Mime = 'text/plain'; Changed = $true; Before = $null }
-        @{ Case = 'removing what the application already removed is no change'; Site = 'Default Web Site'; App = '/app1'; Ext = '.txt'; State = 'absent'; Mime = $null; Changed = $false; Before = $null }
+        @{
+            Case = 'the server''s own mapping is no change'; Site = $null; App = $null; Ext = 'json'
+            State = 'present'; Mime = 'application/json'; Changed = $false; Before = 'application/json'
+        }
+        @{
+            Case = 'the site''s inherited mapping is no change, not a copy'; Site = 'Default Web Site'; App = $null; Ext = 'TXT'
+            State = 'present'; Mime = 'text/plain'; Changed = $false; Before = 'text/plain'
+        }
+        @{
+            Case = 'the site''s override is what it compares with'; Site = 'Default Web Site'; App = $null; Ext = '.json'
+            State = 'present'; Mime = 'application/json'; Changed = $true; Before = 'application/x-site'
+        }
+        @{
+            Case = 'hiding an inherited mapping at the site is a change'; Site = 'Default Web Site'; App = $null; Ext = '.txt'
+            State = 'absent'; Mime = $null; Changed = $true; Before = 'text/plain'
+        }
+        @{
+            Case = 'a mapping the application removed is a new one there'; Site = 'Default Web Site'; App = '/app1'; Ext = '.txt'
+            State = 'present'; Mime = 'text/plain'; Changed = $true; Before = $null
+        }
+        @{
+            Case = 'removing what the application already removed is no change'; Site = 'Default Web Site'; App = '/app1'; Ext = '.txt'
+            State = 'absent'; Mime = $null; Changed = $false; Before = $null
+        }
     ) {
         $d = Get-LevelDecision -Site $Site -Application $App -Extension $Ext -State $State -MimeType $Mime
         $d.Changed | Should -Be $Changed
@@ -272,7 +290,8 @@ Describe 'Get-IisWebConfigOverride' {
     }
 
     It 'reports a clear element' {
-        Set-Content -LiteralPath $script:webConfig -Value '<configuration><system.webServer><staticContent><clear /></staticContent></system.webServer></configuration>'
+        $xml = '<configuration><system.webServer><staticContent><clear /></staticContent></system.webServer></configuration>'
+        Set-Content -LiteralPath $script:webConfig -Value $xml
         Get-IisWebConfigOverride -PhysicalPath $script:dir -Extension '.unit' |
             Should -BeExactly "$script:webConfig clears the inherited MIME map (<clear />)"
     }
@@ -281,7 +300,8 @@ Describe 'Get-IisWebConfigOverride' {
         @{ Element = 'mimeMap'; Xml = '<mimeMap fileExtension=".UNIT" mimeType="text/plain" />' }
         @{ Element = 'remove'; Xml = '<remove fileExtension=".Unit" />' }
     ) {
-        Set-Content -LiteralPath $script:webConfig -Value "<configuration><system.webServer><staticContent>$Xml</staticContent></system.webServer></configuration>"
+        $content = "<configuration><system.webServer><staticContent>$Xml</staticContent></system.webServer></configuration>"
+        Set-Content -LiteralPath $script:webConfig -Value $content
         Get-IisWebConfigOverride -PhysicalPath $script:dir -Extension '.unit' |
             Should -BeExactly "$script:webConfig has its own <$Element> element for .unit"
     }
@@ -309,7 +329,8 @@ Describe 'Invoke-IisMimeMapChange' {
 
     It 'adds a new mapping and commits once' {
         $collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap @{ '.txt' = 'text/plain' })
-        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping @{ extension = '.unit'; mime_type = 'text/x-unit' } -CurrentMimeType $null
+        $mapping = @{ extension = '.unit'; mime_type = 'text/x-unit' }
+        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping $mapping -CurrentMimeType $null
         $refusal | Should -BeNullOrEmpty
         $collection.Deleted.Count | Should -Be 0
         $collection.Added.Count | Should -Be 1
@@ -321,7 +342,8 @@ Describe 'Invoke-IisMimeMapChange' {
 
     It 'changes a mapping by deleting it and adding it again, in IIS''s spelling' {
         $collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap ([ordered]@{ '.txt' = 'text/plain'; '.UNIT' = 'text/plain' }))
-        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping @{ extension = '.UNIT'; mime_type = 'text/x-unit' } -CurrentMimeType 'text/plain'
+        $mapping = @{ extension = '.UNIT'; mime_type = 'text/x-unit' }
+        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping $mapping -CurrentMimeType 'text/plain'
         $refusal | Should -BeNullOrEmpty
         @($collection.Deleted) | Should -Be @(1)
         Format-MimeMap $collection | Should -Be @('.txt=text/plain', '.UNIT=text/x-unit')
@@ -340,7 +362,8 @@ Describe 'Invoke-IisMimeMapChange' {
 
     It 'hides an inherited mapping that shows through a deleted local one by deleting that too' {
         # IIS writes <remove> for the deletion of an inherited entry.
-        $collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap @{ '.unit' = 'text/x-local' }) -Shadowed @(New-IisFakeMimeMap @{ '.unit' = 'text/x-server' })
+        $local = New-IisFakeMimeMap @{ '.unit' = 'text/x-local' }
+        $collection = New-IisFakeCollection -Elements @($local) -Shadowed @(New-IisFakeMimeMap @{ '.unit' = 'text/x-server' })
         $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping $null -CurrentMimeType 'text/x-local'
         $refusal | Should -BeNullOrEmpty
         @($collection.Deleted) | Should -Be @(0, 0)
@@ -350,8 +373,10 @@ Describe 'Invoke-IisMimeMapChange' {
 
     It 'refuses, and writes nothing, when the extension is still there after two deletions' {
         $collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap @{ '.unit' = 'text/x-unit' }) -Sticky
-        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping @{ extension = '.unit'; mime_type = 'text/plain' } -CurrentMimeType 'text/x-unit'
-        $refusal | Should -BeExactly "Couldn't delete .unit from applicationHost.config at $script:server/Default Web Site: it is still there after two deletions."
+        $mapping = @{ extension = '.unit'; mime_type = 'text/plain' }
+        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping $mapping -CurrentMimeType 'text/x-unit'
+        $refusal | Should -BeExactly ("Couldn't delete .unit from applicationHost.config at $script:server/Default Web Site: " +
+            'it is still there after two deletions.')
         $collection.Deleted.Count | Should -Be 2
         $collection.Added.Count | Should -Be 0
         $script:writer.Commits | Should -Be 0
@@ -368,7 +393,8 @@ Describe 'Invoke-IisMimeMapChange' {
             $map['.unit'] = $Stored
         }
         $collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap $map)
-        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping @{ extension = '.unit'; mime_type = 'text/plain' } -CurrentMimeType $Served
+        $mapping = @{ extension = '.unit'; mime_type = 'text/plain' }
+        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping $mapping -CurrentMimeType $Served
         $refusal | Should -BeExactly ("Can't change .unit at $script:server/Default Web Site through applicationHost.config: IIS serves '$Served', " +
             "but that file sees '$Stored'.")
         $collection.Deleted.Count | Should -Be 0
@@ -378,7 +404,8 @@ Describe 'Invoke-IisMimeMapChange' {
 
     It 'in check mode makes the same change in memory and commits nothing' {
         $collection = New-IisFakeCollection -Elements @(New-IisFakeMimeMap @{ '.unit' = 'text/plain' })
-        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping @{ extension = '.unit'; mime_type = 'text/x-unit' } -CurrentMimeType 'text/plain' -CheckMode
+        $mapping = @{ extension = '.unit'; mime_type = 'text/x-unit' }
+        $refusal = Invoke-IisMimeMapChange @script:base -Collection $collection -Mapping $mapping -CurrentMimeType 'text/plain' -CheckMode
         $refusal | Should -BeNullOrEmpty
         @($collection.Deleted) | Should -Be @(0)
         $collection.Added.Count | Should -Be 1
