@@ -688,6 +688,14 @@ ansible-galaxy collection build --force
   nothing). Matters for the "adopt without reimporting" design (issue #9).
 - **`Import-GPO` restores GPO status** (the computer/user halves), unlike
   links, filtering and the WMI filter link.
+- **`gpo_export`'s `gpo_names` is ship scope only.** The manifest loop goes
+  over `$all`, not `$live`, and a filtered run carries every state entry it
+  doesn't rewrite (`Get-GpoExportScope`). Building the manifest from the
+  selected GPOs only, to save the `Get-GPPermission` calls, reopens issue
+  #37: the repo's manifest loses the other GPOs and the next full run
+  reports `manifest_changed` on an unchanged domain. `gpo_import`'s
+  `gpo_names` limits the GPO import only; it still reconciles every
+  manifest container's links.
 - **After promoting a DC, wait for `\\<domain>\SYSVOL` itself**, not just
   the SYSVOL share and `SysvolReady`. Group Policy Preferences cmdlets write
   through the domain's DFS path, which failed with "The network path was not

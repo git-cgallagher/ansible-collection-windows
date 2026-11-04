@@ -18,6 +18,10 @@ A filtered `gpo_export` run no longer makes the next full run report a change
   now carry manifest entries for GPOs without a backup folder.
 - Two GPOs whose names map to the same folder name now fail a filtered run
   too, as the manifest names every GPO's folder.
+- If your last export before upgrading was filtered, its state holds the
+  partial manifest's hash, so the first 0.14.0 export reports
+  `manifest_changed` once and rewrites the repo's manifest whole; nothing
+  re-ships.
 
 ### Fixed
 
@@ -25,6 +29,9 @@ A filtered `gpo_export` run no longer makes the next full run report a change
   entry for it, so no later run reported the deletion. It now keeps the
   entry, like every other entry it doesn't rewrite, and the next full run
   reports it in `deleted`.
+
+### Other
+
 - The export's scope and carried-over state are one pure function,
   `Get-GpoExportScope` in `_GpoCommon.psm1`, which replaces
   `Get-CarriedOverGpoState` (only `gpo_export` used it).
