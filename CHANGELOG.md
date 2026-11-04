@@ -15,7 +15,10 @@ A filtered `gpo_export` run no longer makes the next full run report a change
   the repo's manifest lost every other GPO, and the next full export on an
   unchanged domain reported `manifest_changed` and `changed`. A consumer can
   see the difference: a filtered export's zip, and the repo it unpacks into,
-  now carry manifest entries for GPOs without a backup folder.
+  now carry manifest entries for GPOs without a backup folder. Moving a
+  subset of GPOs between domains isn't supported yet: `gpo_import` with
+  `gpo_names` still reconciles every container's links and WMI filters
+  (issue #57). The module docs and both role READMEs say so.
 - Two GPOs whose names map to the same folder name now fail a filtered run
   too, as the manifest names every GPO's folder.
 - If your last export before upgrading was filtered, its state holds the

@@ -43,10 +43,14 @@ DOCUMENTATION:
           whole. Two GPOs whose names map to the same folder name fail a filtered run too, as the manifest names every
           GPO's folder.
         - The state file keeps every entry the run doesn't rewrite, so the next unfiltered export ships only what changed
-          since. Deleted-GPO detection is skipped while filtering, because the run doesn't look at the other GPOs: a GPO
+          since. Deleted-GPO detection is skipped while filtering, because the run doesn't look at the other GPOs; a GPO
           that has left the domain, named here or not, keeps its entry and is reported in RV(deleted) by the next
           unfiltered export. Before 0.14.0 the manifest covered only the selected GPOs, so the next unfiltered export
           reported RV(manifest_changed).
+        - Moving a subset of GPOs between domains (a filtered export, then an import into a domain that lacks the other
+          GPOs) isn't supported yet. M(git_cgallagher.windows.gpo_import) with
+          O(git_cgallagher.windows.gpo_import#module:gpo_names) still reconciles every container's links and every WMI
+          filter in the manifest; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
       type: list
       elements: str
       default: []

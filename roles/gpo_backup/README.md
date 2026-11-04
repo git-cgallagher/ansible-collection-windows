@@ -28,6 +28,11 @@ one ships nothing new. A filtered run doesn't look for deleted GPOs, so it
 reports and prunes none; the next full run does (pruning with
 `gpo_backup_prune_deleted`).
 
+Moving a subset of GPOs between domains isn't supported yet: `gpo_import`
+still reconciles every container's links and WMI filters in the manifest,
+even with `gpo_import_gpos` set
+([issue #57](https://github.com/git-cgallagher/ansible-collection-windows/issues/57)).
+
 Runs against the domain's PDC emulator unless `gpo_backup_server` is set.
 Requires RSAT (GroupPolicy + ActiveDirectory modules) on the target host and
 `unzip` on the controller.
