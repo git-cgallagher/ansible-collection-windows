@@ -3,6 +3,9 @@
 # makes every call into the API through its private Invoke-IisComInvokeMember;
 # Register-IisFakeCom mocks that one function, so the util's own code runs
 # against these objects: a property is read or set, a method is a ScriptMethod.
+# Dot-source it in a BeforeAll after importing _IisConfig.psm1 (its functions
+# are script-scoped, so not a module of its own), and call Register-IisFakeCom
+# in a BeforeEach or It.
 
 function script:New-IisFakeElement {
     <#
