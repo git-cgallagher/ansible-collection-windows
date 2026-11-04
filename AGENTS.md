@@ -274,6 +274,18 @@ lab to the scripts — and record the surprise below as a gotcha.
   hashtables and return the changes. The coming `wsfc_group` module and the
   SQL Server modules use it too, rather than copies. Lists in it are made
   with `[System.Collections.Generic.List[object]]::new()` (see Gotchas).
+- The IIS modules share `plugins/module_utils/_IisConfig.psm1`: the calls
+  into IIS's configuration API, resolving `site`/`application` to a
+  configuration level (`Resolve-IisConfigLevel`), reading a level's MIME map
+  and what the level stores itself, and (0.15.0, issue #47) the modules'
+  decisions: the option checks (`Get-IisFileExtensionProblem`,
+  `Test-IisMimeType`), add/change/remove against the effective map
+  (`Get-IisMimeMapDecision`), the file to write (`Get-IisCommitTarget`,
+  `Get-IisWebConfigOverride`), the change itself, committed only outside
+  check mode (`Invoke-IisMimeMapChange`), and `iis_mime_type_info`'s list
+  (`Get-IisMimeTypeList`). Its Pester tests run without IIS against
+  `tests/unit/plugins/module_utils/IisFake.ps1`, a fake of the API behind a
+  mock of the util's one call into it (`Invoke-IisComInvokeMember`).
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -384,9 +396,8 @@ lab to the scripts — and record the surprise below as a gotcha.
   to call a module doesn't count for the module. No CI step checks this (the
   owner dropped the hygiene gate PR 46 first proposed, 2026-11-01): it's a
   rule every change follows, so a PR that adds or changes a role or module
-  adds or updates its tests in the same PR. Still owed: the unit tests of
-  `iis_mime_type` and `iis_mime_type_info` (issue #47); `wsfc_cluster`'s
-  arrived with 0.13.0.
+  adds or updates its tests in the same PR. Every module has both since
+  0.15.0 (issue #47 added the IIS modules' unit tests).
 - **A module's unit tests** are Pester 5, in
   `tests/unit/plugins/modules/<name>.Tests.ps1`, with shared code's in
   `tests/unit/plugins/module_utils/<util>.Tests.ps1`; the `powershell` CI job

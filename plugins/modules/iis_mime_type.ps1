@@ -30,66 +30,14 @@ $mimeType = $module.Params.mime_type
 $state = $module.Params.state
 $useWebConfig = $module.Params.config_file -eq 'web.config'
 
-Function Get-WebConfigOverride {
-    <#
-    .SYNOPSIS
-    Describes what in a level's own web.config would override a mapping stored in
-    applicationHost.config for that level, or returns $null.
-
-    .DESCRIPTION
-    IIS reads a level's <location> element in applicationHost.config before the
-    level's web.config, so that file's <clear />, or its own element for the
-    extension, wins over (or collides with) anything written to the <location>.
-    #>
-    param (
-        [AllowNull()]
-        [string]
-        $PhysicalPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]
-        $Extension
-    )
-
-    if (-not $PhysicalPath) {
-        return $null
-    }
-    $path = [System.IO.Path]::Combine($PhysicalPath, 'web.config')
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        return $null
-    }
-
-    $xml = New-Object -TypeName System.Xml.XmlDocument
-    $xml.Load($path)
-    $xpath = "/*[local-name()='configuration']/*[local-name()='system.webServer']/*[local-name()='staticContent']/*"
-    foreach ($node in $xml.SelectNodes($xpath)) {
-        if ($node.LocalName -eq 'clear') {
-            return "$path clears the inherited MIME map (<clear />)"
-        }
-        if ($node.GetAttribute('fileExtension') -eq $Extension) {
-            return "$path has its own <$($node.LocalName)> element for $Extension"
-        }
-    }
-    $null
-}
-
 # --- validate ------------------------------------------------------------------
-$problem = $null
-if ([string]::IsNullOrEmpty($extension) -or $extension -eq '.') {
-    $problem = 'must not be empty'
-}
-elseif ($extension -match '\s') {
-    $problem = 'must not contain whitespace'
-}
-elseif ($extension -match '["''/\\]') {
-    $problem = 'must not contain quotes or path separators (/ or \)'
-}
+$problem = Get-IisFileExtensionProblem -Extension $extension
 if ($problem) {
     $module.FailJson("extension $problem; got '$extension'.")
 }
 $extension = ConvertTo-IisFileExtension -Extension $extension
 
-if ($state -eq 'present' -and $mimeType -notmatch '^[^\s/]+/[^\s/]+$') {
+if ($state -eq 'present' -and -not (Test-IisMimeType -MimeType $mimeType)) {
     $module.FailJson("mime_type must look like type/subtype, with exactly one '/' and no whitespace; got '$mimeType'.")
 }
 if ($state -eq 'absent') {
@@ -115,28 +63,15 @@ $module.Result.config_path = $level.ConfigPath
 
 # The decision is made against the effective map, inherited entries included:
 # a matching inherited entry is left alone rather than copied to this level.
-$before = $null
+$decision = Get-IisMimeMapDecision -Current $current -State $state -Extension $extension -MimeType $mimeType
 $currentMimeType = $null
 if ($current) {
     $currentMimeType = $current.MimeType
-    $before = @{ extension = $current.Extension; mime_type = $current.MimeType }
 }
+$changed = $decision.Changed
 
-$after = $null
-if ($state -eq 'present') {
-    $key = $extension
-    if ($current) {
-        $key = $current.Extension
-    }
-    $after = @{ extension = $key; mime_type = $mimeType }
-    $changed = $currentMimeType -cne $mimeType
-}
-else {
-    $changed = $null -ne $current
-}
-
-$module.Diff.before = $before
-$module.Diff.after = $after
+$module.Diff.before = $decision.Before
+$module.Diff.after = $decision.After
 $module.Result.mime_type = $mimeType
 
 # changed stays false until the change has gone through (or would have, in
@@ -146,16 +81,12 @@ if (-not $changed) {
 }
 
 # --- change it: in memory first, so check mode follows the same path, then one commit ---
-$commitPath = 'MACHINE/WEBROOT/APPHOST'
-$file = 'applicationHost.config'
-if ($useWebConfig) {
-    $commitPath = $level.ConfigPath
-    $file = "the web.config of $($level.ConfigPath)"
-}
+$target = Get-IisCommitTarget -Level $level -WebConfig:$useWebConfig
+$file = $target.File
 
 if (-not $useWebConfig -and $level.Site) {
     try {
-        $override = Get-WebConfigOverride -PhysicalPath $level.PhysicalPath -Extension $extension
+        $override = Get-IisWebConfigOverride -PhysicalPath $level.PhysicalPath -Extension $extension
     }
     catch {
         $override = $null
@@ -172,47 +103,21 @@ if (-not $useWebConfig -and $level.Site) {
 # refusal; it's reported after the block.
 $refusal = $null
 try {
-    $writer = New-IisAdminManager -CommitPath $commitPath
+    $writer = New-IisAdminManager -CommitPath $target.CommitPath
     $collection = Get-IisSectionCollection -AdminManager $writer -Section $section -ConfigPath $level.ConfigPath
-    $stored = Get-IisMimeMapEntry -Collection $collection -Extension $extension | Select-Object -First 1
-
-    # The file being written must see the mapping IIS serves, or a change made
-    # there can't take effect (for example an entry from a web.config that a
-    # <location> element in applicationHost.config can't override).
-    $storedMimeType = $null
-    if ($stored) {
-        $storedMimeType = $stored.MimeType
+    $changeArgs = @{
+        Writer = $writer
+        Collection = $collection
+        Extension = $extension
+        Mapping = $decision.After
+        CurrentMimeType = $currentMimeType
+        ConfigPath = $level.ConfigPath
+        File = $file
+        CheckMode = $module.CheckMode
     }
-    if ($storedMimeType -cne $currentMimeType) {
-        $refusal = "Can't change $extension at $($level.ConfigPath) through ${file}: IIS serves '$currentMimeType', "
-        $refusal += "but that file sees '$storedMimeType'."
-    }
-    else {
-        # Delete what this file sees for the extension. Deleting an entry
-        # inherited from a parent level writes a <remove> element at this level.
-        # If an inherited entry shows through after deleting a local one, delete
-        # that too.
-        for ($attempt = 0; $attempt -lt 2 -and $stored; $attempt++) {
-            $null = Invoke-IisComMember -Object $collection -Name 'DeleteElement' -ArgumentList $stored.Index
-            $stored = Get-IisMimeMapEntry -Collection $collection -Extension $extension | Select-Object -First 1
-        }
-
-        if ($stored) {
-            $refusal = "Couldn't delete $extension from $file at $($level.ConfigPath): it is still there after two deletions."
-        }
-        else {
-            if ($state -eq 'present') {
-                $element = Invoke-IisComMember -Object $collection -Name 'CreateNewElement' -ArgumentList 'mimeMap'
-                Set-IisElementValue -Element $element -Name 'fileExtension' -Value $after.extension
-                Set-IisElementValue -Element $element -Name 'mimeType' -Value $mimeType
-                $null = Invoke-IisComMember -Object $collection -Name 'AddElement' -ArgumentList @($element, -1)
-            }
-
-            if (-not $module.CheckMode) {
-                $null = Invoke-IisComMember -Object $writer -Name 'CommitChanges'
-                $module.Result.changed = $true
-            }
-        }
+    $refusal = Invoke-IisMimeMapChange @changeArgs
+    if (-not $refusal -and -not $module.CheckMode) {
+        $module.Result.changed = $true
     }
 }
 catch {

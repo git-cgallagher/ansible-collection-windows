@@ -316,6 +316,10 @@ Function Get-IisStoredMimeMapExtension {
 
     .PARAMETER PhysicalPath
     The level's content directory, where its web.config lives; $null to skip it.
+
+    .PARAMETER ConfigDirectory
+    IIS's configuration directory, where applicationHost.config and
+    redirection.config live; %SystemRoot%\System32\inetsrv\config by default.
     #>
     [CmdletBinding()]
     param (
@@ -325,7 +329,10 @@ Function Get-IisStoredMimeMapExtension {
 
         [AllowNull()]
         [string]
-        $PhysicalPath
+        $PhysicalPath,
+
+        [string]
+        $ConfigDirectory
     )
 
     $extensions = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
@@ -333,7 +340,10 @@ Function Get-IisStoredMimeMapExtension {
     # the <configuration> element in an XML namespace.
     $mimeMapXPath = "*[local-name()='system.webServer']/*[local-name()='staticContent']/*[local-name()='mimeMap']"
 
-    $configDir = [System.IO.Path]::Combine($env:SystemRoot, 'System32', 'inetsrv', 'config')
+    $configDir = $ConfigDirectory
+    if (-not $configDir) {
+        $configDir = [System.IO.Path]::Combine($env:SystemRoot, 'System32', 'inetsrv', 'config')
+    }
     $appHostDir = $configDir
     $redirectionPath = [System.IO.Path]::Combine($configDir, 'redirection.config')
     if (Test-Path -LiteralPath $redirectionPath -PathType Leaf) {
@@ -515,14 +525,387 @@ Function ConvertTo-IisFileExtension {
     }
 }
 
+Function Get-IisFileExtensionProblem {
+    <#
+    .SYNOPSIS
+    Returns what's wrong with an extension option as given (such as 'must not be empty'), or $null.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]
+        $Extension
+    )
+
+    if ([string]::IsNullOrEmpty($Extension) -or $Extension -eq '.') {
+        'must not be empty'
+    }
+    elseif ($Extension -match '\s') {
+        'must not contain whitespace'
+    }
+    elseif ($Extension -match '["''/\\]') {
+        'must not contain quotes or path separators (/ or \)'
+    }
+    else {
+        $null
+    }
+}
+
+Function Test-IisMimeType {
+    <#
+    .SYNOPSIS
+    Whether a MIME type looks like type/subtype: exactly one '/' and no whitespace.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]
+        $MimeType
+    )
+
+    $MimeType -match '^[^\s/]+/[^\s/]+$'
+}
+
+Function Get-IisMimeMapDecision {
+    <#
+    .SYNOPSIS
+    Decides what iis_mime_type does about one extension, against the map IIS serves at the level.
+
+    .DESCRIPTION
+    Returns Before and After (the diff's mappings, $null when there is none)
+    and Changed. The decision is made against the effective map, inherited
+    entries included: a matching inherited entry is left alone rather than
+    copied to this level. MIME types compare case-sensitively, and an existing
+    entry keeps IIS's spelling of its extension.
+
+    .PARAMETER Current
+    The entry IIS serves for the extension (from Get-IisMimeMapEntry), or $null.
+
+    .PARAMETER MimeType
+    The wanted MIME type; ignored for state=absent.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowNull()]
+        [object]
+        $Current,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('absent', 'present')]
+        [string]
+        $State,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Extension,
+
+        [AllowNull()]
+        [object]
+        $MimeType
+    )
+
+    $before = $null
+    $currentMimeType = $null
+    if ($Current) {
+        $currentMimeType = $Current.MimeType
+        $before = @{ extension = $Current.Extension; mime_type = $Current.MimeType }
+    }
+
+    $after = $null
+    if ($State -eq 'present') {
+        $key = $Extension
+        if ($Current) {
+            $key = $Current.Extension
+        }
+        $after = @{ extension = $key; mime_type = $MimeType }
+        $changed = $currentMimeType -cne $MimeType
+    }
+    else {
+        $changed = $null -ne $Current
+    }
+
+    [PSCustomObject]@{
+        Before = $before
+        After = $after
+        Changed = [bool]$changed
+    }
+}
+
+Function Get-IisCommitTarget {
+    <#
+    .SYNOPSIS
+    Returns where iis_mime_type commits a change (CommitPath) and how its messages name that file (File).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Level,
+
+        [switch]
+        $WebConfig
+    )
+
+    if ($WebConfig) {
+        [PSCustomObject]@{
+            CommitPath = $Level.ConfigPath
+            File = "the web.config of $($Level.ConfigPath)"
+        }
+    }
+    else {
+        [PSCustomObject]@{
+            CommitPath = $script:IisServerPath
+            File = 'applicationHost.config'
+        }
+    }
+}
+
+Function Get-IisWebConfigOverride {
+    <#
+    .SYNOPSIS
+    Describes what in a level's own web.config would override a mapping stored in
+    applicationHost.config for that level, or returns $null.
+
+    .DESCRIPTION
+    IIS reads a level's <location> element in applicationHost.config before the
+    level's web.config, so that file's <clear />, or its own element for the
+    extension, wins over (or collides with) anything written to the <location>.
+    #>
+    [CmdletBinding()]
+    param (
+        [AllowNull()]
+        [string]
+        $PhysicalPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Extension
+    )
+
+    if (-not $PhysicalPath) {
+        return $null
+    }
+    $path = [System.IO.Path]::Combine($PhysicalPath, 'web.config')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $null
+    }
+
+    $xml = New-Object -TypeName System.Xml.XmlDocument
+    $xml.Load($path)
+    $xpath = "/*[local-name()='configuration']/*[local-name()='system.webServer']/*[local-name()='staticContent']/*"
+    foreach ($node in $xml.SelectNodes($xpath)) {
+        if ($node.LocalName -eq 'clear') {
+            return "$path clears the inherited MIME map (<clear />)"
+        }
+        if ($node.GetAttribute('fileExtension') -eq $Extension) {
+            return "$path has its own <$($node.LocalName)> element for $Extension"
+        }
+    }
+    $null
+}
+
+Function Invoke-IisMimeMapChange {
+    <#
+    .SYNOPSIS
+    Makes iis_mime_type's change in a writable manager's collection, and commits it unless in check mode.
+
+    .DESCRIPTION
+    Returns $null when the change went through (or would have, in check mode),
+    or a refusal message when it can't be made. Everything happens in memory
+    first, so check mode follows the same path and only skips CommitChanges.
+
+    .PARAMETER Writer
+    The writable manager (New-IisAdminManager -CommitPath) that Collection came from.
+
+    .PARAMETER Mapping
+    The mapping to leave in place (extension and mime_type), or $null to remove the extension.
+
+    .PARAMETER CurrentMimeType
+    What IIS serves for the extension at the level, or $null.
+
+    .PARAMETER File
+    How messages name the file being written (Get-IisCommitTarget's File).
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Writer,
+
+        [Parameter(Mandatory = $true)]
+        [object]
+        $Collection,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Extension,
+
+        [AllowNull()]
+        [System.Collections.IDictionary]
+        $Mapping,
+
+        [AllowNull()]
+        [object]
+        $CurrentMimeType,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $ConfigPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $File,
+
+        [switch]
+        $CheckMode
+    )
+
+    $stored = Get-IisMimeMapEntry -Collection $Collection -Extension $Extension | Select-Object -First 1
+
+    # The file being written must see the mapping IIS serves, or a change made
+    # there can't take effect (for example an entry from a web.config that a
+    # <location> element in applicationHost.config can't override).
+    $storedMimeType = $null
+    if ($stored) {
+        $storedMimeType = $stored.MimeType
+    }
+    if ($storedMimeType -cne $CurrentMimeType) {
+        $refusal = "Can't change $Extension at $ConfigPath through ${File}: IIS serves '$CurrentMimeType', "
+        $refusal += "but that file sees '$storedMimeType'."
+        return $refusal
+    }
+
+    # Delete what this file sees for the extension. Deleting an entry
+    # inherited from a parent level writes a <remove> element at this level.
+    # If an inherited entry shows through after deleting a local one, delete
+    # that too.
+    for ($attempt = 0; $attempt -lt 2 -and $stored; $attempt++) {
+        $null = Invoke-IisComMember -Object $Collection -Name 'DeleteElement' -ArgumentList $stored.Index
+        $stored = Get-IisMimeMapEntry -Collection $Collection -Extension $Extension | Select-Object -First 1
+    }
+
+    if ($stored) {
+        return "Couldn't delete $Extension from $File at ${ConfigPath}: it is still there after two deletions."
+    }
+
+    if ($Mapping) {
+        $element = Invoke-IisComMember -Object $Collection -Name 'CreateNewElement' -ArgumentList 'mimeMap'
+        Set-IisElementValue -Element $element -Name 'fileExtension' -Value $Mapping.extension
+        Set-IisElementValue -Element $element -Name 'mimeType' -Value $Mapping.mime_type
+        $null = Invoke-IisComMember -Object $Collection -Name 'AddElement' -ArgumentList @($element, -1)
+    }
+
+    if (-not $CheckMode) {
+        $null = Invoke-IisComMember -Object $Writer -Name 'CommitChanges'
+    }
+    $null
+}
+
+Function Get-IisMimeTypeList {
+    <#
+    .SYNOPSIS
+    Builds iis_mime_type_info's mime_types: the level's entries, filtered, sorted and marked inherited or not.
+
+    .DESCRIPTION
+    Sorted by extension, ordinally and ignoring case, so the order doesn't
+    depend on the host's culture. Filters compare case-insensitively. An entry
+    is inherited when the parent level serves the same mapping (MIME types
+    compared case-sensitively) and the level doesn't store its own (in a
+    <location> element of applicationHost.config or in the level's
+    web.config). At the server level, with no parent entries, nothing is
+    inherited.
+
+    .PARAMETER ParentEntries
+    What the parent level serves (from Get-IisMimeMapEntry); empty at the server level.
+
+    .PARAMETER Stored
+    The extensions the level's own configuration stores
+    (Get-IisStoredMimeMapExtension), or $null when unknown: an entry that
+    repeats the parent's mapping is then reported as inherited.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]
+        $Entries,
+
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]
+        $ParentEntries,
+
+        [AllowNull()]
+        [object]
+        $Stored,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $ConfigPath,
+
+        [AllowNull()]
+        [object]
+        $Extension,
+
+        [AllowNull()]
+        [object]
+        $MimeType
+    )
+
+    $parent = @{}
+    foreach ($entry in @($ParentEntries)) {
+        if ($null -ne $entry) {
+            $parent[$entry.Extension] = $entry.MimeType
+        }
+    }
+
+    $sorted = [System.Collections.Generic.List[object]]$Entries
+    $sorted.Sort([System.Comparison[object]] {
+            param ($x, $y)
+            [string]::CompareOrdinal($x.Extension.ToLowerInvariant(), $y.Extension.ToLowerInvariant())
+        })
+
+    $mimeTypes = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $sorted) {
+        if ($null -ne $Extension -and $entry.Extension -ne $Extension) {
+            continue
+        }
+        if ($null -ne $MimeType -and $entry.MimeType -ne $MimeType) {
+            continue
+        }
+
+        $sameAsParent = $parent.ContainsKey($entry.Extension) -and $parent[$entry.Extension] -ceq $entry.MimeType
+        $definedHere = $null -ne $Stored -and $Stored.Contains($entry.Extension)
+        $mimeTypes.Add([ordered]@{
+                extension = $entry.Extension
+                mime_type = $entry.MimeType
+                config_path = $ConfigPath
+                inherited = [bool]($sameAsParent -and -not $definedHere)
+            })
+    }
+
+    # The comma keeps PowerShell from enumerating the list on output.
+    , $mimeTypes
+}
+
 $exportFunctions = @(
     'ConvertTo-IisFileExtension'
+    'Get-IisCommitTarget'
+    'Get-IisFileExtensionProblem'
+    'Get-IisMimeMapDecision'
     'Get-IisMimeMapEntry'
+    'Get-IisMimeTypeList'
     'Get-IisSectionCollection'
     'Get-IisStoredMimeMapExtension'
+    'Get-IisWebConfigOverride'
     'Invoke-IisComMember'
+    'Invoke-IisMimeMapChange'
     'New-IisAdminManager'
     'Resolve-IisConfigLevel'
     'Set-IisElementValue'
+    'Test-IisMimeType'
 )
 Export-ModuleMember -Function $exportFunctions
