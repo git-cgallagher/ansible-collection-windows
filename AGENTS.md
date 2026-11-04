@@ -111,10 +111,13 @@ role):
   fixture: links in precedence order, enforced and disabled links,
   block-inheritance, filtering, the WMI filter, status), the repeat, check
   mode leaving the working directory byte-for-byte as it was, a changed GPO
-  shipping alone, a new and a deleted GPO, the `gpo_names` filter (deletion
-  detection skipped, the other GPOs' state kept) and the failures (a missing
+  shipping alone, a new and a deleted GPO, the `gpo_names` filter (the
+  whole domain's manifest written, the other GPOs' state kept, so a full run
+  after it ships nothing; deletion detection skipped, a deleted GPO named in
+  the filter kept for the next full run) and the failures (a missing
   `domain`, an ACL-denied working directory, one with no existing parent,
-  two GPOs mapping to one folder name), in a working directory of its own.
+  two GPOs mapping to one folder name, a filtered run included), in a
+  working directory of its own.
 - `roles/gpo_import/molecule/default`: the role's behaviour: seed, export,
   out-of-band drift, report-only plan (the role's `gpo_import_report_only`:
   predicts the drift, recreates nothing, writes no state file), import,
@@ -259,7 +262,7 @@ lab to the scripts — and record the surprise below as a gotcha.
   hashing (`Get-DirContentHash`, whose line format is the recorded state's
   basis and is pinned by a unit test: never change it), the zip, the
   manifest's encodings (WMI filter `msWMI-Parm2`, relative DNs and trustee
-  names), the export's state decisions (`Get-CarriedOverGpoState`,
+  names), the export's scope and state decisions (`Get-GpoExportScope`,
   `Get-DeletedGpoEntry`), the import decision (`Get-GpoImportReason`) and the
   link plan (`Get-GpoLinkPlan`). A module keeps only what talks to Windows
   (and `Ansible.Basic`); new pure logic goes in the util, with a test.

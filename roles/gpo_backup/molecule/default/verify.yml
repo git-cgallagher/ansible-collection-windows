@@ -129,8 +129,9 @@
 
 # 4. The module's own integration target, from tests/integration/targets
 #    (ANSIBLE_ROLES_PATH in molecule.yml), with setup_gpo_lab: check mode,
-#    the real export, the repeat, a changed GPO shipping alone, gpo_names and
-#    the failures, in a working directory of its own that it removes.
+#    the real export, the repeat, a filtered run then a full one, a changed
+#    GPO shipping alone, gpo_names and the failures, in a working directory of
+#    its own that it removes.
 - name: Run the gpo_export target
   hosts: all
   gather_facts: false

@@ -21,6 +21,13 @@ is staged or saved; its one write is a probe file in `gpo_backup_workdir`
 could be written and fails the plan otherwise. The module's `preflight`
 return value records that, and the fetch is skipped.
 
+`gpo_backup_gpos` limits what is hashed and shipped to the named GPOs; the
+manifest still describes the whole domain (every GPO, WMI filter and link),
+and the state keeps the other GPOs' hashes, so a full run after a filtered
+one ships nothing new. A filtered run doesn't look for deleted GPOs, so it
+reports and prunes none; the next full run does (pruning with
+`gpo_backup_prune_deleted`).
+
 Runs against the domain's PDC emulator unless `gpo_backup_server` is set.
 Requires RSAT (GroupPolicy + ActiveDirectory modules) on the target host and
 `unzip` on the controller.

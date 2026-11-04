@@ -14,7 +14,8 @@
 #   export\gpos\<SafeName>\manifest.xml + {backup-guid}\...   one self-contained
 #       Backup-GPO folder per GPO: only GPOs whose live SYSVOL content changed
 #       since the last run are included (the state file keeps the hashes)
-#   export\gpo-manifest.json                                  always included
+#   export\gpo-manifest.json                                  always included,
+#       always the whole domain (gpo_names limits only what is hashed and ships)
 #
 # Change detection hashes each GPO's live Group Policy Template under
 # \\<dc>\SYSVOL\<domain>\Policies\{guid} (Get-GpoLiveContentHash), never the
@@ -135,29 +136,26 @@ try {
     }
 
     # --- decide what ships, from the live GPOs ------------------------------
-    $live = @(Get-GPO -All -Domain $Domain -Server $pdc | Sort-Object DisplayName)
+    # gpo_names limits what is hashed and shipped ($live); the manifest covers
+    # every GPO ($all), so a filtered run's manifest (and its hash) is the
+    # full run's and the repo's manifest stays whole.
+    $all = @(Get-GPO -All -Domain $Domain -Server $pdc | Sort-Object DisplayName)
     $module.Result.preflight.gpmc = $true
     if ($preflightFailure) { throw "check-mode preflight failed: $preflightFailure" }
-    if ($GpoNames.Count -gt 0) {
-        $live = @($live | Where-Object { $GpoNames -contains $_.DisplayName })
-    }
+    $scope = Get-GpoExportScope -Names @($all | ForEach-Object { $_.DisplayName }) -Selected $GpoNames -State $state.gpos
+    $live = @($all | Where-Object { $scope.selected -contains $_.DisplayName })
     $module.Result.gpo_count = $live.Count
     $policies = "\\$pdc\SYSVOL\$Domain\Policies"
 
-    $safeSeen = @{}
     $shipped = New-Object System.Collections.ArrayList
-    # A filtered run (gpo_names) keeps the unselected GPOs' recorded hashes, so
-    # the next full export doesn't re-ship them; the selected ones are rewritten
-    # below. An unfiltered run starts empty, which is how a deleted GPO shows.
-    $newState = @{ gpos = (Get-CarriedOverGpoState -State $state.gpos -Selected $GpoNames); manifest_hash = '' }
+    # A filtered run (gpo_names) keeps every recorded hash it doesn't rewrite
+    # below, so the next full export neither re-ships the unselected GPOs nor
+    # misses a deletion. An unfiltered run starts empty, which is how a deleted
+    # GPO shows.
+    $newState = @{ gpos = $scope.carried; manifest_hash = '' }
 
     foreach ($gpo in $live) {
-        $safe = ConvertTo-SafeName -Name $gpo.DisplayName
-        if ($safeSeen.ContainsKey($safe.ToLowerInvariant())) {
-            throw ("GPO display names '{0}' and '{1}' map to the same folder name '{2}'; rename one." -f
-                $safeSeen[$safe.ToLowerInvariant()], $gpo.DisplayName, $safe)
-        }
-        $safeSeen[$safe.ToLowerInvariant()] = $gpo.DisplayName
+        $safe = $scope.backup_dirs[$gpo.DisplayName]
 
         # One broken GPO (missing SYSVOL folder, unreadable files) must not hide
         # the others: collect every failure, then fail the run without saving state.
@@ -184,7 +182,7 @@ try {
 
     # GPOs recorded in state but gone from the domain (skip when filtering: an
     # unselected GPO is not a deleted one).
-    $deleted = @(Get-DeletedGpoEntry -Recorded $state.gpos -Live $newState.gpos -Filtered ($GpoNames.Count -gt 0))
+    $deleted = @(Get-DeletedGpoEntry -Recorded $state.gpos -Live $newState.gpos -Filtered $scope.filtered)
 
     # --- build the topology manifest -----------------------------------------
     $manifest = [ordered]@{
@@ -197,7 +195,7 @@ try {
         soms = @()
     }
 
-    foreach ($gpo in $live) {
+    foreach ($gpo in $all) {
         $wmiName = $null
         if ($gpo.WmiFilter) { $wmiName = $gpo.WmiFilter.Name }
         $perms = @(Get-GPPermission -Guid $gpo.Id -All -Domain $Domain -Server $pdc)
@@ -216,7 +214,7 @@ try {
             } | Sort-Object { $_['name'] }
         )
         $manifest.gpos[$gpo.DisplayName] = [ordered]@{
-            backup_dir = $newState.gpos[$gpo.DisplayName].dir
+            backup_dir = $scope.backup_dirs[$gpo.DisplayName]
             status = $gpo.GpoStatus.ToString()
             wmi_filter = $wmiName
             apply_to = $applyTo
