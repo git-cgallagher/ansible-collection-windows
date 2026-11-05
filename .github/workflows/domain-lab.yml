@@ -54,9 +54,10 @@ env:
   # Stream Ansible's output (retry lines included) instead of buffering it
   # until the play ends; a stalled step is then visible in the live log.
   PYTHONUNBUFFERED: '1'
-  # The runner's temp disk: the box (~6 GB, plus ~6 GB while unpacking) and
-  # the VM disk don't fit on the ~14 GB root filesystem. The driver keeps them
-  # here, and the GPO scenarios their exports (lab_dir).
+  # The driver keeps the box (~6 GB, plus ~6 GB while unpacking) and the VM
+  # disks here, and the GPO scenarios their exports (lab_dir). On ubuntu-latest
+  # /mnt is a directory on the root filesystem, not a disk of its own. The
+  # "Make room for the lab" step moves the lab when /mnt is short of room.
   MOLECULE_LAB_DIR: /mnt/gpo-lab
 
 # The IIS modules (plugins/modules/iis_*) are tested the same way by one more
@@ -86,6 +87,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      # The driver refuses to create a VM with under 20 GB free in the lab
+      # directory (its windows_vm create.yml, measured with df -Pk, as here).
+      # Most runners have about 85 GB free on / (145 GB, /dev/root), but some
+      # come up with a 72 GB root (/dev/mapper/cow-root) and about 16 GB free
+      # (issue #62, actions/runner-images#15238). Then this step deletes big
+      # preinstalled toolchains the lab never uses and moves the lab to a
+      # directory on /: the same disk as /mnt today, the right one if /mnt is
+      # ever a small disk of its own. The later steps read the new path from
+      # ${{ env.MOLECULE_LAB_DIR }}. NEED_GB is more than the driver's 20 GB:
+      # the image pull, apt and pip below use some of the room first, and
+      # wsfc_fileserver's three VMs use the most.
+      - name: Make room for the lab
+        timeout-minutes: 10
+        env:
+          NEED_GB: '30'
+        run: |
+          avail_kb() { df -Pk "$1" | awk 'NR == 2 {print $4}'; }
+          gb() { awk -v kb="$1" 'BEGIN {printf "%.1f", kb / 1048576}'; }
+          need_kb=$((NEED_GB * 1048576))
+          lab=$MOLECULE_LAB_DIR
+          df -h / /mnt
+          if [ "$(avail_kb /mnt)" -lt "$need_kb" ]; then
+            echo "/mnt has $(gb "$(avail_kb /mnt)") GB free, under $NEED_GB GB. Deleting from /:"
+            for dir in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                       /opt/hostedtoolcache/CodeQL /usr/share/swift; do
+              [ -e "$dir" ] || continue
+              before=$(avail_kb /)
+              sudo rm -rf "$dir"
+              echo "  $dir ($(gb $(($(avail_kb /) - before))) GB)"
+            done
+            lab=$HOME/gpo-lab
+            echo "MOLECULE_LAB_DIR=$lab" >> "$GITHUB_ENV"
+          fi
+          # The lab directory doesn't exist yet (setup-molecule creates it).
+          free_kb=$(avail_kb "$(dirname "$lab")")
+          echo "Lab directory: $lab, on $(df -P "$(dirname "$lab")" | awk 'NR == 2 {print $1}'), $(gb "$free_kb") GB free"
+          if [ "$free_kb" -lt "$need_kb" ]; then
+            echo "::warning::Only $(gb "$free_kb") GB free for the lab ($lab); it may run out of room. Re-run the job if it does."
+          fi
 
       # Python, ansible-core, Molecule, the molecule-git-cgallagher driver and
       # its collection git_cgallagher.molecule (both from the action's pinned
@@ -139,6 +180,17 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
         run: molecule test -s "$SCENARIO" --destroy=never
+
+      # What the lab used (the box image, each VM's copy-on-write disk) and
+      # the room left, before destroy deletes the VM disks. QEMU pauses a VM
+      # whose disk runs out of room: the screen capture below then reports
+      # "VM status: paused (io-error)".
+      - name: Show the lab's disk use
+        if: always()
+        timeout-minutes: 2
+        run: |
+          du -sch "$MOLECULE_LAB_DIR"/* || true
+          df -h "$MOLECULE_LAB_DIR" || true
 
       # Writes <vm>-screen.ppm into the lab directory; never fails the job.
       - name: Capture the VM screen
