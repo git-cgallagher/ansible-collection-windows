@@ -231,3 +231,17 @@
     - name: Run the gpo_sync_import target
       ansible.builtin.include_role:
         name: gpo_sync_import
+
+# The content-only primitive gpo_import's integration target (issue #64):
+# two throwaway GPOs backed up, deleted and imported from a directory of
+# their own (created, repeated, a changed backup, a lost record, force, a
+# migration table), then every documented failure, and everything removed.
+- name: Run the gpo_import target
+  hosts: all
+  gather_facts: false
+  tasks:
+    # By path: the bare name gpo_import is also the role under test, which
+    # Molecule's roles path can find first.
+    - name: Run the gpo_import target
+      ansible.builtin.include_role:  # noqa: role-name[path]
+        name: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/../../tests/integration/targets/gpo_import"

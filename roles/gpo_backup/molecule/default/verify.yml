@@ -139,3 +139,15 @@
     - name: Run the gpo_sync_export target
       ansible.builtin.include_role:
         name: gpo_sync_export
+
+# 5. The content-only primitive gpo_export's integration target (issue #64),
+#    which needs the same seeded domain: two named GPOs backed up into a
+#    directory of their own, check mode, the repeat, a changed GPO, damaged
+#    folders and the failures.
+- name: Run the gpo_export target
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the gpo_export target
+      ansible.builtin.include_role:
+        name: gpo_export

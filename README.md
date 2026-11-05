@@ -5,7 +5,7 @@ Each area's roles and modules carry its prefix.
 
 | Area | Roles and modules | What they do |
 |---|---|---|
-| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; modules `gpo_sync_export`, `gpo_sync_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
+| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; modules `gpo_export`, `gpo_import`, `gpo_sync_export`, `gpo_sync_import` | Back up named GPOs' settings to a directory and import them into a domain; or mirror a whole domain's GPOs, with their links, precedence, filtering and WMI filters, into Git and converge the same domain or a different one on it |
 | [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; modules `wsfc_cluster`, `wsfc_group` | Build a Windows Server Failover Cluster and converge its networks, sites, node votes, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; converge its groups' owners, failback and resource properties, and test failover; run a clustered file server on it, fail it over between nodes and validate it from a client |
 | [SQL Server](#sql-server) | role `mssql_prereqs` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
@@ -114,6 +114,43 @@ cross-domain story and what was rejected, is in
   list. The module reports a change only when the domain changed, and in
   check mode predicts every action without writing
   (`ansible-doc git_cgallagher.windows.gpo_sync_import`).
+
+### Two layers: content primitives and the sync layer
+
+The roles above are the **sync layer**: a whole-domain mirror with a
+manifest, topology and state, through the `gpo_sync_export` and
+`gpo_sync_import` modules (named `gpo_export` and `gpo_import` until 0.18.0).
+
+Since 0.19.0 (issue #64) the names `gpo_export` and `gpo_import` are
+**content primitives**, settings only, by GPO name and path:
+
+- `gpo_export` backs up the named GPOs into one `Backup-GPO` folder each
+  under a directory on the host, and backs a GPO up again only when its live
+  settings changed. Each folder's `gpo-export.json` records what it holds.
+- `gpo_import` finds each named GPO's backup under a directory (by the name
+  the backup records, not the folder name) and imports it with `Import-GPO`,
+  creating the GPO when missing, optionally through a migration table. It
+  imports only when the backup or the table changed since its last import
+  into that GPO, recorded on the host in
+  `C:\ProgramData\gpo-iac\gpo-import-<domain>.json`.
+
+Neither touches links, WMI filters, security filtering, GPO status or
+block-inheritance, and `gpo_import` never deletes, renames or unlinks a GPO.
+
+```yaml
+- name: Back up two GPOs
+  git_cgallagher.windows.gpo_export:
+    domain: lab.example.com
+    gpo_names: [Server Baseline, RDP Access]
+    path: D:\gpo-backups
+
+- name: Import them into another domain
+  git_cgallagher.windows.gpo_import:
+    domain: prod.example.com
+    path: D:\gpo-backups
+    gpo_names: [Server Baseline, RDP Access]
+    migration_table_path: lab-to-prod.migtable
+```
 
 ### Requirements
 

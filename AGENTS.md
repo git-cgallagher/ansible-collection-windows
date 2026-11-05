@@ -36,6 +36,32 @@ and `gpo_import` can become content-only primitives: settings content by
 GPO name and path, no links, WMI filters, security filtering, status or
 inheritance, and never a deletion.
 
+The primitives (0.19.0, issue #64), each with an integration target and
+Pester tests like every module:
+
+- `plugins/modules/gpo_export` — `Backup-GPO` of the named GPOs into
+  `<path>\<SafeName>\`, one folder each. Its only state is the export record
+  `gpo-export.json` in each folder (the GPO's GUID and the live SYSVOL hash
+  the backup was taken from, written last so an interrupted backup is
+  redone). A folder is replaced only when it's missing or incomplete, has no
+  record, records another GUID or the live hash moved. A name the domain
+  lacks fails before anything is written.
+- `plugins/modules/gpo_import` — resolves each name to the one backup under
+  `path` (or one level down) whose `bkupInfo.xml` records it, and runs
+  `Import-GPO -BackupId` into the existing GPO by GUID, or `-TargetName
+  -CreateIfNeeded`. It records each import per domain in
+  `C:\ProgramData\gpo-iac\gpo-import-<domain>.json` (fixed, no option),
+  keyed by the target GPO's GUID: the backup's `DomainSysvol` hash plus the
+  migration table's (`Get-GpoImportKey`, the sync layer's key format).
+  `Import-GPO` re-serialises `GptTmpl.inf`, so the live GPO is never
+  compared with the backup; drift in the domain alone isn't noticed. It
+  never deletes, renames or unlinks a GPO and never touches topology.
+  Owner decisions (2026-11-05): the record lives on the host (not in SYSVOL,
+  not in the GPO's comment) and is **host-bound**, so a run from another
+  host imports every named GPO once more; a missing or unreadable record
+  means "import", never a failure or a skipped import; a GPO's entry is
+  written only after its `Import-GPO` succeeded; `force` imports regardless.
+
 Its second area is **failover clustering** (0.3.0):
 
 - `roles/wsfc` — install Failover Clustering on every host in the
@@ -133,7 +159,10 @@ role):
   the filter kept for the next full run) and the failures (a missing
   `domain`, an ACL-denied working directory, one with no existing parent,
   two GPOs mapping to one folder name, a filtered run included), in a
-  working directory of its own.
+  working directory of its own. Then the `gpo_export` primitive's target
+  (0.19.0): two fixture GPOs backed up into a directory of its own, check
+  mode, the repeat, a changed GPO alone, damaged folders redone, and the
+  failures.
 - `roles/gpo_import/molecule/default`: the role's behaviour: seed, export,
   out-of-band drift, report-only plan (the role's `gpo_import_report_only`:
   predicts the drift, recreates nothing, writes no state file), import,
@@ -158,7 +187,11 @@ role):
   failures (a missing `source_dir`, a missing migration table, the cpassword
   refusal, an incomplete backup folder, a missing manifest, a GPO missing
   from both domain and export, an ACL-denied `state_dir`), each leaving the
-  domain and the state file as they were.
+  domain and the state file as they were. Then the `gpo_import` primitive's
+  target (0.19.0): two throwaway GPOs backed up (one per layout), deleted,
+  then created by the import, repeated, a changed backup, a lost record, a
+  damaged one, `force`, a migration table, and every failure; it never imports into the
+  fixture's GPOs.
 - `roles/mssql_prereqs/molecule/default`: a fresh forest. Before it has a
   KDS root key, `check` refuses the gMSA and a report-only `create` plans one
   and writes nothing; prepare then adds a key backdated 10 hours (a key is
@@ -292,7 +325,13 @@ lab to the scripts — and record the surprise below as a gotcha.
   names), the export's scope and state decisions (`Get-GpoExportScope`,
   `Get-DeletedGpoEntry`), the import decision (`Get-GpoImportReason`), the
   import's scope and link plans (`Get-GpoImportScope`, `Get-GpoLinkPlan`,
-  `Get-GpoSubsetLinkPlan`). A module keeps only what talks to Windows
+  `Get-GpoSubsetLinkPlan`), and for the primitives the folder names
+  (`Get-GpoFolderName`), the export record and decision
+  (`Read-GpoExportRecord`, `Get-GpoExportReason`), finding and resolving
+  backups by the name they record (`Get-GpoBackupIndex`,
+  `Resolve-GpoBackupName`, `Test-GpoBackupInstance`), the `cpassword` scan
+  (`Get-GpoCpasswordFile`) and the import record (`Get-GpoImportKey`,
+  `Read-GpoImportRecord`). A module keeps only what talks to Windows
   (and `Ansible.Basic`); new pure logic goes in the util, with a test.
 - The clustering modules share `plugins/module_utils/_WsfcCommon.psm1`
   (0.13.0, issue #48's W9): the helpers that were inside `wsfc_cluster.ps1`
@@ -581,6 +620,12 @@ ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **The `gpo_import` target shares its name with the `gpo_import` role.**
+  `roles/gpo_import/molecule/default/verify.yml` includes it by path
+  (`MOLECULE_PROJECT_DIRECTORY/../../tests/integration/targets/gpo_import`,
+  with `# noqa: role-name[path]`), because the bare name can resolve to the
+  role under test. Don't "simplify" it to `name: gpo_import`.
 
 - **pwsh 7.6 can't `@()` a `List[object]` made with `New-Object`.**
   `@($list)` throws `ArgumentException: Argument types do not match` (from

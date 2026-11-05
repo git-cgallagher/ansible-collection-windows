@@ -1,0 +1,720 @@
+---
+# Integration tests for git_cgallagher.windows.gpo_import, the content-only
+# primitive, on a domain controller of the lab domain. setup_gpo_lab
+# (meta/main.yml) has read the domain's name and checked the fixture is
+# seeded.
+#
+# The tests import two throwaway GPOs, never the fixture's: each is created
+# with a registry setting, backed up (A with gpo_export into a folder of its
+# own, B with Backup-GPO straight into the source directory) and deleted, so
+# the first import creates them. Every check reads the domain and the record
+# through the inline read script below (GPMC and the file), never through the
+# module under test. The always block removes the GPOs and the directories
+# and puts back the module's record for the lab domain as it found it, so the
+# target runs twice on the same host.
+- name: Test gpo_import, then clean up
+  vars:
+    gpo_import_p_a: IacLab - Prim Import A
+    gpo_import_p_b: IacLab - Prim Import B
+    gpo_import_p_names: ["{{ gpo_import_p_a }}", "{{ gpo_import_p_b }}"]
+    gpo_import_p_src: '{{ setup_gpo_lab_dir }}\import-src'
+    gpo_import_p_bad: '{{ setup_gpo_lab_dir }}\import-bad'
+    gpo_import_p_record_dir: 'C:\ProgramData\gpo-iac'
+    gpo_import_p_record: '{{ gpo_import_p_record_dir }}\gpo-import-{{ setup_gpo_lab_domain | lower }}.json'
+    gpo_import_p_result_keys: [imported, gpos, path, server, record_file, errors, preflight]
+    gpo_import_p_args: &gpo_import_p_args
+      domain: "{{ setup_gpo_lab_domain }}"
+      path: "{{ gpo_import_p_src }}"
+      gpo_names: "{{ gpo_import_p_names }}"
+    # The oracle: each throwaway GPO's existence, GUID, version and setting
+    # through GPMC, and the record file's text.
+    gpo_import_p_read_script: |
+      param([string]$Domain, [string[]]$Names, [string]$Record)
+      $Ansible.Changed = $false
+      Import-Module GroupPolicy
+      $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+      $gpos = [ordered]@{}
+      foreach ($name in $Names) {
+          $gpo = Get-GPO -All -Domain $Domain -Server $pdc | Where-Object { $_.DisplayName -eq $name }
+          $entry = [ordered]@{ exists = $null -ne $gpo; id = $null; version = $null; value = $null }
+          if ($gpo) {
+              $entry.id = $gpo.Id.ToString().ToLowerInvariant()
+              $entry.version = '{0}/{1}' -f $gpo.Computer.DSVersion, $gpo.User.DSVersion
+              try {
+                  $entry.value = (Get-GPRegistryValue -Guid $gpo.Id -Domain $Domain -Server $pdc `
+                      -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'PrimImport' -ErrorAction Stop).Value
+              }
+              catch { $entry.value = $null }
+          }
+          $gpos[$name] = $entry
+      }
+      $text = $null
+      if (Test-Path -LiteralPath $Record) { $text = [System.IO.File]::ReadAllText($Record) }
+      [ordered]@{ gpos = $gpos; record = $text }
+    gpo_import_p_read_params:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      Names: "{{ gpo_import_p_names }}"
+      Record: "{{ gpo_import_p_record }}"
+    # Sets the throwaway GPO's registry value (creating the GPO when asked).
+    gpo_import_p_set_script: |
+      param([string]$Domain, [string]$Name, [int]$Value, [bool]$Create)
+      Import-Module GroupPolicy
+      $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+      if ($Create) { New-GPO -Name $Name -Domain $Domain -Server $pdc | Out-Null }
+      Set-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
+          -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'PrimImport' -Type DWord -Value $Value | Out-Null
+  block:
+    # --- setup: the record as found, two backed-up and deleted GPOs -----------------------
+    - name: Read the module's record for the lab domain as found
+      ansible.windows.win_stat:
+        path: "{{ gpo_import_p_record }}"
+        get_checksum: false
+      register: gpo_import_p_record_found
+
+    - name: Keep the record as found
+      ansible.builtin.slurp:
+        src: "{{ gpo_import_p_record }}"
+      register: gpo_import_p_record_saved
+      when: gpo_import_p_record_found.stat.exists
+
+    - name: Start without a record and without the source directories
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ gpo_import_p_record }}"
+        - "{{ gpo_import_p_src }}"
+        - "{{ gpo_import_p_bad }}"
+
+    - name: Create the two throwaway GPOs with a setting
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_set_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ item }}"
+          Value: 1
+          Create: true
+      loop: "{{ gpo_import_p_names }}"
+
+    - name: Back up A with gpo_export
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        gpo_names: ["{{ gpo_import_p_a }}"]
+        path: "{{ gpo_import_p_src }}"
+
+    - name: Back up B with Backup-GPO, straight into the source directory
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name, [string]$Path)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          Backup-GPO -Name $Name -Domain $Domain -Server $pdc -Path $Path | Out-Null
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_import_p_b }}"
+          Path: "{{ gpo_import_p_src }}"
+
+    - name: Delete the two GPOs
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string[]]$Names)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          foreach ($name in $Names) { Remove-GPO -Name $name -Domain $Domain -Server $pdc }
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Names: "{{ gpo_import_p_names }}"
+
+    # --- the first import: check mode, real, repeat ---------------------------------------
+    - name: Plan the first import (check mode)
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      check_mode: true
+      register: gpo_import_p_first_check
+
+    - name: Read the domain and the record after the plan
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Check check mode planned both creations, passed the preflight and touched nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_result_keys | difference(gpo_import_p_first_check.keys() | list) == []
+          - gpo_import_p_first_check is changed
+          - gpo_import_p_first_check.imported | map(attribute='name') | list == gpo_import_p_names
+          - gpo_import_p_first_check.imported | map(attribute='reason') | unique == ['GPO missing in target']
+          - gpo_import_p_first_check.gpos | map(attribute='target_id') | unique == [none]
+          - gpo_import_p_first_check.record_file | lower == gpo_import_p_record | lower
+          - gpo_import_p_first_check.server | lower == setup_gpo_lab_pdc | lower
+          - gpo_import_p_first_check.errors == []
+          - gpo_import_p_first_check.preflight.passed
+          - gpo_import_p_first_check.preflight.path_exists
+          - gpo_import_p_first_check.preflight.backups == 2
+          - gpo_import_p_first_check.preflight.resolved
+          - gpo_import_p_first_check.preflight.cpassword_clean
+          - gpo_import_p_first_check.preflight.record_valid
+          - gpo_import_p_first_check.preflight.record_dir_writable
+          - gpo_import_p_first_check.preflight.domain_reachable
+          - gpo_import_p_first_check.preflight.gpmc_reachable
+          - gpo_import_p_read.output[0].gpos.values() | map(attribute='exists') | unique | list == [false]
+          - gpo_import_p_read.output[0].record is none
+        fail_msg: "{{ gpo_import_p_first_check }} / {{ gpo_import_p_read.output }}"
+
+    - name: Import the two GPOs
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_first
+
+    - name: Read the domain and the record after the import
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read_first
+
+    - name: Check both were created with their setting and recorded by GUID
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_first is changed
+          - gpo_import_p_first.imported == gpo_import_p_first_check.imported
+          - gpo_import_p_r.gpos[gpo_import_p_a].exists
+          - gpo_import_p_r.gpos[gpo_import_p_a].value == 1
+          - gpo_import_p_r.gpos[gpo_import_p_b].exists
+          - gpo_import_p_r.gpos[gpo_import_p_b].value == 1
+          - gpo_import_p_first.gpos | map(attribute='target_id') | list ==
+            [gpo_import_p_r.gpos[gpo_import_p_a].id, gpo_import_p_r.gpos[gpo_import_p_b].id]
+          - gpo_import_p_rec.gpos.keys() | list | sort ==
+            [gpo_import_p_r.gpos[gpo_import_p_a].id, gpo_import_p_r.gpos[gpo_import_p_b].id] | sort
+          - gpo_import_p_rec.gpos[gpo_import_p_r.gpos[gpo_import_p_a].id].name == gpo_import_p_a
+        fail_msg: "{{ gpo_import_p_first }} / {{ gpo_import_p_r }}"
+      vars:
+        gpo_import_p_r: "{{ gpo_import_p_read_first.output[0] }}"
+        gpo_import_p_rec: "{{ gpo_import_p_r.record | from_json }}"
+
+    - name: Import again
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_repeat
+
+    - name: Plan again (check mode)
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      check_mode: true
+      register: gpo_import_p_repeat_check
+
+    - name: Import again with the names in another case
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names | map('upper') | list }}"
+      register: gpo_import_p_upper
+
+    - name: Read the domain and the record after the repeats
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Check the repeats imported nothing and left the GPOs' versions and the record as they were
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_repeat is not changed
+          - gpo_import_p_repeat.imported == []
+          - gpo_import_p_repeat.gpos | map(attribute='imported') | unique == [false]
+          - gpo_import_p_repeat_check is not changed
+          - gpo_import_p_upper is not changed
+          - gpo_import_p_read.output[0] == gpo_import_p_read_first.output[0]
+        fail_msg: "{{ gpo_import_p_repeat }} / {{ gpo_import_p_upper }}"
+
+    # --- a changed backup is imported; drift in the domain alone is not -------------------
+    - name: Change A's setting and back it up again
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_set_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_import_p_a }}"
+          Value: 2
+          Create: false
+
+    - name: Back up A again with gpo_export
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        gpo_names: ["{{ gpo_import_p_a }}"]
+        path: "{{ gpo_import_p_src }}"
+
+    - name: Drift A's setting in the domain, apart from the backup
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_set_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_import_p_a }}"
+          Value: 3
+          Create: false
+
+    - name: Import the changed backup
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_changed
+
+    - name: Read the domain after the changed import
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read_changed
+
+    - name: Drift A's setting again, with the backup unchanged
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_set_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_import_p_a }}"
+          Value: 4
+          Create: false
+
+    - name: Import with only the domain drifted
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_drift
+
+    - name: Check only A was imported, into the same GPO, and drift alone is not noticed (as documented)
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_changed is changed
+          - gpo_import_p_changed.imported | map(attribute='name') | list == [gpo_import_p_a]
+          - gpo_import_p_changed.imported[0].reason == 'backup content or migration table changed'
+          - gpo_import_p_after.gpos[gpo_import_p_a].value == 2
+          - gpo_import_p_after.gpos[gpo_import_p_a].id == gpo_import_p_read_first.output[0].gpos[gpo_import_p_a].id
+          - gpo_import_p_after.gpos[gpo_import_p_b] == gpo_import_p_read_first.output[0].gpos[gpo_import_p_b]
+          - gpo_import_p_drift is not changed
+        fail_msg: "{{ gpo_import_p_changed }} / {{ gpo_import_p_after }}"
+      vars:
+        gpo_import_p_after: "{{ gpo_import_p_read_changed.output[0] }}"
+
+    # --- a lost record and force ----------------------------------------------------------
+    - name: Lose the record
+      ansible.windows.win_file:
+        path: "{{ gpo_import_p_record }}"
+        state: absent
+
+    - name: Import without a record
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_unrecorded
+
+    - name: Import again after re-recording
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_unrecorded_repeat
+
+    - name: Import with force
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names }}"
+        force: true
+      register: gpo_import_p_forced
+
+    - name: Import again without force
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_forced_repeat
+
+    - name: Read the domain after the record and force runs
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Check a lost record and force import both GPOs once, into the same GPOs, and the repeats change nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_unrecorded is changed
+          - gpo_import_p_unrecorded.imported | map(attribute='reason') | unique == ['never imported by this pipeline']
+          - gpo_import_p_unrecorded_repeat is not changed
+          - gpo_import_p_forced is changed
+          - gpo_import_p_forced.imported | map(attribute='name') | list == gpo_import_p_names
+          - gpo_import_p_forced.imported | map(attribute='reason') | unique == ['forced']
+          - gpo_import_p_forced_repeat is not changed
+          - gpo_import_p_read.output[0].gpos[gpo_import_p_a].value == 2
+          - gpo_import_p_read.output[0].gpos[gpo_import_p_a].id == gpo_import_p_read_first.output[0].gpos[gpo_import_p_a].id
+          - gpo_import_p_read.output[0].gpos[gpo_import_p_b].id == gpo_import_p_read_first.output[0].gpos[gpo_import_p_b].id
+        fail_msg: "{{ gpo_import_p_unrecorded }} / {{ gpo_import_p_forced }}"
+
+    # --- a damaged record means "import", never a failure -----------------------------------
+    - name: Damage the record
+      ansible.windows.win_copy:
+        dest: "{{ gpo_import_p_record }}"
+        content: '{ "other": 1 }'
+
+    - name: Plan with the damaged record (check mode)
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      check_mode: true
+      register: gpo_import_p_bad_record_check
+
+    - name: Read the record after the plan
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Import with the damaged record
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_bad_record
+
+    - name: Import again after the record was rewritten
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_bad_record_repeat
+
+    - name: Read the record after the import
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read_rewritten
+
+    - name: Check a damaged record imported both GPOs once, with a warning, and was rewritten whole
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_bad_record_check is changed
+          - not gpo_import_p_bad_record_check.preflight.record_valid
+          - gpo_import_p_bad_record_check.preflight.passed
+          - gpo_import_p_read.output[0].record == '{ "other": 1 }'
+          - gpo_import_p_bad_record is changed
+          - gpo_import_p_bad_record.imported | map(attribute='reason') | unique == ['never imported by this pipeline']
+          - gpo_import_p_bad_record.warnings | default([]) | select('search', 'does not parse') | list | length == 1
+          - (gpo_import_p_read_rewritten.output[0].record | from_json).gpos.keys() | list | sort ==
+            gpo_import_p_read_rewritten.output[0].gpos.values() | map(attribute='id') | sort
+          - gpo_import_p_bad_record_repeat is not changed
+        fail_msg: "{{ gpo_import_p_bad_record }} / {{ gpo_import_p_read_rewritten.output[0] }}"
+
+    # --- a migration table ----------------------------------------------------------------
+    # The throwaway GPOs name no principal or UNC path, so GPMC's own empty
+    # table is a valid one for them.
+    - name: Save an empty migration table with GPMC into the source directory
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Path)
+          $gpm = New-Object -ComObject GPMgmt.GPM
+          $gpm.CreateMigrationTable().Save($Path)
+        parameters:
+          Path: '{{ gpo_import_p_src }}\lab.migtable'
+
+    - name: Plan with the migration table (check mode)
+      git_cgallagher.windows.gpo_import: &gpo_import_p_migtable
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names }}"
+        migration_table_path: lab.migtable
+      check_mode: true
+      register: gpo_import_p_mig_check
+
+    - name: Import with the migration table
+      git_cgallagher.windows.gpo_import: *gpo_import_p_migtable
+      register: gpo_import_p_mig
+
+    - name: Import with the migration table again
+      git_cgallagher.windows.gpo_import: *gpo_import_p_migtable
+      register: gpo_import_p_mig_repeat
+
+    - name: Import without the migration table
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_unmig
+
+    - name: Import without it again
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_unmig_repeat
+
+    - name: Check the table is part of what an import is recorded with
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_mig_check is changed
+          - gpo_import_p_mig_check.preflight.migration_table | lower == (gpo_import_p_src ~ '\lab.migtable') | lower
+          - gpo_import_p_mig_check.preflight.migration_table_valid
+          - gpo_import_p_mig is changed
+          - gpo_import_p_mig.imported | map(attribute='reason') | unique == ['backup content or migration table changed']
+          - gpo_import_p_mig.imported | length == 2
+          - gpo_import_p_mig_repeat is not changed
+          - gpo_import_p_unmig is changed
+          - gpo_import_p_unmig.imported | length == 2
+          - gpo_import_p_unmig_repeat is not changed
+        fail_msg: "{{ gpo_import_p_mig }} / {{ gpo_import_p_unmig }}"
+
+    # --- failures: each fails with its message, imports nothing and records nothing ----------
+    - name: Read the domain and the record before the failures
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read_before_errors
+
+    - name: Import from a path that doesn't exist
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: '{{ setup_gpo_lab_dir }}\no-such-dir'
+        gpo_names: "{{ gpo_import_p_names }}"
+      register: gpo_import_p_no_path
+      failed_when: "'path not found' not in (gpo_import_p_no_path.msg | default(''))"
+
+    - name: Name a GPO no backup records
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names + ['IacLab - No Such Backup'] }}"
+      register: gpo_import_p_unknown
+      failed_when: "'no backup under' not in (gpo_import_p_unknown.msg | default(''))"
+
+    - name: Name no GPO
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: []
+      register: gpo_import_p_empty
+      failed_when: "'gpo_names must name at least one GPO' not in (gpo_import_p_empty.msg | default(''))"
+
+    - name: Leave out domain
+      git_cgallagher.windows.gpo_import:
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names }}"
+      register: gpo_import_p_no_domain
+      failed_when: "'missing required arguments: domain' not in (gpo_import_p_no_domain.msg | default(''))"
+
+    - name: Give a migration table that doesn't exist
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names }}"
+        migration_table_path: missing.migtable
+      register: gpo_import_p_no_mig
+      failed_when: "'migration table not found' not in (gpo_import_p_no_mig.msg | default(''))"
+
+    - name: Put an XML file that isn't a migration table into the source directory
+      ansible.windows.win_copy:
+        dest: '{{ gpo_import_p_src }}\not-a.migtable'
+        content: '<Something />'
+
+    - name: Give it as the migration table
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: "{{ gpo_import_p_src }}"
+        gpo_names: "{{ gpo_import_p_names }}"
+        migration_table_path: not-a.migtable
+      register: gpo_import_p_bad_mig
+      failed_when: "'not <MigrationTable>' not in (gpo_import_p_bad_mig.msg | default(''))"
+
+    # A second backup of A in the source directory makes the name ambiguous.
+    - name: Back up A a second time, straight into the source directory
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name, [string]$Path)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          (Backup-GPO -Name $Name -Domain $Domain -Server $pdc -Path $Path).Id.ToString()
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_import_p_a }}"
+          Path: "{{ gpo_import_p_src }}"
+      register: gpo_import_p_second_backup
+
+    - name: Import with two backups of A
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_ambiguous
+      failed_when: "'more than one backup records GPO' not in (gpo_import_p_ambiguous.msg | default(''))"
+
+    - name: Remove the second backup of A
+      ansible.windows.win_file:
+        path: '{{ gpo_import_p_src }}\{{ "{" ~ (gpo_import_p_second_backup.output[0] | upper) ~ "}" }}'
+        state: absent
+
+    # A copy of B's backup with gpreport.xml gone, and one with a cpassword planted.
+    - name: Copy the source directory twice
+      ansible.windows.win_copy:
+        src: '{{ gpo_import_p_src }}\'
+        dest: '{{ gpo_import_p_bad }}\{{ item }}\'
+        remote_src: true
+      loop: [incomplete, cpassword]
+
+    - name: Find B's backup in the copies
+      ansible.windows.win_find:
+        paths: '{{ gpo_import_p_bad }}\incomplete'
+        patterns: ['{*}']
+        file_type: directory
+      register: gpo_import_p_b_dirs
+
+    - name: Remove gpreport.xml from B's backup in one copy
+      ansible.windows.win_file:
+        path: '{{ gpo_import_p_b_dirs.files[0].path }}\gpreport.xml'
+        state: absent
+
+    - name: Create the Preferences folder in B's backup in the other copy
+      ansible.windows.win_file:
+        path: '{{ gpo_import_p_bad }}\cpassword\{{ gpo_import_p_b_dirs.files[0].filename }}\DomainSysvol\GPO\Machine\Preferences\Groups'
+        state: directory
+
+    - name: Plant a cpassword in B's backup in the other copy
+      ansible.windows.win_copy:
+        dest: '{{ gpo_import_p_bad }}\cpassword\{{ gpo_import_p_b_dirs.files[0].filename }}\DomainSysvol\GPO\Machine\Preferences\Groups\Groups.xml'
+        content: '<Groups><User name="x"><Properties cpassword="example-not-secret" /></User></Groups>'
+
+    - name: Import from the copy with the incomplete backup
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: '{{ gpo_import_p_bad }}\incomplete'
+        gpo_names: "{{ gpo_import_p_names }}"
+      register: gpo_import_p_incomplete
+      failed_when: "'is incomplete (no gpreport.xml' not in (gpo_import_p_incomplete.msg | default(''))"
+
+    - name: Import from the copy with the cpassword
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: '{{ gpo_import_p_bad }}\cpassword'
+        gpo_names: "{{ gpo_import_p_names }}"
+      register: gpo_import_p_cpassword
+      failed_when: "'Refusing to import: GPP cpassword' not in (gpo_import_p_cpassword.msg | default(''))"
+
+    - name: Import only A from the copy with the cpassword in B's backup
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ setup_gpo_lab_domain }}"
+        path: '{{ gpo_import_p_bad }}\cpassword'
+        gpo_names: ["{{ gpo_import_p_a }}"]
+      register: gpo_import_p_cpassword_other
+
+    - name: Read the domain and the record after the failures
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Check each failure named its problem, and the domain and the record are as they were
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_no_path is not changed
+          - not gpo_import_p_no_path.preflight.path_exists
+          - gpo_import_p_unknown is not changed
+          - "'IacLab - No Such Backup' in gpo_import_p_unknown.msg"
+          - not gpo_import_p_unknown.preflight.resolved
+          - gpo_import_p_empty is not changed
+          - gpo_import_p_no_mig is not changed
+          - gpo_import_p_bad_mig is not changed
+          - gpo_import_p_ambiguous is not changed
+          - gpo_import_p_incomplete is not changed
+          - gpo_import_p_cpassword is not changed
+          - not gpo_import_p_cpassword.preflight.cpassword_clean
+          - gpo_import_p_cpassword.cpassword_files | length == 1
+          - gpo_import_p_cpassword.cpassword_files[0] is search('Groups[.]xml$')
+          - gpo_import_p_cpassword_other is not changed
+          - gpo_import_p_read.output[0] == gpo_import_p_read_before_errors.output[0]
+        fail_msg: "{{ gpo_import_p_read.output[0] }} / {{ gpo_import_p_read_before_errors.output[0] }}"
+
+    # The record's directory denying writes fails the preflight.
+    - name: Deny everyone write access to the record's directory
+      ansible.windows.win_acl:
+        path: "{{ gpo_import_p_record_dir }}"
+        user: Everyone
+        rights: Write
+        type: deny
+        state: present
+
+    - name: Plan with the record's directory denied (check mode)
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      check_mode: true
+      register: gpo_import_p_denied
+      failed_when: "'is not writable' not in (gpo_import_p_denied.msg | default(''))"
+
+    - name: Allow writes to the record's directory again
+      ansible.windows.win_acl:
+        path: "{{ gpo_import_p_record_dir }}"
+        user: Everyone
+        rights: Write
+        type: deny
+        state: absent
+
+    - name: List probe files left in the record's directory
+      ansible.windows.win_find:
+        paths: "{{ gpo_import_p_record_dir }}"
+        patterns: ['.gpo_import-probe-*']
+        hidden: true
+      register: gpo_import_p_probes
+
+    - name: Read the domain and the record after the denied plan
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Check the denied directory failed the preflight and left no probe file
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_denied is not changed
+          - not gpo_import_p_denied.preflight.record_dir_writable
+          - gpo_import_p_denied.preflight.record_dir_probed | lower == gpo_import_p_record_dir | lower
+          - gpo_import_p_probes.files == []
+          - gpo_import_p_read.output[0].gpos == gpo_import_p_read_before_errors.output[0].gpos
+        fail_msg: "{{ gpo_import_p_denied }}"
+  always:
+    - name: Allow writes to the record's directory
+      ansible.windows.win_acl:
+        path: "{{ gpo_import_p_record_dir }}"
+        user: Everyone
+        rights: Write
+        type: deny
+        state: absent
+      when: gpo_import_p_denied is defined
+
+    - name: Remove the throwaway GPOs
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string[]]$Names)
+          Import-Module GroupPolicy
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          $removed = @()
+          foreach ($gpo in @(Get-GPO -All -Domain $Domain -Server $pdc | Where-Object { $Names -contains $_.DisplayName })) {
+              Remove-GPO -Guid $gpo.Id -Domain $Domain -Server $pdc
+              $removed += $gpo.DisplayName
+          }
+          $Ansible.Changed = $removed.Count -gt 0
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Names: "{{ gpo_import_p_names }}"
+
+    - name: Remove the source directories
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ gpo_import_p_src }}"
+        - "{{ gpo_import_p_bad }}"
+
+    - name: Put the record back as found
+      ansible.windows.win_copy:
+        dest: "{{ gpo_import_p_record }}"
+        content: "{{ gpo_import_p_record_saved.content | b64decode }}"
+      when: gpo_import_p_record_found.stat.exists | default(false)
+
+    - name: Remove the record the tests wrote
+      ansible.windows.win_file:
+        path: "{{ gpo_import_p_record }}"
+        state: absent
+      when: not (gpo_import_p_record_found.stat.exists | default(false))
+
+- name: Look for the throwaway GPOs and the source directories after the cleanup
+  ansible.windows.win_powershell:
+    script: |
+      param([string]$Domain, [string[]]$Names, [string[]]$Paths)
+      $Ansible.Changed = $false
+      Import-Module GroupPolicy
+      [ordered]@{
+          gpos = @(Get-GPO -All -Domain $Domain | Where-Object { $Names -contains $_.DisplayName } | ForEach-Object { $_.DisplayName })
+          paths = @($Paths | Where-Object { Test-Path -LiteralPath $_ })
+      }
+    parameters:
+      Domain: "{{ setup_gpo_lab_domain }}"
+      Names: [IacLab - Prim Import A, IacLab - Prim Import B]
+      Paths: ['{{ setup_gpo_lab_dir }}\import-src', '{{ setup_gpo_lab_dir }}\import-bad']
+  register: gpo_import_p_after
+
+- name: Check the tests left neither GPOs nor directories behind
+  ansible.builtin.assert:
+    that:
+      - gpo_import_p_after.output[0].gpos == []
+      - gpo_import_p_after.output[0].paths == []
+    fail_msg: "{{ gpo_import_p_after.output[0] }}"

@@ -1,0 +1,262 @@
+DOCUMENTATION:
+  module: gpo_import
+  short_description: Import named GPOs' settings from backup folders into a domain
+  description:
+    - Resolves each GPO named in O(gpo_names) to its C(Backup-GPO) backup under O(path) and imports it into O(domain) with
+      C(Import-GPO), creating the GPO when the domain lacks it. M(git_cgallagher.windows.gpo_export) writes such backups,
+      and so does C(Backup-GPO) itself.
+    - A name resolves by the display name the backup records in its C(bkupInfo.xml), never by folder name. Backups are found
+      directly under O(path) (C(Backup-GPO -All) into one directory) and one level down (one folder per GPO, the way
+      M(git_cgallagher.windows.gpo_export) writes them).
+    - Settings content only. Links, link order, WMI filters, security filtering, GPO status and block-inheritance are not
+      imported or changed; a GPO the module creates gets the domain's defaults for them. It never deletes, renames or
+      unlinks a GPO. The sync layer (M(git_cgallagher.windows.gpo_sync_import) and the C(gpo_import) role) converges those.
+    - C(Import-GPO) replaces the GPO's settings and bumps its version, so clients reprocess it. The module imports only when
+      the target GPO is missing, when the backup's settings or the migration table differ from what it last imported into
+      that GPO, or with O(force). It records what it imported per domain on the host it runs on, in
+      C(C:\ProgramData\gpo-iac\gpo-import-<domain>.json), keyed by the target GPO's GUID and holding a hash of the backup's
+      settings and of the migration table. C(Import-GPO) re-serialises some files (the security template), so the live GPO
+      can't be compared with the backup directly.
+    - Refuses a backup it would import that contains a Group Policy Preferences C(cpassword), before touching the domain.
+    - Before planning, a preflight proves the run could work and reports what it found in RV(preflight). It checks that
+      O(path) exists, that every name resolves to exactly one complete backup, that the migration table parses, that the
+      record's directory takes a file (a probe file is created and removed), and that the domain and GPMC answer. A record
+      that is missing or doesn't parse never fails the run; every named GPO is imported, with a warning when it doesn't
+      parse, and the record is written anew. A failing check fails the module, in check mode too, before anything is planned.
+  version_added: 0.19.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    domain:
+      description:
+        - DNS name of the domain to import into, for example V(lab.example.com).
+      type: str
+      required: true
+    server:
+      description:
+        - Domain controller to run against.
+        - Omitted or empty means the domain's PDC emulator.
+      type: str
+    path:
+      description:
+        - Directory on the host the module runs on that holds the backups.
+      type: path
+      required: true
+    gpo_names:
+      description:
+        - Display names of the GPOs to import. At least one; names compare case-insensitively, as GPMC's do.
+        - A name no backup under O(path) records fails the task, and so does one that two or more backups record.
+        - Each is imported into the domain's GPO of the same name, created when the domain has none.
+      type: list
+      elements: str
+      required: true
+    migration_table_path:
+      description:
+        - A migration table (C(.migtable)) to translate security principals and UNC paths, for an import into another domain.
+          A relative path is under O(path).
+        - It's part of what an import is recorded with, so changing the table imports the GPOs again.
+      type: path
+    force:
+      description:
+        - Import every named GPO, whatever the record says.
+      type: bool
+      default: false
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+      details:
+        - Check mode runs the preflight and plans every import, returned in RV(imported), without touching the domain or the
+          record. Its one write is the preflight's probe file, created and removed at once.
+    diff_mode:
+      support: none
+    platform:
+      platforms: windows
+  notes:
+    - Needs the GroupPolicy and ActiveDirectory PowerShell modules (RSAT) on the host it runs on, and rights to create and
+      edit GPOs in the domain.
+    - The record is host-bound. A run from another host, or after the record is deleted or damaged, imports every named GPO
+      once more (a version bump, so clients reprocess them, but no other harm). Run it from one host per domain to avoid that.
+    - The record for a GPO is written only after its C(Import-GPO) succeeded, so a failed import is retried on the next run.
+    - Before 0.19.0 this name was the whole-domain converge, now M(git_cgallagher.windows.gpo_sync_import).
+  seealso:
+    - module: git_cgallagher.windows.gpo_export
+    - module: git_cgallagher.windows.gpo_sync_import
+
+EXAMPLES: |
+  - name: Import two GPOs from backups gpo_export wrote
+    git_cgallagher.windows.gpo_import:
+      domain: lab.example.com
+      path: D:\gpo-backups
+      gpo_names:
+        - Server Baseline
+        - RDP Access
+
+  - name: Import a GPO into another domain through a migration table, planning first
+    git_cgallagher.windows.gpo_import:
+      domain: prod.example.com
+      path: D:\gpo-backups
+      gpo_names: [Server Baseline]
+      migration_table_path: lab-to-prod.migtable
+    check_mode: true
+    register: plan
+
+RETURN:
+  imported:
+    description:
+      - The GPOs imported by this run (in check mode, the ones that would be), with why and from which backup. Empty when
+        every GPO was up to date, and then C(changed) is false.
+    returned: always
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The GPO's display name, as the backup records it.
+        type: str
+        returned: always
+        sample: IacLab - RDP Settings
+      reason:
+        description:
+          - Why, one of C(forced), C(GPO missing in target), C(never imported by this pipeline) (no record for the target
+            GPO) or C(backup content or migration table changed).
+        type: str
+        returned: always
+        sample: GPO missing in target
+      backup:
+        description: The backup's folder.
+        type: str
+        returned: always
+        sample: D:\gpo-backups\IacLab - RDP Settings\{0E1D2C3B-4A59-6877-8695-A4B3C2D1E0F9}
+  gpos:
+    description: Every GPO named in O(gpo_names), imported or not, in the order given.
+    returned: success
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The GPO's display name, as the backup records it.
+        type: str
+        returned: always
+        sample: IacLab - RDP Settings
+      backup:
+        description: The backup's folder.
+        type: str
+        returned: always
+        sample: D:\gpo-backups\IacLab - RDP Settings\{0E1D2C3B-4A59-6877-8695-A4B3C2D1E0F9}
+      backup_id:
+        description: The backup's ID, lower case without braces.
+        type: str
+        returned: always
+        sample: 0e1d2c3b-4a59-6877-8695-a4b3c2d1e0f9
+      target_id:
+        description:
+          - The target GPO's GUID, lower case without braces. V(null) in check mode for a GPO the import would create.
+        type: str
+        returned: always
+        sample: 6ac1786c-016f-11d2-945f-00c04fb984f9
+      imported:
+        description: Whether this run imported it (would, in check mode).
+        type: bool
+        returned: always
+        sample: true
+  path:
+    description: O(path), as given.
+    returned: always
+    type: str
+    sample: D:\gpo-backups
+  server:
+    description: The domain controller the import ran against. V(null) when the domain couldn't be read.
+    returned: always
+    type: str
+    sample: dc01.lab.example.com
+  record_file:
+    description: Where the module records what it imported into O(domain).
+    returned: always
+    type: str
+    sample: C:\ProgramData\gpo-iac\gpo-import-lab.example.com.json
+  errors:
+    description: One message per GPO that failed to import, when the task failed because of them.
+    returned: always
+    type: list
+    elements: str
+    sample: []
+  cpassword_files:
+    description: The backup files holding a C(cpassword), when the module refused to import them.
+    returned: when a cpassword was found
+    type: list
+    elements: str
+    sample: ['D:\gpo-backups\Local Admins\{0E1D2C3B-4A59-6877-8695-A4B3C2D1E0F9}\DomainSysvol\GPO\Machine\Preferences\Groups\Groups.xml']
+  preflight:
+    description: What the run proved before planning anything.
+    returned: when the preflight ran
+    type: dict
+    contains:
+      path_exists:
+        description: Whether O(path) exists.
+        type: bool
+        returned: always
+        sample: true
+      backups:
+        description: How many backups were found under O(path).
+        type: int
+        returned: always
+        sample: 5
+      resolved:
+        description: Whether every name resolved to exactly one backup.
+        type: bool
+        returned: always
+        sample: true
+      migration_table:
+        description: The migration table's resolved path, V(null) without one.
+        type: str
+        returned: always
+        sample: D:\gpo-backups\lab-to-prod.migtable
+      migration_table_valid:
+        description: Whether it parses as a migration table, V(null) without one.
+        type: bool
+        returned: always
+        sample: true
+      cpassword_clean:
+        description: Whether the backups to import are free of C(cpassword).
+        type: bool
+        returned: always
+        sample: true
+      record_valid:
+        description:
+          - Whether the record parses (a missing record is valid and empty). When it doesn't, every named GPO is imported
+            and the record is rewritten; it never fails the run.
+        type: bool
+        returned: always
+        sample: true
+      record_dir_writable:
+        description: Whether the record's directory, or its nearest existing parent, took the probe file.
+        type: bool
+        returned: always
+        sample: true
+      record_dir_probed:
+        description: The directory probed, V(null) when none of its parents exist.
+        type: str
+        returned: always
+        sample: C:\ProgramData\gpo-iac
+      domain_reachable:
+        description: Whether C(Get-ADDomain) answered for O(domain).
+        type: bool
+        returned: always
+        sample: true
+      gpmc_reachable:
+        description: Whether GPMC listed the domain's GPOs.
+        type: bool
+        returned: always
+        sample: true
+      passed:
+        description: Whether every check passed.
+        type: bool
+        returned: always
+        sample: true
+      errors:
+        description: Why the checks that failed did.
+        type: list
+        elements: str
+        returned: always
+        sample: []
