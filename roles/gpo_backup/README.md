@@ -8,8 +8,8 @@ copy). Only GPOs whose settings content changed since the last run are
 re-shipped, so Git diffs stay reviewable.
 
 The export itself is the
-[`gpo_export`](../../plugins/modules/gpo_export.yml) module
-(`ansible-doc git_cgallagher.windows.gpo_export`), which runs on the
+[`gpo_sync_export`](../../plugins/modules/gpo_sync_export.yml) module
+(`ansible-doc git_cgallagher.windows.gpo_sync_export`), which runs on the
 management host and keeps the per-domain content-hash state in
 `gpo_backup_workdir`; the role fetches its zip and unpacks it into
 `gpo_backup_repo_dir`. The role reports `changed` only when a GPO shipped, a

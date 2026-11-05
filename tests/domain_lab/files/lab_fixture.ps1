@@ -370,7 +370,7 @@ function Invoke-Drift {
         -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoApply | Out-Null
     Set-GPPermission -Guid $baseline.Id -Domain $Domain -Server $pdc `
         -TargetName $fx.group -TargetType Group -PermissionLevel GpoRead -Replace | Out-Null
-    # Unlink through GPMC (the path gpo_import uses to clear a filter), falling
+    # Unlink through GPMC (the path gpo_sync_import uses to clear a filter), falling
     # back to a raw LDAP clear; the result records which one worked.
     $cleared = $false
     try {

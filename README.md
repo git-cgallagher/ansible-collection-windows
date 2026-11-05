@@ -5,7 +5,7 @@ Each area's roles and modules carry its prefix.
 
 | Area | Roles and modules | What they do |
 |---|---|---|
-| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; module `gpo_export` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
+| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; modules `gpo_sync_export`, `gpo_sync_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
 | [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; modules `wsfc_cluster`, `wsfc_group` | Build a Windows Server Failover Cluster and converge its networks, sites, node votes, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; converge its groups' owners, failback and resource properties, and test failover; run a clustered file server on it, fail it over between nodes and validate it from a client |
 | [SQL Server](#sql-server) | role `mssql_prereqs` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
@@ -96,7 +96,7 @@ cross-domain story and what was rejected, is in
 ```
 
 - `roles/gpo_backup` runs on a Windows management host with RSAT (GPMC +
-  ActiveDirectory modules). Its `gpo_export` module backs up every GPO (each
+  ActiveDirectory modules). Its `gpo_sync_export` module backs up every GPO (each
   into its own self-contained backup folder), generates `gpo-manifest.json`
   from the live domain and zips them; the role ships the zip back to the
   controller and unpacks it into your repo working copy. Only GPOs whose
@@ -107,13 +107,13 @@ cross-domain story and what was rejected, is in
   `gpreport.xml` or `Get-GPOReport`; see
   [docs/design.md](docs/design.md#7-format-notes-for-reviewers).)
 - `roles/gpo_import` copies the tree to a management host in the target
-  domain and converges the domain on it with the `gpo_import` module:
+  domain and converges the domain on it with the `gpo_sync_import` module:
   `Import-GPO -CreateIfNeeded` (optionally through a
   [migration table](docs/design.md#cross-domain)), then GPO status, WMI
   filter links, security filtering, and each container's whole ordered link
   list. The module reports a change only when the domain changed, and in
   check mode predicts every action without writing
-  (`ansible-doc git_cgallagher.windows.gpo_import`).
+  (`ansible-doc git_cgallagher.windows.gpo_sync_import`).
 
 ### Requirements
 

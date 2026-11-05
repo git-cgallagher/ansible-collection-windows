@@ -8,7 +8,7 @@
 # Authored state -> export -> out-of-band drift. converge.yml then has to put
 # the domain back from the export alone. (gpo_backup's own scenario checks
 # the export itself; the module's preflight, state directory and refusals are
-# the gpo_import integration target, which verify.yml runs last.)
+# the gpo_sync_import integration target, which verify.yml runs last.)
 - name: Export the authored state with gpo_backup, then drift the domain
   hosts: all
   gather_facts: false

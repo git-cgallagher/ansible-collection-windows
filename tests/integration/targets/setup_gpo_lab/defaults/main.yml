@@ -26,6 +26,6 @@ setup_gpo_lab_read_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../s
 setup_gpo_lab_read_export_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/read_export.ps1') }}"
 setup_gpo_lab_migtable_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/new_migtable.ps1') }}"
 
-# The shared lab fixture (tests/domain_lab): gpo_import's target drifts the
+# The shared lab fixture (tests/domain_lab): gpo_sync_import's target drifts the
 # domain with its -Action Drift.
 setup_gpo_lab_fixture_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../../../domain_lab/files/lab_fixture.ps1') }}"

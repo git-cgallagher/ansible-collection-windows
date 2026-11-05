@@ -1,5 +1,5 @@
 DOCUMENTATION:
-  module: gpo_export
+  module: gpo_sync_export
   short_description: Export a domain's GPOs and their topology manifest
   description:
     - Runs C(Backup-GPO) for every GPO in a domain (or the ones named), each into its own self-contained backup folder,
@@ -13,7 +13,7 @@ DOCUMENTATION:
       a repository working copy on the controller; the C(gpo_import) role consumes the result.
     - Reads from Active Directory and SYSVOL only. It writes nothing but its own working directory on the host it runs
       on, and nothing at all in check mode.
-  version_added: 0.5.0
+  version_added: 0.18.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:
@@ -48,7 +48,7 @@ DOCUMENTATION:
           unfiltered export. Before 0.14.0 the manifest covered only the selected GPOs, so the next unfiltered export
           reported RV(manifest_changed).
         - To move a subset of GPOs into another domain, import the export with the same names in
-          M(git_cgallagher.windows.gpo_import)'s O(git_cgallagher.windows.gpo_import#module:gpo_names), which limits the
+          M(git_cgallagher.windows.gpo_sync_import)'s O(git_cgallagher.windows.gpo_sync_import#module:gpo_names), which limits the
           WMI filters and links it reconciles to those GPOs (since 0.16.0; see
           U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57)).
       type: list
@@ -76,6 +76,8 @@ DOCUMENTATION:
     platform:
       platforms: windows
   notes:
+    - Named C(gpo_export) from 0.5.0 until 0.18.0, when it became part of the sync layer (the whole-domain mirror) under
+      this name, with no change in behaviour.
     - Needs the B(GroupPolicy) and B(ActiveDirectory) PowerShell modules (RSAT) on the host it runs on, and rights to read
       every GPO and the domain's OUs and WMI filters.
     - The content hash covers the GPO's folder under C(\\<dc>\SYSVOL\<domain>\Policies), every file and directory except
@@ -99,7 +101,7 @@ DOCUMENTATION:
 
 EXAMPLES: |
   - name: Export every GPO in the domain that changed since the last run
-    git_cgallagher.windows.gpo_export:
+    git_cgallagher.windows.gpo_sync_export:
       domain: lab.example.com
     register: export
 
@@ -111,7 +113,7 @@ EXAMPLES: |
     when: export.changed
 
   - name: Re-ship two GPOs against a specific DC, whether or not they changed
-    git_cgallagher.windows.gpo_export:
+    git_cgallagher.windows.gpo_sync_export:
       domain: lab.example.com
       server: dc02.lab.example.com
       gpo_names:

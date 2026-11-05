@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.18.0 — 2026-11-05
+
+The Group Policy modules are renamed, the first step of issue #64. The names
+`gpo_export` and `gpo_import` will become content-only primitives (a GPO's
+settings by name and path, nothing else); today's whole-domain mirror stays
+as the sync layer under new names.
+
+- **Breaking:** module `gpo_export` is now `gpo_sync_export`, and module
+  `gpo_import` is now `gpo_sync_import`. Their options, results, state files
+  and manifest are unchanged. Playbooks that call the modules directly need
+  the new names; the `gpo_backup` and `gpo_import` roles call them for you
+  and keep their names and variables.
+- Until the primitives land, `gpo_export` and `gpo_import` don't exist as
+  modules: a playbook still using them fails with "couldn't resolve module"
+  rather than running with other behaviour.
+- The integration targets and Pester tests follow the rename
+  (`tests/integration/targets/gpo_sync_export`, `gpo_sync_import`).
+- Issues #4, #5, #8 and #9 are defects of the sync layer, re-verified against
+  0.17.0 (a comment on each), and deprioritized.
+
 ## 0.17.0 — 2026-11-04
 
 Cluster groups and failover tests: phase 1b of issue #48, for the SQL Server
