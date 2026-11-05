@@ -120,7 +120,7 @@
 # SIDs in a security setting, so Import-GPO translates them through a migration
 # table. The role's part is staging a table named relative to the repo
 # (gpo_import_migration_table) and passing gpo_import_gpos and gpo_import_force
-# through; the module's migration-table behaviour (the table in the import
+# through, gpo_import_gpos scoping every action to the selected GPO; the module's migration-table behaviour (the table in the import
 # key, a missing table) is the gpo_import integration target below.
 - name: Import through a migration table
   hosts: all
@@ -186,6 +186,9 @@
         that:
           - gpo_import_run.changed
           - gpo_import_run.imported == 1
+          # gpo_import_gpos scopes the whole run (issue #57): every action names the selected GPO.
+          - gpo_import_run.actions | length > 0
+          - gpo_import_run.actions | reject('search', "'" ~ lab_fixture.gpo_ws_admins ~ "'") | list == []
           - lab_out.sids[lab_fixture.helpdesk_group] in lab_out.members
           - lab_out.sids[lab_fixture.ws_admins_group] not in lab_out.members
         fail_msg: "After the mapped import: {{ lab_out }}"

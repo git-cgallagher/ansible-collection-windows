@@ -24,6 +24,12 @@
 #      block-inheritance; unmanaged links reported, removed only with
 #      remove_unmanaged_links
 #
+# gpo_names scopes every step to the selected GPOs (Get-GpoImportScope): only
+# the WMI filters they link, and only their own links on each SOM
+# (Get-GpoSubsetLinkPlan), so a subset moves into a domain that lacks the
+# other GPOs. Other GPOs' links, block-inheritance and a SOM the target lacks
+# where no selected GPO is linked are left alone.
+#
 # Before planning, a preflight proves the run could work and reports what it
 # found in `preflight`: the manifest parses and matches the staged backup
 # folders, the migration table parses, no cpassword, state_dir is writable
@@ -398,6 +404,16 @@ if (Test-Path -ErrorAction SilentlyContinue -LiteralPath $stateFile) {
 $newState = @{}
 foreach ($k in $state.Keys) { $newState[$k] = $state[$k] }
 
+# --- scope: every GPO and WMI filter, or with gpo_names the selected GPOs and
+#     the filters they link ---------------------------------------------------------
+$manifestGpos = @{}
+foreach ($p in $manifest.gpos.PSObject.Properties) { $manifestGpos[$p.Name] = $p.Value }
+$manifestFilters = @{}
+if ($manifest.PSObject.Properties['wmi_filters'] -and $manifest.wmi_filters) {
+    foreach ($p in $manifest.wmi_filters.PSObject.Properties) { $manifestFilters[$p.Name] = $p.Value }
+}
+$scope = Get-GpoImportScope -Gpos $manifestGpos -WmiFilters @($manifestFilters.Keys) -Selected $GpoNames
+
 # --- 1. WMI filters ------------------------------------------------------------
 $liveFilters = @{}
 foreach ($f in @(
@@ -407,11 +423,7 @@ foreach ($f in @(
     $liveFilters[[string]$f.'msWMI-Name'] = $f
 }
 
-$manifestFilters = @{}
-if ($manifest.PSObject.Properties['wmi_filters'] -and $manifest.wmi_filters) {
-    foreach ($p in $manifest.wmi_filters.PSObject.Properties) { $manifestFilters[$p.Name] = $p.Value }
-}
-foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
+foreach ($name in $scope.wmi_filters) {
     if ($liveFilters.ContainsKey($name)) { continue }
     $def = $manifestFilters[$name]
     if (-not $CreateWmiFilters) {
@@ -453,12 +465,7 @@ foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
 }
 
 # --- 2 + 3. GPO contents and properties ----------------------------------------
-$manifestGpos = @{}
-foreach ($p in $manifest.gpos.PSObject.Properties) { $manifestGpos[$p.Name] = $p.Value }
-$gpoOrder = @($manifestGpos.Keys | Sort-Object)
-if ($GpoNames.Count -gt 0) {
-    $gpoOrder = @($gpoOrder | Where-Object { $GpoNames -contains $_ })
-}
+$gpoOrder = $scope.gpos
 
 $importedCount = 0
 foreach ($name in $gpoOrder) {
@@ -567,16 +574,23 @@ foreach ($name in $gpoOrder) {
 # --- 4. links, precedence, inheritance ------------------------------------------
 $soms = @()
 if ($manifest.PSObject.Properties['soms'] -and $manifest.soms) { $soms = @($manifest.soms) }
+$somCount = $soms.Count
+if ($scope.filtered) {
+    $somCount = @($soms | Where-Object { @($_.links | Where-Object { $_ -and $scope.gpos -contains [string]$_.gpo }).Count -gt 0 }).Count
+}
 foreach ($som in $soms) {
     # Targets are relative to the domain root ('' = the root itself), so the
     # same manifest rebases onto whichever domain this run targets.
     $relative = [string]$som.target
     if ($relative) { $target = "$relative,$rootDn" } else { $target = $rootDn }
+    $selectedHere = @($som.links | Where-Object { $_ -and $scope.gpos -contains [string]$_.gpo })
     try {
         try {
             Get-ADObject -Identity $target -Server $pdc | Out-Null
         }
         catch {
+            # A subset's target domain may lack the containers only the other GPOs are linked to.
+            if ($scope.filtered -and $selectedHere.Count -eq 0) { continue }
             [void]$errors.Add("SOM '$target' does not exist in $Domain; links not applied")
             continue
         }
@@ -584,7 +598,8 @@ foreach ($som in $soms) {
         $inh = Get-GPInheritance -Target $target -Domain $Domain -Server $pdc
         $blocked = [bool]$inh.GpoInheritanceBlocked
         $desiredBlocked = [bool]$som.block_inheritance
-        if ($blocked -ne $desiredBlocked) {
+        # Block-inheritance belongs to the container, not to a GPO: a filtered run leaves it.
+        if (-not $scope.filtered -and $blocked -ne $desiredBlocked) {
             Invoke-Change -Description "SOM '$target': block inheritance -> $desiredBlocked" -Action {
                 Set-GPInheritance -Target $target -Domain $Domain -Server $pdc `
                     -IsBlocked (Get-YesNo $desiredBlocked) | Out-Null
@@ -593,11 +608,18 @@ foreach ($som in $soms) {
 
         # Reconcile the whole ordered list (Get-GpoLinkPlan: Set-GPLink -Order
         # renumbers neighbours, so the plan tracks positions in a simulated
-        # work list rather than checking each link against a stale snapshot).
+        # work list rather than checking each link against a stale snapshot),
+        # or with gpo_names only the selected GPOs' links (Get-GpoSubsetLinkPlan).
         $currentLinks = @($inh.GpoLinks | Sort-Object Order | ForEach-Object {
                 @{ name = $_.DisplayName; enforced = [bool]$_.Enforced; enabled = [bool]$_.Enabled }
             })
-        $plan = @(Get-GpoLinkPlan -Current $currentLinks -Desired @($som.links) -RemoveUnmanaged ([bool]$RemoveUnmanagedLinks))
+        if ($scope.filtered) {
+            $plan = @(Get-GpoSubsetLinkPlan -Current $currentLinks -Desired @($som.links) -Selected $scope.gpos `
+                    -RemoveUnmanaged ([bool]$RemoveUnmanagedLinks))
+        }
+        else {
+            $plan = @(Get-GpoLinkPlan -Current $currentLinks -Desired @($som.links) -RemoveUnmanaged ([bool]$RemoveUnmanagedLinks))
+        }
         foreach ($op in $plan) {
             $opName = [string]$op.name
             $opOrder = $op.order
@@ -666,7 +688,7 @@ $module.Result.notices = @($warnings)
 $module.Result.errors = @($errors)
 $module.Result.imported = $importedCount
 $module.Result.gpo_count = $gpoOrder.Count
-$module.Result.som_count = $soms.Count
+$module.Result.som_count = $somCount
 $module.Result.state_file = $stateFile
 $module.Diff.prepared = (@($actions) -join "`n")
 

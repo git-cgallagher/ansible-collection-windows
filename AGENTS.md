@@ -133,7 +133,11 @@ role):
   fixture's drift, the plans against it (the defaults failing on the missing
   WMI filter with the unmanaged link noticed, then `create_wmi_filters` and
   `remove_unmanaged_links` planning the fixes, and nothing touched), the
-  forced converge back to the authored state and the repeat, the migration
+  forced converge back to the authored state and the repeat, two `gpo_names`
+  subsets imported into the domain drifted again from the export lacking the
+  deleted GPO's folder (check mode, the run, the repeat; only the subset's
+  filter and links touched, the drift outside it left, then converged back),
+  the migration
   table (the import key, the repeat, the import without it), and the
   failures (a missing `source_dir`, a missing migration table, the cpassword
   refusal, an incomplete backup folder, a missing manifest, a GPO missing
@@ -263,8 +267,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   basis and is pinned by a unit test: never change it), the zip, the
   manifest's encodings (WMI filter `msWMI-Parm2`, relative DNs and trustee
   names), the export's scope and state decisions (`Get-GpoExportScope`,
-  `Get-DeletedGpoEntry`), the import decision (`Get-GpoImportReason`) and the
-  link plan (`Get-GpoLinkPlan`). A module keeps only what talks to Windows
+  `Get-DeletedGpoEntry`), the import decision (`Get-GpoImportReason`), the
+  import's scope and link plans (`Get-GpoImportScope`, `Get-GpoLinkPlan`,
+  `Get-GpoSubsetLinkPlan`). A module keeps only what talks to Windows
   (and `Ansible.Basic`); new pure logic goes in the util, with a test.
 - The clustering modules share `plugins/module_utils/_WsfcCommon.psm1`
   (0.13.0, issue #48's W9): the helpers that were inside `wsfc_cluster.ps1`
@@ -705,8 +710,16 @@ ansible-galaxy collection build --force
   selected GPOs only, to save the `Get-GPPermission` calls, reopens issue
   #37: the repo's manifest loses the other GPOs and the next full run
   reports `manifest_changed` on an unchanged domain. `gpo_import`'s
-  `gpo_names` limits the GPO import only; it still reconciles every
-  manifest container's links.
+  `gpo_names` scopes the WMI filters and links as well (issue #57), so the
+  whole-domain manifest doesn't drag the other GPOs into a subset import.
+- **A subset import's link orders are absolute.** `New-GPLink`/`Set-GPLink
+  -Order` take positions on the whole container, which also holds links the
+  run must leave alone, so `Get-GpoSubsetLinkPlan` places each selected GPO
+  right after its manifest predecessor instead of planning on filtered
+  lists (which yields relative orders and never converges). Feeding a merged
+  list to `Get-GpoLinkPlan` doesn't work either: it emits `set` operations
+  on the other GPOs' links. The Pester test's random containers prove one
+  pass converges; run them after any change to either planner.
 - **After promoting a DC, wait for `\\<domain>\SYSVOL` itself**, not just
   the SYSVOL share and `SysvolReady`. Group Policy Preferences cmdlets write
   through the domain's DFS path, which failed with "The network path was not
