@@ -673,7 +673,18 @@ ansible-galaxy collection build --force
   domain controller: the folder's permission names the SID (no lookup), the
   share's goes by name (`win_share` translates it), so the share task retries
   for ten minutes. The lab has one DC and never waits, so the delay between
-  sites is unconfirmed.
+  sites is unconfirmed. Confirmed in the three-VM lab (PR #67, 2026-11-05,
+  Windows Server 2022): `ADAware` and `CreatingDC` find the CNO, the
+  `psbase` calls write the container's rule, and `Set-ClusterQuorum
+  -FileShareWitness` accepts a share whose only share permission is the
+  CNO's Full Control (no Administrators entry needed).
+
+- **A PowerShell variable that differs from a typed parameter only in case
+  *is* that parameter.** The lab's `ad_state.ps1` had `param([string]$FileServer)`
+  and then `$fileServer = Get-ADComputer …`, which stored the computer
+  object as a string, so its distinguished name read null (PR #67's second
+  lab run). PSScriptAnalyzer doesn't catch it. Give locals names no
+  parameter has.
 
 - **A backslash in a Jinja string literal inside `{{ }}` stays doubled on
   ansible-core 2.21.** `'{{ path.split("\\") }}'` split on two backslashes,
