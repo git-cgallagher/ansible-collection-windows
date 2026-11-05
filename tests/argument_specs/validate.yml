@@ -23,6 +23,7 @@
     spec_backup: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_backup/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
     spec_import: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_import/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
     spec_cluster: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+    spec_cluster_entry_points: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc/meta/argument_specs.yml') | from_yaml).argument_specs }}"
     spec_fileserver: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/wsfc_fileserver/meta/argument_specs.yml') | from_yaml).argument_specs }}"
   tasks:
     # --- valid input passes ---------------------------------------------------------
@@ -94,6 +95,40 @@
             credential: {username: witness, password: example-not-secret}
 
     # --- invalid input is rejected by the roles themselves --------------------------
+    - name: Accept a full wsfc groups call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_cluster_entry_points.groups.options }}"
+        provided_arguments:
+          wsfc_groups:
+            - name: Available Storage
+              owner: sql01
+              move_timeout: 600
+            - name: SQL Server (MSSQLSERVER)
+              preferred_owners: [sql01, sql02]
+              failback: {allowed: true, window_start: 1, window_end: 4}
+              properties: {Description: The FCI}
+            - name: AG1
+              resources:
+                - name: AG1_LISTENER
+                  parameters: {RegisterAllProvidersIP: 0, HostRecordTTL: 300}
+          wsfc_manage_node: sql01
+          wsfc_report_only: true
+          wsfc_become_user: EXAMPLE\svc-cluster-build
+          wsfc_become_password: example-not-secret
+
+    - name: Accept a full wsfc failover call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_cluster_entry_points.failover.options }}"
+        provided_arguments:
+          wsfc_failover_group: SQL Server (MSSQLSERVER)
+          wsfc_failover_to: sql02
+          wsfc_failover_back: false
+          wsfc_failover_timeout: 600
+          wsfc_manage_node: sql01
+          wsfc_report_only: true
+          wsfc_become_user: EXAMPLE\svc-cluster-build
+          wsfc_become_password: example-not-secret
+
     - name: Accept a minimal wsfc_fileserver call
       ansible.builtin.validate_argument_spec:
         argument_spec: "{{ spec_fileserver.main.options }}"
@@ -332,6 +367,83 @@
             that:
               - ansible_failed_result.argument_errors is not defined
               - ansible_failed_result.msg | default('') is search('must be 0 or 1')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a wsfc group without a name
+      block:
+        - name: Include wsfc's groups with a nameless group
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+            tasks_from: groups
+          vars:
+            wsfc_groups:
+              - owner: sql01
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc groups accepted a group without a name
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('name')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    # A spec can't say "unique"; the entry point's first task does.
+    - name: Reject a wsfc group listed twice
+      block:
+        - name: Include wsfc's groups with Available Storage twice
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+            tasks_from: groups
+          vars:
+            wsfc_groups:
+              - name: Available Storage
+              - name: available storage
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: wsfc groups accepted Available Storage twice
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('listed in wsfc_groups only')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a wsfc failover without a group
+      block:
+        - name: Include wsfc's failover without wsfc_failover_group
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+            tasks_from: failover
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc failover ran without wsfc_failover_group
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_failover_group')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a non-integer wsfc failover timeout
+      block:
+        - name: Include wsfc's failover with a timeout of soon
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+            tasks_from: failover
+          vars:
+            wsfc_failover_group: Cluster Group
+            wsfc_failover_timeout: soon
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc failover accepted a timeout of soon
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_failover_timeout')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
     - name: Reject a wsfc disk without a unique_id

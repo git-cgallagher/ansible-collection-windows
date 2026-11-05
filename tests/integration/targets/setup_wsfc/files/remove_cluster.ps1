@@ -11,6 +11,11 @@ catch {
     $cluster = $null
 }
 if ($null -ne $cluster) {
+    # Remove-Cluster refuses a cluster that still has groups of its own (not
+    # its core groups), such as the wsfc_group target's test group.
+    foreach ($group in @(Get-ClusterGroup -Cluster $env:COMPUTERNAME | Where-Object { -not $_.IsCoreGroup })) {
+        Remove-ClusterGroup -Cluster $env:COMPUTERNAME -Name $group.Name -RemoveResources -Force
+    }
     $cluster | Remove-Cluster -Force -CleanupAD:$false
     $Ansible.Changed = $true
 }

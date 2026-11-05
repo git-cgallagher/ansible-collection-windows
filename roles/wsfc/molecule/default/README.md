@@ -15,9 +15,10 @@ VM is never promoted to a domain controller.
 | verify | Read the cluster | One node, up; the network's name, role (cluster only) and metric; both properties; no witness; no cluster network name |
 | | Change a property out-of-band, then run the role report-only | The plan has exactly that one fix, and the cluster is unchanged |
 | | Run the role for real | It fixes only that property, and doesn't recreate the cluster |
-| | Run the `wsfc_cluster` module's integration target ([tests/integration/targets/wsfc_cluster](../../../../tests/integration/targets/wsfc_cluster)) | It removes the cluster above, plans and creates its own, converges its network, properties and quorum, plans and fixes out-of-band drift (check mode before each change, a repeat that changes nothing), fails clearly on bad input, and leaves no cluster behind |
+| | Run the `wsfc_cluster` module's integration target ([tests/integration/targets/wsfc_cluster](../../../../tests/integration/targets/wsfc_cluster)) | It removes the cluster above, plans and creates its own, converges its network, properties and quorum, then sites, a preferred site and the node's vote, plans and fixes out-of-band drift (check mode before each change, a repeat that changes nothing), fails clearly on bad input, and leaves no cluster behind |
+| | Run the `wsfc_group` module's integration target ([tests/integration/targets/wsfc_group](../../../../tests/integration/targets/wsfc_group)) | It builds a one-node cluster with a test group holding an offline Generic Application resource, converges the group's properties, failback, preferred owners and the resource's common and private properties (check mode, the change, a repeat), fixes out-of-band drift, fails clearly on bad input, and leaves no cluster behind |
 
-Not covered here (one VM, no shared network or storage): two nodes, the
+Not covered here (one VM, no shared network or storage): moving a group, two nodes, the
 `ActiveDirectoryAndDns` access point, static addresses, shared disks and a
 disk witness. The three-VM scenario in
 [roles/wsfc_fileserver/molecule/default](../../../wsfc_fileserver/molecule/default/README.md)

@@ -29,7 +29,7 @@ argument_specs:
         description:
           - Computer names of the cluster's nodes.
           - Empty means the computer name of every host in the play.
-      wsfc_manage_node:
+      wsfc_manage_node: &opt_manage_node
         type: str
         default: ''
         description:
@@ -293,7 +293,7 @@ argument_specs:
           - Run the cluster task in check mode, so it reports every action without changing the cluster (a plan),
             while the feature install runs for real. Check mode implies it, and then also leaves the feature
             uninstalled.
-      wsfc_become_user:
+      wsfc_become_user: &opt_become_user
         type: str
         default: ''
         description:
@@ -305,7 +305,7 @@ argument_specs:
           - The account needs local administrator rights on every node and, with
             O(wsfc_administrative_access_point=ActiveDirectoryAndDns), rights to create the cluster's
             computer object (or a prestaged, disabled CNO it has Full Control over).
-      wsfc_become_password:
+      wsfc_become_password: &opt_become_password
         type: str
         default: ''
         no_log: true
@@ -316,3 +316,139 @@ argument_specs:
         default: 'C:\ProgramData\wsfc-iac'
         description:
           - Directory on the managing node for C(Test-Cluster) reports.
+
+  groups:
+    short_description: Converge cluster groups' owners, failback, properties and resources
+    description:
+      - Runs the C(wsfc_group) module once, from the managing node, for each group in O(wsfc_groups)
+        (C(ansible-doc git_cgallagher.windows.wsfc_group)).
+      - The main entry point never touches groups, because a workload's group exists only once the workload has
+        created it. Run this one after the workload (an FCI's group, after SQL Server setup), or before it for the
+        groups every cluster has (C(Available Storage), C(Cluster Group)).
+      - An availability group's group belongs to SQL Server; C(wsfc_group) refuses its owners, failback,
+        properties and moves, and leaves only its other resources (such as the listener's network name) settable.
+      - Supports check mode; check mode and O(wsfc_report_only) report every action without changing the groups.
+      - Run it against the cluster's nodes, like the main entry point.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      wsfc_groups:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - The cluster groups to converge, each with the C(wsfc_group) module's options.
+        options:
+          name:
+            type: str
+            required: true
+            description:
+              - The cluster group's name, for example V(Available Storage) or V(SQL Server (MSSQLSERVER)).
+          preferred_owners:
+            type: list
+            elements: str
+            description:
+              - The group's preferred owners, in order; the list is exact. Left out, the current list stays.
+          owner:
+            type: str
+            description:
+              - The node the group should be on now; when it's elsewhere, the group is moved there, after every other
+                change.
+          move_timeout:
+            type: int
+            description:
+              - Seconds a move may take; the module's default is 300.
+          failback:
+            type: dict
+            description:
+              - Whether the group fails back to its most preferred owner, and when.
+            options:
+              allowed:
+                type: bool
+                description:
+                  - V(true) allows failback, V(false) prevents it. It needs preferred owners to have an effect.
+              window_start:
+                type: int
+                description:
+                  - The hour, 0 to 23 in the cluster's local time, from which failback may happen, or V(-1) for no
+                    window. Set together with O(wsfc_groups[].failback.window_end).
+              window_end:
+                type: int
+                description:
+                  - The hour, 0 to 23, until which failback may happen, or V(-1) for no window.
+          properties:
+            type: dict
+            description:
+              - The group's common properties to set, by name, for example V(Description) or V(Priority).
+          resources:
+            type: list
+            elements: dict
+            description:
+              - Resources in the group to set common and private properties on.
+            options:
+              name:
+                type: str
+                required: true
+                description:
+                  - The resource's name.
+              properties:
+                type: dict
+                description:
+                  - The resource's common properties to set, by name.
+              parameters:
+                type: dict
+                description:
+                  - The resource's private properties to set, by name, for example the AG listener's V(HostRecordTTL).
+                    Some take effect only when the resource restarts, which a warning says; nothing is restarted.
+      wsfc_manage_node: *opt_manage_node
+      wsfc_report_only:
+        type: bool
+        default: false
+        description:
+          - Run the groups task in check mode, so it reports every action without changing the groups. Check mode
+            implies it.
+      wsfc_become_user: *opt_become_user
+      wsfc_become_password: *opt_become_password
+
+  failover:
+    short_description: Move a cluster group to another node and back, timing each move
+    description:
+      - A planned failover test, as for patching a node. Moves O(wsfc_failover_group) to another node with the
+        C(wsfc_group) module, waits for it to settle there (online, if it was online), then moves it back the same
+        way, and reports how long each move took in C(wsfc_failover_result). It doesn't simulate a crash.
+      - An availability group fails over through T-SQL, never through the cluster, so this refuses its group.
+      - Reports a change when it moved the group. Check mode and O(wsfc_report_only) report the move without
+        making it.
+      - Run it against the cluster's nodes, like the main entry point.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      wsfc_failover_group:
+        type: str
+        required: true
+        description:
+          - The cluster group to move, for example an FCI's V(SQL Server (MSSQLSERVER)) or V(Cluster Group).
+      wsfc_failover_to:
+        type: str
+        default: ''
+        description:
+          - Computer name of the node to move the group to.
+          - Empty means another node that is up, the group's preferred owners first.
+      wsfc_failover_back:
+        type: bool
+        default: true
+        description:
+          - Move the group back to the node it started on afterwards.
+      wsfc_failover_timeout:
+        type: int
+        default: 300
+        description:
+          - Seconds each move may take, until the group is settled on its new node.
+      wsfc_manage_node: *opt_manage_node
+      wsfc_report_only:
+        type: bool
+        default: false
+        description:
+          - Report the moves without making them. Check mode implies it.
+      wsfc_become_user: *opt_become_user
+      wsfc_become_password: *opt_become_password

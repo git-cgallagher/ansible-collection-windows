@@ -125,10 +125,16 @@
         that: lab_after_fix.result.same_subnet_threshold == lab_cluster.same_subnet_threshold
         fail_msg: "Cluster state: {{ lab_after_fix.result | to_nice_json }}"
 
-    # 4. The module's own integration target, from tests/integration/targets
-    #    (ANSIBLE_ROLES_PATH in molecule.yml): it removes this cluster, builds
-    #    its own in check mode and for real, converges and drifts it, and
-    #    removes it, leaving the VM without a cluster.
+    # 4. The modules' own integration targets, from tests/integration/targets
+    #    (ANSIBLE_ROLES_PATH in molecule.yml). wsfc_cluster's removes this
+    #    cluster, builds its own in check mode and for real, converges and
+    #    drifts it, and removes it. wsfc_group's builds a one-node cluster with
+    #    a test group, converges and drifts the group, and removes the
+    #    cluster, leaving the VM without one.
     - name: Run the wsfc_cluster target
       ansible.builtin.include_role:
         name: wsfc_cluster
+
+    - name: Run the wsfc_group target
+      ansible.builtin.include_role:
+        name: wsfc_group

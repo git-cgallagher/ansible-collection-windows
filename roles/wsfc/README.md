@@ -39,6 +39,13 @@ The module's result is registered as `wsfc_run` and the role prints its
 `actions`, `warnings` and `validation_report` (the `Test-Cluster` report's
 path on the managing node).
 
+Two more entry points act on the cluster's **groups**, through the
+`wsfc_group` module (`ansible-doc git_cgallagher.windows.wsfc_group`):
+`tasks_from: groups` converges the groups in `wsfc_groups`, and
+`tasks_from: failover` moves a group to another node and back, timing each
+move (see [Cluster groups](#cluster-groups-the-groups-entry-point) and
+[Failover tests](#failover-tests-the-failover-entry-point)).
+
 ### Planning: `--check` and `wsfc_report_only`
 
 The cluster task supports check mode for real: under `--check` the module
@@ -61,8 +68,9 @@ validate them (`ansible-doc -t role git_cgallagher.windows.wsfc`).
 
 ## Variables
 
-Only `wsfc_name` is required. The full descriptions, including each
-list item's keys, are in the argument spec.
+Only `wsfc_name` is required (and `wsfc_failover_group` for the `failover`
+entry point). The full descriptions, including each list item's keys, are in
+the argument spec.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -87,6 +95,11 @@ list item's keys, are in the argument spec.
 | `wsfc_become_user` | `''` | Run the cluster task as this account (`runas`); see below |
 | `wsfc_become_password` | `''` | Its password (vault it) |
 | `wsfc_report_dir` | `C:\ProgramData\wsfc-iac` | `Test-Cluster` reports on the managing node |
+| `wsfc_groups` | `[]` | Entry point `groups`: each group's `name`, and optionally `preferred_owners`, `owner` (a move), `move_timeout`, `failback` (`allowed`, `window_start`, `window_end`), `properties` and `resources` (`name`, `properties`, `parameters`) |
+| `wsfc_failover_group` | *(required by `failover`)* | Entry point `failover`: the group to move |
+| `wsfc_failover_to` | `''` | The node to move it to; empty = another node that is up, the group's preferred owners first |
+| `wsfc_failover_back` | `true` | Move it back afterwards |
+| `wsfc_failover_timeout` | `300` | Seconds each move may take |
 
 ## Credentials: the double hop
 
@@ -132,9 +145,8 @@ wsfc_properties:
 ```
 
 `RegisterAllProvidersIP` and `HostRecordTTL` belong to the AG listener's
-network name, which SQL Server creates, so this role doesn't set them yet.
-Group and resource settings like these are planned for a `wsfc_groups`
-variable ([issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48)).
+network name, which SQL Server creates. Once it exists, set them with the
+`groups` entry point (below): they are private properties of that resource.
 
 ### Two datacenters: sites, the preferred site and votes
 
@@ -223,6 +235,87 @@ nodes. Read it on the managing node:
 Get-Disk | Select-Object Number, FriendlyName, Size, PartitionStyle, UniqueId
 ```
 
+## Cluster groups: the `groups` entry point
+
+`tasks_from: groups` runs the `wsfc_group` module once, from the managing
+node, for each group in `wsfc_groups`. It sets the group's common properties
+(failback among them) and its preferred owners, its resources' common and
+private properties, and last moves the group to `owner` when it's
+elsewhere. It never creates or removes groups or resources: a group that
+doesn't exist fails the run.
+
+The main entry point never touches groups, because a workload's group exists
+only once the workload has created it. Run `groups` after the workload (an
+FCI's group, after SQL Server setup), or before it for the groups every
+cluster has:
+
+```yaml
+- name: Put Available Storage on the node SQL Server setup runs on
+  ansible.builtin.include_role:
+    name: git_cgallagher.windows.wsfc
+    tasks_from: groups
+  vars:
+    wsfc_groups:
+      - name: Available Storage
+        owner: SQL01
+
+# After SQL Server setup: the FCI prefers the first datacenter's nodes and
+# fails back only at night; the AG listener registers one address in DNS.
+- name: Converge the SQL Server groups
+  ansible.builtin.include_role:
+    name: git_cgallagher.windows.wsfc
+    tasks_from: groups
+  vars:
+    wsfc_groups:
+      - name: SQL Server (MSSQLSERVER)
+        preferred_owners: [SQL01, SQL02]
+        failback: {allowed: true, window_start: 1, window_end: 4}
+      - name: AG1
+        resources:
+          - name: AG1_AGLISTENER
+            parameters: {RegisterAllProvidersIP: 0, HostRecordTTL: 300}
+```
+
+- `preferred_owners` is an exact, ordered list. `failback.allowed` has no
+  effect without preferred owners (a warning says so). The failback window
+  is two hours from 0 to 23 in the cluster's local time, or `-1` for none,
+  in which case failback happens as soon as the preferred owner is back.
+- A private property that only takes effect when its resource restarts is
+  set with a warning saying so; the role never restarts a resource.
+- **Availability groups:** SQL Server owns an AG's cluster group. Microsoft
+  says not to change its owners or properties, add or remove its resources,
+  or move it through the cluster, so `wsfc_group` refuses `preferred_owners`,
+  `owner`, `failback` and `properties` for such a group, and any change to
+  the availability group resource. Its other resources, such as the
+  listener's network name, stay settable. Fail an AG over with T-SQL.
+- `--check` and `wsfc_report_only: true` plan every change, moves included,
+  without making them.
+
+## Failover tests: the `failover` entry point
+
+`tasks_from: failover` moves `wsfc_failover_group` to another node (or
+`wsfc_failover_to`), waits for it to settle there (online, if it was), and
+moves it back (unless `wsfc_failover_back: false`). It's a planned failover,
+as for patching a node; it doesn't simulate a crash. The result, with how long
+each move took, is in `wsfc_failover_result`:
+
+```yaml
+- name: Fail the FCI over and back
+  ansible.builtin.include_role:
+    name: git_cgallagher.windows.wsfc
+    tasks_from: failover
+  vars:
+    wsfc_failover_group: SQL Server (MSSQLSERVER)
+
+- name: Show the timings
+  ansible.builtin.debug:
+    var: wsfc_failover_result   # {group, from, to, seconds, moved_back, back_seconds, planned_only}
+```
+
+It refuses an availability group's group: AGs fail over through T-SQL. The
+file server role has its own `failover` entry point, which also checks the
+shares from a client.
+
 ## Example
 
 ```yaml
@@ -277,11 +370,24 @@ then an idempotent re-run.
 The same lab puts the two nodes in two sites (`DC1` and `DC2`), makes `DC1`
 the preferred site and takes `node2`'s vote, and the module's integration
 target checks sites, the preferred site and votes on its one-node cluster.
+It also runs the `groups` entry point on `Cluster Group` (preferred owners
+and a description, through the idempotent re-run) and ends with the
+`failover` entry point on that group: to the other node and back, with the
+cluster still up and its disk witness online.
+
+The `wsfc_group` module's integration target
+(`tests/integration/targets/wsfc_group`, run by this role's scenario) builds
+a one-node cluster with a test group holding an offline Generic Application
+resource, and checks group properties, failback, preferred owners and the
+resource's common and private properties the same way: check mode, the
+change, a repeat, drift and the error messages. A move needs two nodes, so
+only the three-VM lab moves a group.
 
 Still not lab-tested ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)):
 adding a node to an existing cluster, the `Dns` access point, multi-subnet
 clusters, Cluster Shared Volumes, file share and cloud witnesses (with or
-without a `credential`), failover between sites, and a failing
-`Test-Cluster`. The lab ignores `Test-Cluster`'s network tests,
+without a `credential`), failover between sites, failback (it needs a node to
+fail and come back), an availability group's group (refused, but only proven
+by unit tests), and a failing `Test-Cluster`. The lab ignores `Test-Cluster`'s network tests,
 because every lab VM's management NIC has the same address (QEMU user
 networking). Try those in a lab of your own first.

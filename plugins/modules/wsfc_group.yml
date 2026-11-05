@@ -1,0 +1,210 @@
+DOCUMENTATION:
+  module: wsfc_group
+  short_description: Converge a failover cluster group's owners, failback, properties and resources
+  description:
+    - Brings one existing cluster group in line with the options. It sets the group's common properties (failback among
+      them) and its preferred owners, then its resources' common and private properties, and last moves the group to
+      O(owner) when it is elsewhere.
+    - Runs on any node of the cluster, through the node rather than the cluster name, so a cluster without an
+      administrative access point works too. It never creates or removes groups or resources, and fails when the group
+      doesn't exist (an FCI's group exists only once SQL Server setup has created it).
+    - A group that holds an availability group (a resource of type C(SQL Server Availability Group)) belongs to SQL
+      Server, which sets its owners and moves it. The module refuses O(preferred_owners), O(owner), O(failback) and
+      O(properties) for such a group, and any change to the availability group resource itself. Other resources in the
+      group stay settable, such as the listener's network name, whose C(RegisterAllProvidersIP) and C(HostRecordTTL)
+      Microsoft documents setting through the cluster.
+    - Every action is listed in RV(actions), and in diff mode as the diff. In check mode the actions are planned and
+      nothing is changed.
+  version_added: 0.17.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    name:
+      description:
+        - The cluster group's name, for example V(Available Storage), V(Cluster Group) or an FCI's
+          V(SQL Server (MSSQLSERVER)). Matched without case.
+      type: str
+      required: true
+    preferred_owners:
+      description:
+        - The group's preferred owners, in order. The list is exact, so its order and its nodes both converge.
+        - Leave it out to keep the current list. It can't be emptied.
+      type: list
+      elements: str
+    owner:
+      description:
+        - The node the group should be on now. When it's on another node, the module moves it there (C(Move-ClusterGroup))
+          after every other change, and waits for it to settle (online on the target, if it was online before).
+        - The node must be up. Leave it out to leave the group where it is.
+      type: str
+    move_timeout:
+      description:
+        - Seconds a move may take, until the group is settled on O(owner).
+      type: int
+      default: 300
+    failback:
+      description:
+        - Whether the group fails back to its most preferred owner when that node comes back after a failover, and when.
+          The C(AutoFailbackType), C(FailbackWindowStart) and C(FailbackWindowEnd) common properties.
+        - Set failback here or in O(properties), not both.
+      type: dict
+      suboptions:
+        allowed:
+          description:
+            - V(true) allows failback (C(AutoFailbackType) 1), V(false) prevents it (0, the cluster's default). Failback
+              has no effect while the group has no preferred owners, which a warning says.
+            - Leave it out to keep the current setting.
+          type: bool
+        window_start:
+          description:
+            - The hour, 0 to 23 in the cluster's local time, from which failback may happen, or V(-1) for no window.
+            - Set it together with O(failback.window_end); leave both out to keep the current window.
+          type: int
+        window_end:
+          description:
+            - The hour, 0 to 23, until which failback may happen, or V(-1) for no window.
+            - Without a window, failback happens as soon as the preferred owner is back.
+          type: int
+    properties:
+      description:
+        - The group's common properties to set, by name, for example V(Description), V(Priority) or V(FailoverThreshold).
+        - Values are compared as strings with the current value; only differing properties are set. A name the group
+          doesn't have fails the task.
+      type: dict
+    resources:
+      description:
+        - Resources in the group to set common and private properties on. Resources not listed are left alone, and a
+          listed resource that isn't in the group fails the task.
+      type: list
+      elements: dict
+      suboptions:
+        name:
+          description:
+            - The resource's name.
+          type: str
+          required: true
+        properties:
+          description:
+            - The resource's common properties to set, by name, for example V(RestartThreshold) or V(PendingTimeout).
+              Compared as strings; a name the resource doesn't have fails the task.
+          type: dict
+        parameters:
+          description:
+            - The resource's private properties to set, by name (C(Set-ClusterParameter)), for example a network name's
+              V(HostRecordTTL). Compared as strings; a name the resource doesn't have fails the task.
+            - The changes are written together, in one call, because a resource checks its private properties as a set
+              (a Generic Application refuses a C(CommandLine) while its C(CurrentDirectory) is empty).
+            - Some take effect only when the resource restarts, which a warning says. The module never restarts a
+              resource.
+          type: dict
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+      details: Plans every action, the move included, without changing anything.
+    diff_mode:
+      support: full
+      details: The diff is the list of planned actions, one per line.
+    platform:
+      platforms: windows
+  notes:
+    - The node it runs on needs the Failover Clustering PowerShell tools (C(RSAT-Clustering-PowerShell)).
+    - Never use it to move or fail over an availability group, which only SQL Server may do (with T-SQL).
+  seealso:
+    - module: git_cgallagher.windows.wsfc_cluster
+    - name: The wsfc role
+      description: Its C(groups) entry point runs this module for each of C(wsfc_groups), and its C(failover) entry point
+        moves a group to another node and back with it.
+      link: https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/wsfc
+    - name: Restrictions on using the Failover Cluster Manager with availability groups
+      description: What SQL Server manages in an availability group's cluster group.
+      link: https://learn.microsoft.com/en-us/sql/database-engine/availability-groups/windows/failover-clustering-and-always-on-availability-groups-sql-server
+
+EXAMPLES: |
+  - name: Put Available Storage on the node SQL Server setup runs on
+    git_cgallagher.windows.wsfc_group:
+      name: Available Storage
+      owner: SQL01
+
+  - name: Prefer the FCI's nodes in the first datacenter, and fail back at night only
+    git_cgallagher.windows.wsfc_group:
+      name: SQL Server (MSSQLSERVER)
+      preferred_owners: [SQL01, SQL02]
+      failback:
+        allowed: true
+        window_start: 1
+        window_end: 4
+
+  - name: Register only the listener's active address in DNS, with a short TTL
+    git_cgallagher.windows.wsfc_group:
+      name: AG1
+      resources:
+        - name: AG1_AGLISTENER
+          parameters:
+            RegisterAllProvidersIP: 0
+            HostRecordTTL: 300
+
+  - name: Plan a group's changes without making them
+    git_cgallagher.windows.wsfc_group:
+      name: Cluster Group
+      properties:
+        Description: Core cluster resources
+    check_mode: true
+    diff: true
+
+RETURN:
+  group:
+    description: The group after the run (before it, in check mode).
+    returned: when the group exists
+    type: dict
+    contains:
+      name:
+        description: The group's name.
+        type: str
+        sample: Available Storage
+      owner:
+        description: The node that owns the group.
+        type: str
+        sample: SQL01
+      state:
+        description: The group's state, for example V(Online) or V(Offline).
+        type: str
+        sample: Online
+      preferred_owners:
+        description: The group's preferred owners, in order.
+        type: list
+        elements: str
+        sample: [SQL01, SQL02]
+      availability_group:
+        description: Whether the group holds an availability group.
+        type: bool
+        sample: false
+      resources:
+        description: 'Each resource in the group, as C(name (type): state).'
+        type: list
+        elements: str
+        sample: ['Cluster Disk 1 (Physical Disk): Online']
+  nodes_up:
+    description: The cluster's nodes that are up.
+    returned: when the group exists
+    type: list
+    elements: str
+    sample: [SQL01, SQL02]
+  move:
+    description:
+      - The move, when the group wasn't on O(owner), with C(seconds) the time it took to settle (null in check mode).
+      - Null when the group stayed where it was.
+    returned: always
+    type: dict
+    sample: {from: SQL02, to: SQL01, seconds: 14.2}
+  actions:
+    description:
+      - Every action the module took, in order, or planned in check mode. Empty when nothing needed changing.
+      - In diff mode the same list is the diff.
+    returned: always
+    type: list
+    elements: str
+    sample:
+      - set group Available Storage's preferred owners from none to SQL01, SQL02
+      - move group Available Storage from SQL02 to SQL01

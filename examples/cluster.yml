@@ -65,6 +65,47 @@
         wsfc_become_user: EXAMPLE\svc-cluster-build
         wsfc_become_password: "{{ vault_cluster_build_password }}"
 
+# The groups and failover entry points: put Available Storage on the node
+# SQL Server setup will run on, then (after setup) prefer the FCI's
+# first-datacenter nodes and test a failover there and back.
+- name: Prepare and test the SQL Server FCI's groups
+  hosts: sqlclu01_nodes
+  gather_facts: false
+  tasks:
+    - name: Put Available Storage on the install node
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc
+        tasks_from: groups
+      vars:
+        wsfc_groups:
+          - name: Available Storage
+            owner: SQL01
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
+
+    # ... SQL Server setup (InstallFailoverCluster, AddNode) runs here ...
+
+    - name: Prefer the first datacenter's nodes, failing back only at night
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc
+        tasks_from: groups
+      vars:
+        wsfc_groups:
+          - name: SQL Server (MSSQLSERVER)
+            preferred_owners: [SQL01, SQL02]
+            failback: {allowed: true, window_start: 1, window_end: 4}
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
+
+    - name: Fail the FCI over and back
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc
+        tasks_from: failover
+      vars:
+        wsfc_failover_group: SQL Server (MSSQLSERVER)
+        wsfc_become_user: EXAMPLE\svc-cluster-build
+        wsfc_become_password: "{{ vault_cluster_build_password }}"
+
 # An availability group's cluster on one subnet stretched across two
 # datacenters, with the file share witness in a third: a site per
 # datacenter, DC1 preferred, and the vSphere profile's heartbeats.

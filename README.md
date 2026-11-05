@@ -6,7 +6,7 @@ Each area's roles and modules carry its prefix.
 | Area | Roles and modules | What they do |
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; module `gpo_export` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
-| [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; module `wsfc_cluster` | Build a Windows Server Failover Cluster and converge its networks, sites, node votes, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; run a clustered file server on it, fail it over between nodes and validate it from a client |
+| [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; modules `wsfc_cluster`, `wsfc_group` | Build a Windows Server Failover Cluster and converge its networks, sites, node votes, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; converge its groups' owners, failback and resource properties, and test failover; run a clustered file server on it, fail it over between nodes and validate it from a client |
 | [SQL Server](#sql-server) | role `mssql_prereqs` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
@@ -298,6 +298,14 @@ any of its nodes, creates it or adds the missing nodes, and converges the
 networks, sites, node votes, properties, disks and quorum, all with check mode (the planned
 actions are the diff) and without ever removing what the options don't list.
 `ansible-doc git_cgallagher.windows.wsfc_cluster` has every option.
+
+Its groups are the `wsfc_group` module's: one group's preferred owners,
+failback, common properties and resources' properties, and a move to another
+node. The role's `groups` entry point runs it for each of `wsfc_groups`, and
+its `failover` entry point moves a group to another node and back, timing
+each move. An availability group's group is SQL Server's, so the module
+refuses its owners, failback, properties and moves.
+`ansible-doc git_cgallagher.windows.wsfc_group` has every option.
 
 ```yaml
 - name: Build the availability group cluster

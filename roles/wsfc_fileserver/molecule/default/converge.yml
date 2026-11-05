@@ -37,6 +37,11 @@
       ansible.builtin.include_role:
         name: git_cgallagher.windows.wsfc
 
+    - name: Converge the core cluster group with wsfc's groups entry point
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc
+        tasks_from: groups
+
     - name: Build the file server with wsfc_fileserver
       ansible.builtin.include_role:
         name: git_cgallagher.windows.wsfc_fileserver
