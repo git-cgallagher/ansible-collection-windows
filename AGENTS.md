@@ -675,6 +675,16 @@ ansible-galaxy collection build --force
   for ten minutes. The lab has one DC and never waits, so the delay between
   sites is unconfirmed.
 
+- **A backslash in a Jinja string literal inside `{{ }}` stays doubled on
+  ansible-core 2.21.** `'{{ path.split("\\") }}'` split on two backslashes,
+  so `\\server\share` came back as two parts and the witness share's name
+  lookup failed (PR #67's first lab run, 2026-11-05). The same literal in a
+  conditional (`assert`'s `that`, `when`) is unescaped, which is why the
+  role's `\\server\share` check passed. Keep backslashes out of template
+  literals: put the character in a plain YAML variable
+  (`wsfc_witness_backslash: "\\"`) and use that, which works on 2.18 and
+  2.21 alike.
+
 - **The machine account quota hides a missing CNO right.** In
   `CN=Computers` the CNO creates up to `ms-DS-MachineAccountQuota` (10 by
   default) computer objects for its roles without any right, and each gets

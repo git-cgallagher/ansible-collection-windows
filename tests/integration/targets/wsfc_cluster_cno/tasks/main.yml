@@ -54,7 +54,9 @@
           - wsfc_cluster_cno_check.actions == [wsfc_cluster_cno_grant_action]
           - wsfc_cluster_cno_check.diff.prepared == wsfc_cluster_cno_grant_action
           - wsfc_cluster_cno_check.cno.sid == wsfc_cluster_cno_removed.result.sid
-          - (wsfc_cluster_cno_check.cno.account | upper).endswith('\\' ~ wsfc_cluster_cno_name | upper ~ '$')
+          # DOMAIN\NAME$, checked without a backslash literal (see AGENTS.md).
+          - (wsfc_cluster_cno_check.cno.account | upper).endswith(wsfc_cluster_cno_name | upper ~ '$')
+          - (wsfc_cluster_cno_check.cno.account | length) > (wsfc_cluster_cno_name | length) + 2
           - wsfc_cluster_cno_check.cno.container == wsfc_cluster_cno_removed.result.container
           - (wsfc_cluster_cno_check.cno.distinguished_name | upper) == ('CN=' ~ wsfc_cluster_cno_name ~ ',' ~ wsfc_cluster_cno_removed.result.container) | upper
           - wsfc_cluster_cno_after_check.result.rules == 0

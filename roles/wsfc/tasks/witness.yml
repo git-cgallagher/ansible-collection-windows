@@ -25,13 +25,18 @@
       The witness share on {{ wsfc_witness_share.host }} and the quorum are
       planned once cluster {{ wsfc_name }} exists
   run_once: true
-  when: wsfc_run.actions | default([]) | select('match', '^create cluster ') | list | length > 0
+  when:
+    - wsfc_report_only | bool or ansible_check_mode
+    - wsfc_run.actions | default([]) | select('match', '^create cluster ') | list | length > 0
 
 - name: Provision the witness share and set the quorum
   when: wsfc_run.cno.sid | default('') | length > 0
   vars:
-    # \\server\share, split on its backslashes: ['', '', server, share].
-    wsfc_witness_unc: '{{ wsfc_quorum.path.split("\\") }}'
+    # \\server\share, split on its backslashes: ['', '', server, share]. The
+    # backslash is plain YAML, never a Jinja string literal: inside a {{ }}
+    # template ansible-core 2.21 left "\\" as two backslashes (PR #67).
+    wsfc_witness_backslash: "\\"
+    wsfc_witness_unc: "{{ wsfc_quorum.path.split(wsfc_witness_backslash) }}"
   block:
     - name: Look for the witness folder
       ansible.windows.win_stat:
