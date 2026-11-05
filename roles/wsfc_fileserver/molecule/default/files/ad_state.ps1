@@ -19,8 +19,10 @@ $createRules = @((Get-Acl -Path "AD:$container").GetAccessRules($true, $true, [S
             ([int64]$_.ActiveDirectoryRights -band 1) -and $_.ObjectType -eq $computerClass
         })
 # The quota path stamps ms-DS-CreatorSID on the computer object it creates; a
-# creator with the right to create computer objects leaves it empty.
-$fileServer = Get-ADComputer -Identity $FileServer -Properties 'ms-DS-CreatorSID'
+# creator with the right to create computer objects leaves it empty. Not
+# $fileServer: names ignore case, so that is the [string] parameter, and the
+# object would be stored as a string.
+$vco = Get-ADComputer -Identity $FileServer -Properties 'ms-DS-CreatorSID'
 $folderRules = @((Get-Acl -LiteralPath $Path).Access | Where-Object {
         [string]$_.IdentityReference -eq $cnoAccount -and [string]$_.AccessControlType -eq 'Allow'
     })
@@ -30,8 +32,8 @@ $Ansible.Result = @{
     cno_container = $container
     cno_create_rules = $createRules.Count
     machine_account_quota = [int](Get-ADObject -Identity $domain -Properties 'ms-DS-MachineAccountQuota').'ms-DS-MachineAccountQuota'
-    fileserver_container = ($fileServer.DistinguishedName -split ',', 2)[1]
-    fileserver_creator_sid = [string]$fileServer.'ms-DS-CreatorSID'
+    fileserver_container = ($vco.DistinguishedName -split ',', 2)[1]
+    fileserver_creator_sid = [string]$vco.'ms-DS-CreatorSID'
     share_path = [string](Get-SmbShare -Name $Share).Path
     # One string each: win_powershell renders a nested list as its type name.
     share_access = (@(Get-SmbShareAccess -Name $Share | ForEach-Object {
