@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.20.0 — 2026-11-05
+
+The file share witness and the cluster name object's right to create
+computer objects: phase 1c of issue #48, the last `wsfc` change the SQL
+Server roles need before they're written.
+
+- `wsfc_cluster` gets `cno_create_computer_objects`. It grants the cluster
+  name object (CNO) Create Computer objects on the OU or container that
+  holds it, for that container and everything below it, as Microsoft's guide
+  to prestaging cluster objects does. Clustered roles can then create their
+  own computer objects (a SQL Server FCI's network name, an availability group
+  listener) where the machine account quota is 0. It writes only the
+  container's DACL, through System.DirectoryServices on the domain controller
+  that created the CNO, and never removes the right. Check mode reads the
+  permissions and plans the grant. A cluster without a CNO (access point
+  `Dns` or `None`) is refused.
+- `wsfc_cluster` returns `cno`: the CNO's account, SID and the domain
+  controller that created it, plus its distinguished name and container when
+  it grants the right.
+- The `wsfc` role passes the option on as `wsfc_cno_create_computer_objects`,
+  and `wsfc_witness_share` provisions the file share witness on a Windows host
+  in the inventory. The role creates or converges the cluster without the
+  quorum, then on the witness host creates the folder, gives the CNO Full
+  Control of it and shares it with the CNO only, checks that every node
+  reaches the host on TCP 445, and runs `wsfc_cluster` again to set the
+  quorum (registered as `wsfc_quorum_run`). The share task retries for ten
+  minutes while the witness host's domain controller learns the new CNO.
+- Tests: `Test-WsfcCreateComputerRight` (`_WsfcCommon.psm1`) has Pester
+  tests. A new integration target, `wsfc_cluster_cno`, runs in the three-VM
+  lab: with the right removed on the domain controller, check mode plans the
+  grant, the grant adds it, a repeat and the option turned off change
+  nothing. The one-node target checks the refusal. The three-VM lab now builds
+  its cluster with a file share witness on dc01 in a domain whose machine
+  account quota is 0. Verify checks the share's, folder's and container's
+  permissions and that the file server's computer object came through the
+  CNO's right, then moves the quorum to a disk witness.
+
 ## 0.18.0 — 2026-11-05
 
 The Group Policy modules are renamed, the first step of issue #64. The names

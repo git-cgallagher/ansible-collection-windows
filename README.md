@@ -20,8 +20,8 @@ Each area's roles and modules carry its prefix.
 > integration target of its own (`tests/integration/targets/<module>`), run
 > from those scenarios: check mode, the real change, the repeat, and every
 > documented failure. The GPO modules' logic also has Pester unit tests
-> (`tests/unit`). Multi-subnet clusters, cloud and file share witnesses and
-> Cluster Shared Volumes aren't lab-tested yet
+> (`tests/unit`). Multi-subnet clusters, cloud witnesses, a file share
+> witness with a `credential` and Cluster Shared Volumes aren't lab-tested yet
 > ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)),
 > and neither is importing GPOs into a *different* domain
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),
@@ -284,7 +284,9 @@ Known gaps, each tracked as a repository issue:
 play and keeps it the way its variables describe: it installs the feature on
 every node, validates them, creates the cluster (or adds missing nodes) and
 converges network names and roles, sites, node votes, common properties, named
-shared disks and the quorum witness. It stops at the cluster: SQL Server setup, file shares and
+shared disks and the quorum witness. It can provision a file share witness on a Windows host
+in the inventory, and let the cluster name object create the computer objects of clustered
+roles. It stops at the cluster: SQL Server setup, file shares and
 availability groups come after it. The [role README](roles/wsfc/README.md)
 covers credentials (the double hop), what file servers, SQL Server FCIs and
 availability groups each need from it, clusters across two datacenters, a

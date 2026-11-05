@@ -270,11 +270,13 @@ function Grant-CnoCreateComputerRight {
     $hit = $searcher.FindOne()
     if ($null -eq $hit) { throw "Can't find the cluster name object $($script:cno.account) in Active Directory" }
     $script:cno.distinguished_name = [string]$hit.Properties['distinguishedname'][0]
-    # Only the DACL: by default CommitChanges also writes the owner and group.
-    $container = $hit.GetDirectoryEntry().Parent
-    $container.Options.SecurityMasks = [System.DirectoryServices.SecurityMasks]::Dacl
-    $script:cno.container = [string]$container.Properties['distinguishedName'].Value
-    $accessRules = $container.ObjectSecurity.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    # PowerShell's ADSI adapter shows a DirectoryEntry's LDAP attributes in
+    # place of its .NET members, so those go through psbase. Only the DACL:
+    # by default CommitChanges also writes the owner and group.
+    $container = $hit.GetDirectoryEntry().psbase.Parent
+    $container.psbase.Options.SecurityMasks = [System.DirectoryServices.SecurityMasks]::Dacl
+    $script:cno.container = [string]$container.psbase.Properties['distinguishedName'].Value
+    $accessRules = $container.psbase.ObjectSecurity.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
     $rules = @($accessRules | ForEach-Object {
             @{
                 sid = [string]$_.IdentityReference
@@ -293,8 +295,8 @@ function Grant-CnoCreateComputerRight {
             [System.Security.AccessControl.AccessControlType]::Allow,
             [guid]'bf967a86-0de6-11d0-a285-00aa003049e2',
             [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All)
-        $container.ObjectSecurity.AddAccessRule($rule)
-        $container.CommitChanges()
+        $container.psbase.ObjectSecurity.AddAccessRule($rule)
+        $container.psbase.CommitChanges()
     }
 }
 

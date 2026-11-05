@@ -94,7 +94,7 @@ DOCUMENTATION:
         - Where that can't be delegated, prestage each role's computer object instead and give the CNO full control of it.
       type: bool
       default: false
-      version_added: 0.18.0
+      version_added: 0.20.0
     quorum:
       description:
         - The quorum configuration. Leave it out, or leave O(quorum.type) out, to keep the quorum C(New-Cluster) chose
@@ -399,7 +399,7 @@ RETURN:
       - O(cno_create_computer_objects) also fills in RV(cno.distinguished_name) and RV(cno.container).
     returned: always
     type: dict
-    version_added: 0.18.0
+    version_added: 0.20.0
     contains:
       account:
         description: The account's name, as C(DOMAIN\\NAME$).
