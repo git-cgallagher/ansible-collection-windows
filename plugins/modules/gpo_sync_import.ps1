@@ -6,10 +6,10 @@
 #AnsibleRequires -CSharpUtil Ansible.Basic
 #AnsibleRequires -PowerShell ..module_utils._GpoCommon
 
-# gpo_import — converge a domain on a git_cgallagher.windows export.
+# gpo_sync_import — converge a domain on a git_cgallagher.windows export.
 #
 # Runs on a Windows management host with RSAT (GroupPolicy + ActiveDirectory
-# modules) in the TARGET domain; roles/gpo_import stages the export and calls
+# modules) in the TARGET domain; roles/gpo_sync_import stages the export and calls
 # it.
 #
 # Order of operations:
@@ -43,7 +43,7 @@
 #
 # Windows PowerShell 5.1-compatible. The pure logic (hashing, the manifest's
 # encodings, the import decision, the link plan) lives in
-# plugins/module_utils/_GpoCommon.psm1, shared with gpo_export (hashing decides
+# plugins/module_utils/_GpoCommon.psm1, shared with gpo_sync_export (hashing decides
 # what re-imports, and the manifest is the two modules' contract) and
 # unit-tested with Pester (tests/unit/plugins/).
 
@@ -312,7 +312,7 @@ if (-not $probeDir) {
 else {
     $probeFile = Join-Path $probeDir ('.gpo-import-probe-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
     try {
-        [System.IO.File]::WriteAllText($probeFile, 'gpo_import preflight')
+        [System.IO.File]::WriteAllText($probeFile, 'gpo_sync_import preflight')
         $preflight.state_dir_writable = $true
     }
     catch {
@@ -385,7 +385,7 @@ $preflight.passed = ($preflightErrors.Count -eq 0)
 $preflight.errors = @($preflightErrors)
 $module.Result.preflight = $preflight
 if ($preflightErrors.Count -gt 0) {
-    $module.FailJson("gpo_import preflight failed, nothing was planned or changed: " + ($preflightErrors -join '; '))
+    $module.FailJson("gpo_sync_import preflight failed, nothing was planned or changed: " + ($preflightErrors -join '; '))
 }
 
 # --- state ------------------------------------------------------------------
@@ -693,6 +693,6 @@ $module.Result.state_file = $stateFile
 $module.Diff.prepared = (@($actions) -join "`n")
 
 if ($errors.Count -gt 0) {
-    $module.FailJson("gpo_import finished with $($errors.Count) error(s); see errors")
+    $module.FailJson("gpo_sync_import finished with $($errors.Count) error(s); see errors")
 }
 $module.ExitJson()

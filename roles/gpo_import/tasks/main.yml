@@ -50,7 +50,7 @@
 # every action and writes nothing. Otherwise the keyword is omitted, so the
 # task follows the play (--check, or check_mode applied to the role's tasks).
 - name: Import GPOs and reconcile topology
-  git_cgallagher.windows.gpo_import:
+  git_cgallagher.windows.gpo_sync_import:
     domain: "{{ gpo_import_domain }}"
     server: "{{ gpo_import_server | default(omit, true) }}"
     source_dir: '{{ gpo_import_workdir }}\stage'

@@ -3,7 +3,7 @@
 # mode (the fetch and unpack skipped, the repo untouched) and a re-export of a
 # changed GPO landing in the repo. The module's own behaviour (the manifest's
 # content, the preflight, the working directory, the gpo_names filter, the
-# failures) is the gpo_export integration target, which the last play runs.
+# failures) is the gpo_sync_export integration target, which the last play runs.
 - name: Verify the export against the seeded domain
   hosts: all
   gather_facts: false
@@ -132,10 +132,10 @@
 #    the real export, the repeat, a filtered run then a full one, a changed
 #    GPO shipping alone, gpo_names and the failures, in a working directory of
 #    its own that it removes.
-- name: Run the gpo_export target
+- name: Run the gpo_sync_export target
   hosts: all
   gather_facts: false
   tasks:
-    - name: Run the gpo_export target
+    - name: Run the gpo_sync_export target
       ansible.builtin.include_role:
-        name: gpo_export
+        name: gpo_sync_export

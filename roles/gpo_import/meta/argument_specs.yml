@@ -10,7 +10,7 @@ argument_specs:
         links, security filtering (removed Apply trustees are downgraded to Read, never stripped, because of
         MS16-072), and each managed container's whole ordered link list and block-inheritance.
       - Refuses any export that contains a Group Policy Preferences C(cpassword).
-      - The import itself is the module M(git_cgallagher.windows.gpo_import); the role stages the export on the
+      - The import itself is the module M(git_cgallagher.windows.gpo_sync_import); the role stages the export on the
         management host and calls it. Its result is registered as C(gpo_import_run).
       - Supports check mode; check mode and O(gpo_import_report_only) predict every action without changing the
         domain, after the module's preflight proved the run could work (state directory writable, manifest and
