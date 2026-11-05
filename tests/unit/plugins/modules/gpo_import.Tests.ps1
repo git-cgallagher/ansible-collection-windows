@@ -75,6 +75,12 @@ Describe 'gpo_import''s wiring' {
         $unguarded | Should -BeNullOrEmpty
     }
 
+    It 'returns cpassword_files as a list even for one file (a lone string would unroll otherwise)' {
+        $src = Get-Content -LiteralPath $script:modulePath -Raw
+        $src | Should -Match '\$cpasswordFiles = @\(Get-GpoCpasswordFile '
+        $src | Should -Match 'cpassword_files = @\(\$cpasswordFiles\)'
+    }
+
     It 'never deletes a GPO, unlinks one, or touches links, filtering, WMI filters, status or inheritance' {
         $forbidden = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
                 ForEach-Object { $_.GetCommandName() } |

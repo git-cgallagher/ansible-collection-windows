@@ -371,7 +371,7 @@
         path: "{{ gpo_export_p_denied }}"
       check_mode: true
       register: gpo_export_p_denied_run
-      failed_when: "'isn''t writable' not in (gpo_export_p_denied_run.msg | default(''))"
+      failed_when: "'t writable (probed' not in (gpo_export_p_denied_run.msg | default(''))"
 
     - name: List what the probe left in the denied directory
       ansible.windows.win_find:

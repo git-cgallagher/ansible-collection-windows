@@ -114,10 +114,11 @@ else {
 
 # -- cpassword: deprecated, trivially decryptable, and a secret. Checked in the
 #    backups this run would import only, before touching the domain. --
-$cpasswordFiles = Get-GpoCpasswordFile -Path @($resolution.resolved.Values | ForEach-Object { $_.dir })
+# @(): one file would otherwise unroll to a string, not a list.
+$cpasswordFiles = @(Get-GpoCpasswordFile -Path @($resolution.resolved.Values | ForEach-Object { $_.dir }))
 if ($cpasswordFiles.Count -gt 0) {
     $preflight.cpassword_clean = $false
-    $module.Result.cpassword_files = $cpasswordFiles
+    $module.Result.cpassword_files = @($cpasswordFiles)
     $module.Result.preflight = $preflight
     $module.FailJson(("Refusing to import: GPP cpassword found in: {0}. " -f ($cpasswordFiles -join '; ')) +
         'Remove the preference (use LAPS/gMSA instead) and back the GPO up again.')
