@@ -36,9 +36,21 @@ DOCUMENTATION:
       default: C:\ProgramData\gpo-iac\backup
     gpo_names:
       description:
-        - Limit the export to these GPO display names. Empty exports every GPO.
-        - Deleted-GPO detection is skipped while filtering, because an unselected GPO is not a deleted one, and the state
-          file keeps the unselected GPOs' hashes, so the next unfiltered export ships only what changed since.
+        - Limit what the export hashes and ships to these GPO display names. Empty exports every GPO. A name the domain
+          doesn't have selects nothing.
+        - C(gpo-manifest.json) still describes the whole domain, every GPO, WMI filter and link, so a filtered run and a
+          full one write the same manifest, RV(manifest_changed) means the same in both, and the repo's manifest stays
+          whole. Two GPOs whose names map to the same folder name fail a filtered run too, as the manifest names every
+          GPO's folder.
+        - The state file keeps every entry the run doesn't rewrite, so the next unfiltered export ships only what changed
+          since. Deleted-GPO detection is skipped while filtering, because the run doesn't look at the other GPOs; a GPO
+          that has left the domain, named here or not, keeps its entry and is reported in RV(deleted) by the next
+          unfiltered export. Before 0.14.0 the manifest covered only the selected GPOs, so the next unfiltered export
+          reported RV(manifest_changed).
+        - Moving a subset of GPOs between domains (a filtered export, then an import into a domain that lacks the other
+          GPOs) isn't supported yet. M(git_cgallagher.windows.gpo_import) with
+          O(git_cgallagher.windows.gpo_import#module:gpo_names) still reconciles every container's links and every WMI
+          filter in the manifest; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
       type: list
       elements: str
       default: []
@@ -173,7 +185,8 @@ RETURN:
         backup_dir: RDP Access
   deleted:
     description:
-      - GPOs that the state file knows but the domain no longer has. Empty while O(gpo_names) filters the export.
+      - GPOs that the state file knows but the domain no longer has. Empty while O(gpo_names) filters the export; the
+        next unfiltered export reports them.
     returned: always
     type: list
     elements: dict
@@ -190,12 +203,13 @@ RETURN:
         sample: Old Policy
     sample: []
   manifest_changed:
-    description: Whether C(gpo-manifest.json) differs from the previous run's.
+    description: Whether C(gpo-manifest.json), which covers the whole domain even with O(gpo_names), differs from the
+      previous run's.
     returned: always
     type: bool
     sample: false
   gpo_count:
-    description: How many GPOs the export covered, after O(gpo_names) filtering.
+    description: How many GPOs the export hashed, after O(gpo_names) filtering. The manifest covers every GPO.
     returned: always
     type: int
     sample: 7

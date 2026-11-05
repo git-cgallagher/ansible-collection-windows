@@ -217,6 +217,69 @@
           {{ gpo_export_check }}; before: {{ gpo_export_read_again.result.files }};
           after: {{ gpo_export_read_check.result.files }}
 
+    # --- a filtered run, then a full one, on an unchanged domain (issue 37) ----------------
+    # gpo_names limits what ships, not what the manifest and the state
+    # describe: the filtered run writes the whole domain's manifest and keeps
+    # the other GPOs' hashes, so the full run after it finds nothing to do.
+    - name: Export one unchanged GPO by name
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+        gpo_names: ["{{ gpo_export_fx.gpo_password }}"]
+      register: gpo_export_subset
+
+    - name: Read the export after the filtered run
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_subset
+
+    - name: Plan the full export after the filtered run (check mode)
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      check_mode: true
+      register: gpo_export_after_subset_check
+
+    - name: Export the whole domain after the filtered run
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+      register: gpo_export_after_subset
+
+    - name: Read the export after the full run
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_export_script }}"
+        parameters: "{{ gpo_export_read_params }}"
+        depth: 8
+      register: gpo_export_read_after_subset
+
+    - name: Check the filtered run kept the whole domain's manifest and state, so the full run ships nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_export_subset is not changed
+          - gpo_export_subset.gpo_count == 1
+          - gpo_export_subset.shipped == []
+          - gpo_export_subset.deleted == []
+          - not gpo_export_subset.manifest_changed
+          - gpo_export_read_subset.result.zip_gpos == []
+          - gpo_export_read_subset.result.manifest.gpos.keys() | list | sort == gpo_export_gpo_names
+          - gpo_export_read_subset.result.manifest == gpo_export_read.result.manifest
+          - gpo_export_read_subset.result.state == gpo_export_read_again.result.state
+          - gpo_export_after_subset_check is not changed
+          - gpo_export_after_subset_check.shipped == []
+          - not gpo_export_after_subset_check.manifest_changed
+          - gpo_export_after_subset is not changed
+          - gpo_export_after_subset.shipped == []
+          - gpo_export_after_subset.deleted == []
+          - not gpo_export_after_subset.manifest_changed
+          - gpo_export_after_subset.gpo_count == gpo_export_gpo_names | length
+          - gpo_export_read_after_subset.result.state == gpo_export_read_again.result.state
+        fail_msg: >-
+          {{ gpo_export_subset }} / {{ gpo_export_after_subset_check }} / {{ gpo_export_after_subset }} /
+          {{ gpo_export_read_subset.result.state }}
+
     # --- a changed GPO ships alone -----------------------------------------------------------
     # A settings change through GPMC changes the GPO's SYSVOL content, not the
     # topology, so the GPO ships and the manifest doesn't change.
@@ -314,16 +377,21 @@
           Domain: "{{ setup_gpo_lab_domain }}"
           Name: "{{ gpo_export_temp_gpo }}"
 
-    # gpo_names limits the export to the named GPOs; an unselected GPO is not a
+    # gpo_names limits what ships to the named GPOs; an unselected GPO is not a
     # deleted one, so deleted-GPO detection is skipped, and the state file
-    # keeps the unselected GPOs' hashes.
-    - name: Export two unchanged GPOs by name
+    # keeps the unselected GPOs' hashes, the deleted GPO's included, until a
+    # full run reports it. The manifest still covers the whole domain, so the
+    # first filtered run records that the throwaway GPO left it.
+    # The deleted GPO is named too: a filtered run doesn't look for deletions,
+    # so it keeps that GPO's entry for the full run below to report.
+    - name: Export two unchanged GPOs and the deleted one by name
       git_cgallagher.windows.gpo_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
         gpo_names:
           - "{{ gpo_export_fx.gpo_baseline }}"
           - "{{ gpo_export_fx.gpo_rdp }}"
+          - "{{ gpo_export_temp_gpo }}"
       register: gpo_export_filtered
 
     - name: Export one GPO by name, whether or not it changed
@@ -344,15 +412,18 @@
     - name: Check the filter selected the GPOs, skipped deletion detection and kept the others' state
       ansible.builtin.assert:
         that:
+          - gpo_export_filtered is changed
           - gpo_export_filtered.gpo_count == 2
           - gpo_export_filtered.shipped == []
           - gpo_export_filtered.deleted == []
+          - gpo_export_filtered.manifest_changed
           - gpo_export_filtered_full is changed
           - gpo_export_filtered_full.gpo_count == 1
           - gpo_export_filtered_full.shipped | map(attribute='name') | list == [gpo_export_fx.gpo_baseline]
           - gpo_export_filtered_full.deleted == []
+          - not gpo_export_filtered_full.manifest_changed
           - gpo_export_read_filtered.result.zip_gpos == [gpo_export_fx.gpo_baseline]
-          - gpo_export_read_filtered.result.manifest.gpos.keys() | list == [gpo_export_fx.gpo_baseline]
+          - gpo_export_read_filtered.result.manifest.gpos.keys() | list | sort == gpo_export_gpo_names
           - gpo_export_read_filtered.result.state.gpos | sort == (gpo_export_gpo_names + [gpo_export_temp_gpo]) | sort
         fail_msg: "{{ gpo_export_filtered }} / {{ gpo_export_filtered_full }} / {{ gpo_export_read_filtered.result.state }}"
 
@@ -382,15 +453,15 @@
         depth: 8
       register: gpo_export_read_deleted
 
-    # The filtered runs wrote the filtered manifest, so the full one differs
-    # from it (manifest_changed); nothing re-ships, the state kept every hash.
+    # The filtered runs already recorded the whole domain's manifest, so only
+    # the deletion is news; nothing re-ships, the state kept every hash.
     - name: Check the deleted GPO was reported once, then forgotten
       ansible.builtin.assert:
         that:
           - gpo_export_deleted_check is changed
           - gpo_export_deleted_check.shipped == []
           - "gpo_export_deleted_check.deleted == [{'name': gpo_export_temp_gpo, 'backup_dir': gpo_export_temp_gpo}]"
-          - gpo_export_deleted_check.manifest_changed
+          - not gpo_export_deleted_check.manifest_changed
           - gpo_export_deleted is changed
           - gpo_export_deleted.shipped == []
           - gpo_export_deleted.deleted == gpo_export_deleted_check.deleted
@@ -500,6 +571,16 @@
       register: gpo_export_clash
       failed_when: "'map to the same folder name' not in (gpo_export_clash.msg | default(''))"
 
+    # The manifest names every GPO's folder, so the clash fails a filtered run
+    # that selects neither GPO too.
+    - name: Export one other GPO by name with the clashing names present
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ setup_gpo_lab_domain }}"
+        work_dir: "{{ gpo_export_work_dir }}"
+        gpo_names: ["{{ gpo_export_fx.gpo_baseline }}"]
+      register: gpo_export_clash_filtered
+      failed_when: "'map to the same folder name' not in (gpo_export_clash_filtered.msg | default(''))"
+
     - name: Read the export after the failures
       ansible.windows.win_powershell:
         script: "{{ setup_gpo_lab_read_export_script }}"
@@ -521,6 +602,7 @@
         that:
           - gpo_export_clash is not changed
           - "'IacLab - Dup_' in gpo_export_clash.msg"
+          - gpo_export_clash_filtered is not changed
           - gpo_export_read_after_errors.result.files == gpo_export_read_deleted.result.files
           - gpo_export_domain_after_errors.result.versions == gpo_export_domain_before_errors.result.versions
           - gpo_export_domain_after_errors.result.topology.soms == gpo_export_domain_before_errors.result.topology.soms

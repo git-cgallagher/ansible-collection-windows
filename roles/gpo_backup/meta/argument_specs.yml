@@ -35,8 +35,11 @@ argument_specs:
         elements: str
         default: []
         description:
-          - Limit the export to these GPO display names. Empty exports every GPO.
-          - Deleted-GPO detection is skipped while filtering.
+          - Limit what the export hashes and ships to these GPO display names. Empty exports every GPO.
+          - The manifest still describes the whole domain, and the state keeps the other GPOs' hashes, so the next
+            unfiltered run ships only what changed.
+          - Deleted-GPO detection is skipped while filtering, so nothing is pruned; the next unfiltered run reports
+            deleted GPOs (and prunes them with O(gpo_backup_prune_deleted)).
       gpo_backup_full_export:
         type: bool
         default: false

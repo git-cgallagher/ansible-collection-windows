@@ -77,7 +77,9 @@ DOCUMENTATION:
       description:
         - Limit content import and GPO property reconciliation to these GPO display names. Empty means every GPO in the
           manifest.
-        - Links are still reconciled for every container in the manifest.
+        - Links are still reconciled for every container in the manifest, and every WMI filter in it is checked (or
+          created with O(create_wmi_filters)). Moving a subset of GPOs into a domain that lacks the others therefore isn't
+          supported yet; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
       type: list
       elements: str
       default: []

@@ -60,6 +60,26 @@ Describe 'gpo_export''s wiring' {
         $joins | Should -BeNullOrEmpty
     }
 
+    It 'writes only under "if (-not $checkMode)", apart from the check-mode probe file' {
+        $writers = @('Backup-GPO', 'New-Item', 'New-ZipFromDirectory', 'Remove-Item', 'Write-Utf8File')
+        $isWrite = { param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $writers -contains $n.GetCommandName() }
+        $writes = @($script:ast.FindAll($isWrite, $true))
+        @($writes | ForEach-Object { $_.GetCommandName() } | Sort-Object -Unique) | Should -Be $writers
+        $unguarded = @($writes | Where-Object {
+                $guarded = $false
+                for ($node = $_; $node.Parent; $node = $node.Parent) {
+                    if ($node -is [System.Management.Automation.Language.StatementBlockAst] -and
+                        $node.Parent -is [System.Management.Automation.Language.IfStatementAst]) {
+                        foreach ($clause in $node.Parent.Clauses) {
+                            if ($clause.Item2 -eq $node -and $clause.Item1.Extent.Text -eq '-not $checkMode') { $guarded = $true }
+                        }
+                    }
+                }
+                -not $guarded -and $_.Extent.Text -notmatch '-LiteralPath \$probeFile'
+            } | ForEach-Object { $_.Extent.Text })
+        $unguarded | Should -BeNullOrEmpty
+    }
+
     It 'calls nothing but its own functions, the util, PowerShell and the GroupPolicy/ActiveDirectory cmdlets' {
         $own = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
                 ForEach-Object { $_.Name })
@@ -166,36 +186,99 @@ Describe 'Get-TrusteeEntry' {
     }
 }
 
-Describe 'Get-CarriedOverGpoState' {
+Describe 'Get-GpoExportScope' {
     BeforeAll {
+        $script:names = @('Zeta', 'Alpha', 'Beta: Admins', 'Gamma')
+        # The previous run's state: Gone has left the domain since.
         $script:state = @{
-            'A' = @{ hash = 'HA'; dir = 'A' }
-            'B' = @{ hash = 'HB'; dir = 'B' }
-            'C?' = @{ hash = 'HC'; dir = 'C_' }
+            'Alpha' = @{ hash = 'HA'; dir = 'Alpha' }
+            'Beta: Admins' = @{ hash = 'HB'; dir = 'Beta_ Admins' }
+            'Gone' = @{ hash = 'HG'; dir = 'Gone' }
         }
     }
 
-    It 'carries nothing over without a filter, so a GPO gone from the domain shows as deleted' {
-        (Get-CarriedOverGpoState -State $script:state -Selected @()).Count | Should -Be 0
-        (Get-CarriedOverGpoState -State $script:state).Count | Should -Be 0
+    Context 'the manifest''s scope and the ship scope' {
+        It 'maps every GPO to its folder, sorted by name, whether or not a filter is set' {
+            foreach ($selected in @(, @()) + @(, @('Gamma'))) {
+                $scope = Get-GpoExportScope -Names $script:names -Selected $selected
+                @($scope.backup_dirs.Keys) | Should -Be @('Alpha', 'Beta: Admins', 'Gamma', 'Zeta')
+                $scope.backup_dirs['Beta: Admins'] | Should -BeExactly 'Beta_ Admins'
+            }
+        }
+
+        It 'selects every GPO without a filter (empty names are no filter)' {
+            foreach ($selected in @(, @()) + @(, @('', $null))) {
+                $scope = Get-GpoExportScope -Names $script:names -Selected $selected
+                $scope.filtered | Should -BeFalse
+                @($scope.selected) | Should -Be @('Alpha', 'Beta: Admins', 'Gamma', 'Zeta')
+            }
+        }
+
+        It 'selects only the named GPOs the domain has, sorted' {
+            $scope = Get-GpoExportScope -Names $script:names -Selected @('Zeta', 'Missing', 'Alpha')
+            $scope.filtered | Should -BeTrue
+            @($scope.selected) | Should -Be @('Alpha', 'Zeta')
+        }
+
+        It 'fails on two names that map to one folder, even when the filter selects neither' {
+            $clash = @('Dup?', 'Dup:', 'Other')
+            { Get-GpoExportScope -Names $clash } | Should -Throw "*'Dup:' and 'Dup?' map to the same folder name 'Dup_'*"
+            { Get-GpoExportScope -Names $clash -Selected @('Other') } | Should -Throw '*map to the same folder name*'
+        }
+
+        It 'treats folder names case-insensitively, as NTFS does' {
+            { Get-GpoExportScope -Names @('Policy', 'POLICY') } | Should -Throw '*map to the same folder name*'
+        }
+
+        It 'copes with an empty domain' {
+            $scope = Get-GpoExportScope -Names @()
+            $scope.backup_dirs.Count | Should -Be 0
+            @($scope.selected) | Should -BeNullOrEmpty
+        }
     }
 
-    It 'keeps every unselected GPO''s hash and folder with a filter (the 0.10.0 fix)' {
-        $carried = Get-CarriedOverGpoState -State $script:state -Selected @('A')
-        @($carried.Keys | Sort-Object) | Should -Be @('B', 'C?')
-        $carried['B'].hash | Should -BeExactly 'HB'
-        $carried['C?'].dir | Should -BeExactly 'C_'
-    }
+    Context 'the state a run carries over' {
+        It 'carries nothing on a full run, so the run''s fresh entries replace the state and Gone shows as deleted' {
+            (Get-GpoExportScope -Names $script:names -State $script:state).carried.Count | Should -Be 0
+            (Get-GpoExportScope -Names $script:names -Selected @('', $null) -State $script:state).carried.Count | Should -Be 0
+        }
 
-    It 'returns copies, not the recorded entries themselves' {
-        $carried = Get-CarriedOverGpoState -State $script:state -Selected @('A')
-        $carried['B'].hash = 'changed'
-        $script:state['B'].hash | Should -BeExactly 'HB'
-    }
+        It 'keeps every unselected GPO''s hash and folder on a filtered run (issue 37)' {
+            $carried = (Get-GpoExportScope -Names $script:names -Selected @('Alpha') -State $script:state).carried
+            @($carried.Keys | Sort-Object) | Should -Be @('Beta: Admins', 'Gone')
+            $carried['Beta: Admins'].hash | Should -BeExactly 'HB'
+            $carried['Beta: Admins'].dir | Should -BeExactly 'Beta_ Admins'
+        }
 
-    It 'treats empty names as no filter, and copes with no state' {
-        (Get-CarriedOverGpoState -State $script:state -Selected @('', $null)).Count | Should -Be 0
-        (Get-CarriedOverGpoState -State $null -Selected @('A')).Count | Should -Be 0
+        It 'leaves a selected GPO out, so the run''s fresh hash becomes its entry' {
+            $gpos = (Get-GpoExportScope -Names $script:names -Selected @('Alpha', 'Beta: Admins') -State $script:state).carried
+            $gpos['Alpha'] = @{ hash = 'HA2'; dir = 'Alpha' }
+            @($gpos.Keys | Sort-Object) | Should -Be @('Alpha', 'Gone')
+            $gpos['Alpha'].hash | Should -BeExactly 'HA2'
+        }
+
+        It 'carries a GPO gone from the domain even when the filter names it: the run never looked at it' {
+            $carried = (Get-GpoExportScope -Names $script:names -Selected @('Gone') -State $script:state).carried
+            @($carried.Keys | Sort-Object) | Should -Be @('Alpha', 'Beta: Admins', 'Gone')
+            $carried['Gone'].hash | Should -BeExactly 'HG'
+        }
+
+        It 'carries the whole state when the filter names no GPO the domain has' {
+            $scope = Get-GpoExportScope -Names $script:names -Selected @('Missing') -State $script:state
+            @($scope.selected) | Should -BeNullOrEmpty
+            @($scope.carried.Keys | Sort-Object) | Should -Be @('Alpha', 'Beta: Admins', 'Gone')
+        }
+
+        It 'returns copies, not the recorded entries themselves' {
+            $carried = (Get-GpoExportScope -Names $script:names -Selected @('Alpha') -State $script:state).carried
+            $carried['Beta: Admins'].hash = 'changed'
+            $script:state['Beta: Admins'].hash | Should -BeExactly 'HB'
+        }
+
+        It 'copes with no previous state (the first export)' {
+            (Get-GpoExportScope -Names $script:names -Selected @('Alpha')).carried.Count | Should -Be 0
+            (Get-GpoExportScope -Names $script:names -Selected @('Alpha') -State $null).carried.Count | Should -Be 0
+        }
     }
 }
 

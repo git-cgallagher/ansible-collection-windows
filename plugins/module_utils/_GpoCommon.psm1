@@ -333,32 +333,60 @@ Function Get-TrusteeEntry {
     [ordered]@{ name = $name; type = $type }
 }
 
-Function Get-CarriedOverGpoState {
+Function Get-GpoExportScope {
     <#
     .SYNOPSIS
-    Returns the export state entries a run carries over unchanged: with a
-    gpo_names filter, every recorded GPO it didn't select (so the next full
-    export doesn't re-ship them); without one, none (so a GPO gone from the
-    domain shows as deleted).
+    Splits an export's GPOs into what the manifest covers and what the run
+    hashes and ships, and says which recorded state entries it carries over:
+    @{ filtered; backup_dirs; selected; carried }.
 
     .DESCRIPTION
-    State maps a GPO name to @{ hash; dir }. Returns a new hashtable.
+    backup_dirs maps every GPO name to its folder name, sorted by name: the
+    manifest always describes the whole domain, so its hash doesn't move
+    between filtered and full runs and the repo's manifest stays whole. Two
+    names that map to the same folder name throw, filter or not.
+
+    selected is the names the run hashes and ships, sorted: the gpo_names the
+    domain has, or every GPO without a filter (empty names are no filter).
+
+    carried is a new hashtable of the State entries (name -> @{ hash; dir })
+    the run keeps without looking at them: with a filter, every one it doesn't
+    rewrite, a GPO gone from the domain included, so that a later full run
+    reports the deletion; without one, none, so a GPO gone from the domain
+    shows as deleted.
     #>
     [CmdletBinding()]
     param (
-        [hashtable]$State,
-        [string[]]$Selected = @()
+        [string[]]$Names = @(),
+        [string[]]$Selected = @(),
+        [hashtable]$State
     )
 
+    $dirs = [ordered]@{}
+    $seen = @{}
+    foreach ($name in @($Names | Where-Object { $_ } | Sort-Object)) {
+        $safe = ConvertTo-SafeName -Name $name
+        $key = $safe.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) {
+            throw ("GPO display names '{0}' and '{1}' map to the same folder name '{2}'; rename one." -f
+                $seen[$key], $name, $safe)
+        }
+        $seen[$key] = $name
+        $dirs[$name] = $safe
+    }
+    $filter = @($Selected | Where-Object { $_ })
+    $filtered = $filter.Count -gt 0
+    $picked = @($dirs.Keys | Where-Object { -not $filtered -or $filter -contains $_ })
+
     $carried = @{}
-    $names = @($Selected | Where-Object { $_ })
-    if ($names.Count -eq 0 -or $null -eq $State) { return $carried }
-    foreach ($name in $State.Keys) {
-        if ($names -notcontains $name) {
-            $carried[$name] = @{ hash = $State[$name].hash; dir = $State[$name].dir }
+    if ($filtered -and $null -ne $State) {
+        foreach ($name in $State.Keys) {
+            if ($picked -notcontains $name) {
+                $carried[$name] = @{ hash = $State[$name].hash; dir = $State[$name].dir }
+            }
         }
     }
-    $carried
+    @{ filtered = $filtered; backup_dirs = $dirs; selected = $picked; carried = $carried }
 }
 
 Function Get-DeletedGpoEntry {
@@ -496,9 +524,9 @@ $exportFunctions = @(
     'ConvertTo-RelativeDn'
     'ConvertTo-SafeName'
     'ConvertTo-WmiFilterParm2'
-    'Get-CarriedOverGpoState'
     'Get-DeletedGpoEntry'
     'Get-DirContentHash'
+    'Get-GpoExportScope'
     'Get-GpoImportReason'
     'Get-GpoLinkPlan'
     'Get-GpoLiveContentHash'

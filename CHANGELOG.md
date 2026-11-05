@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.14.0 — 2026-11-04
+
+A filtered `gpo_export` run no longer makes the next full run report a change
+(issue #37).
+
+### Changed
+
+- `gpo_export`'s `gpo_names` (the `gpo_backup` role's `gpo_backup_gpos`) now
+  limits only which GPOs are hashed and shipped. `gpo-manifest.json` always
+  describes the whole domain, every GPO, WMI filter and link, so a filtered
+  run writes the same manifest as a full one and leaves the repo's manifest
+  whole. Before, a filtered run wrote a manifest of the selected GPOs only:
+  the repo's manifest lost every other GPO, and the next full export on an
+  unchanged domain reported `manifest_changed` and `changed`. A consumer can
+  see the difference: a filtered export's zip, and the repo it unpacks into,
+  now carry manifest entries for GPOs without a backup folder. Moving a
+  subset of GPOs between domains isn't supported yet: `gpo_import` with
+  `gpo_names` still reconciles every container's links and WMI filters
+  (issue #57). The module docs and both role READMEs say so.
+- Two GPOs whose names map to the same folder name now fail a filtered run
+  too, as the manifest names every GPO's folder.
+- If your last export before upgrading was filtered, its state holds the
+  partial manifest's hash, so the first 0.14.0 export reports
+  `manifest_changed` once and rewrites the repo's manifest whole; nothing
+  re-ships.
+
+### Fixed
+
+- A filtered run that names a GPO since deleted from the domain kept no
+  entry for it, so no later run reported the deletion. It now keeps the
+  entry, like every other entry it doesn't rewrite, and the next full run
+  reports it in `deleted`.
+
+### Other
+
+- The export's scope and carried-over state are one pure function,
+  `Get-GpoExportScope` in `_GpoCommon.psm1`, which replaces
+  `Get-CarriedOverGpoState` (only `gpo_export` used it).
+- Tests: Pester covers the scope (every GPO in the manifest, the selection,
+  the folder-name clash with a filter) and the carried state (a filtered run
+  keeps the others, a full run replaces them, a selected GPO's entry is the
+  run's, no previous state, a deleted GPO named in the filter), and that the
+  module writes nothing outside its real-run block but the check-mode probe.
+  The `gpo_export` target runs a filtered export, then a check-mode and a
+  real full export of the unchanged domain, which ship nothing and report no
+  change, and a filtered run fails on a folder-name clash.
+
 ## 0.13.0 — 2026-11-02
 
 Clusters across datacenters: the first `wsfc` changes the SQL Server roles
