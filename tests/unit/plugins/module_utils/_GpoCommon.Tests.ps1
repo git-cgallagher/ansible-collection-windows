@@ -1,5 +1,5 @@
 # Pester 5 unit tests for plugins/module_utils/_GpoCommon.psm1, the pure logic
-# gpo_export and gpo_import share. No domain, no Ansible: run them with
+# gpo_sync_export and gpo_sync_import share. No domain, no Ansible: run them with
 #   Invoke-Pester -Path tests/unit
 # (the powershell CI job does). Windows PowerShell 5.1 or pwsh.
 
@@ -53,7 +53,7 @@ Describe 'ConvertTo-SafeName' {
         ConvertTo-SafeName -Name $Name | Should -BeExactly $Expected
     }
 
-    It 'maps two names to one folder, the clash gpo_export refuses' {
+    It 'maps two names to one folder, the clash gpo_sync_export refuses' {
         ConvertTo-SafeName -Name 'Dup?' | Should -BeExactly (ConvertTo-SafeName -Name 'Dup:')
     }
 }
@@ -169,7 +169,7 @@ Describe 'Get-NearestExistingDirectory' {
     It 'returns $null, without an error, for a path on a drive that doesn''t exist' {
         # Windows PowerShell's Test-Path writes "Cannot find drive" for such a
         # path, which the modules' $ErrorActionPreference = 'Stop' turns into
-        # a failure before the preflight can say why (found by gpo_export's
+        # a failure before the preflight can say why (found by gpo_sync_export's
         # integration target). pwsh on Linux doesn't, so model Windows: the
         # mock throws unless the call suppresses errors.
         Mock -ModuleName _GpoCommon Test-Path {

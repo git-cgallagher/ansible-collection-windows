@@ -1,14 +1,14 @@
 ---
-# Integration tests for git_cgallagher.windows.gpo_import, on a domain
+# Integration tests for git_cgallagher.windows.gpo_sync_import, on a domain
 # controller of the lab domain. setup_gpo_lab (meta/main.yml) has read the
 # domain's name and checked the fixture is seeded. Every check reads the domain
 # through setup_gpo_lab's read_domain.ps1 (GPMC, AD and SYSVOL), never through
 # the module under test.
 #
 # The export the tests import is the domain's own authored state, written by
-# gpo_export (the manifest is the two modules' contract) and unpacked on the
+# gpo_sync_export (the manifest is the two modules' contract) and unpacked on the
 # host from the documented zip. The tests then drift the domain with the lab
-# fixture's -Action Drift, the way the gpo_import role's scenario does, and
+# fixture's -Action Drift, the way the gpo_sync_import role's scenario does, and
 # converge it back. Everything they write lives under setup_gpo_lab_dir, apart
 # from the role's defaults, and is removed at the end; the always block also
 # converges the domain back if a step failed with it drifted, so the target
@@ -22,7 +22,7 @@
     depth: 8
   register: gpo_import_authored
 
-- name: Test gpo_import, then clean up
+- name: Test gpo_sync_import, then clean up
   vars:
     gpo_import_fx: "{{ setup_gpo_lab_fixture }}"
     gpo_import_dir: '{{ setup_gpo_lab_dir }}\import'
@@ -61,7 +61,7 @@
       loop: [absent, directory]
 
     - name: Export the authored state
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_import_export_dir }}"
         full_export: true
@@ -98,7 +98,7 @@
     # the first run imports every GPO once ("never imported by this pipeline")
     # and plans nothing else.
     - name: Plan the first import (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
       check_mode: true
       diff: true
@@ -170,7 +170,7 @@
         gpo_import_p: "{{ gpo_import_first_check.preflight }}"
 
     - name: Import the export
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
       diff: true
       register: gpo_import_first
@@ -207,13 +207,13 @@
         gpo_import_state: "{{ gpo_import_state_file_read.content | b64decode | from_json }}"
 
     - name: Import the export again
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
       diff: true
       register: gpo_import_again
 
     - name: Plan the import again (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
       check_mode: true
       register: gpo_import_again_check
@@ -261,7 +261,7 @@
     # a warning, and the GPO that needs it is an error; an unmanaged link is a
     # warning and stays. Check mode fails the same way a real run would.
     - name: Plan with the defaults (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -284,7 +284,7 @@
     # inside the password and local-admins GPOs isn't re-imported (force does
     # that below); the deleted GPO is, because it's missing.
     - name: Plan the converge (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
       check_mode: true
       diff: true
@@ -354,7 +354,7 @@
           Folder: "{{ gpo_import_manifest.gpos[gpo_import_fx.gpo_rdp].backup_dir }}"
 
     - name: Plan from the export without the backup folder (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_nofolder_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -377,7 +377,7 @@
         fail_msg: "{{ gpo_import_nofolder | string }}"
 
     - name: Converge the drifted domain, re-importing every GPO
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -388,7 +388,7 @@
       register: gpo_import_converged
 
     - name: Converge again
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
       diff: true
       register: gpo_import_converged_again
@@ -456,7 +456,7 @@
     # where the manifest puts it relative to the links the domain has: the RDP
     # link above it is gone, so first.
     - name: Plan the import of the workstation admins GPO alone (check mode)
-      git_cgallagher.windows.gpo_import: &gpo_import_subset_ws
+      git_cgallagher.windows.gpo_sync_import: &gpo_import_subset_ws
         <<: *gpo_import_converge
         source_dir: "{{ gpo_import_nofolder_dir }}"
         gpo_names: ["{{ gpo_import_fx.gpo_ws_admins }}"]
@@ -486,17 +486,17 @@
         fail_msg: "{{ gpo_import_subset_ws_check }} / {{ gpo_import_read.result.topology | to_nice_json }}"
 
     - name: Import the workstation admins GPO alone
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_subset_ws
       register: gpo_import_subset_ws
 
     - name: Import it alone again
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_subset_ws
       register: gpo_import_subset_ws_again
 
     - name: Plan it alone again (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_subset_ws
       check_mode: true
       register: gpo_import_subset_ws_again_check
@@ -537,7 +537,7 @@
     # back on top of the servers OU, above the unmanaged password link, which
     # stays: it isn't the subset's.
     - name: Plan the import of the server baseline alone (check mode)
-      git_cgallagher.windows.gpo_import: &gpo_import_subset_baseline
+      git_cgallagher.windows.gpo_sync_import: &gpo_import_subset_baseline
         <<: *gpo_import_converge
         source_dir: "{{ gpo_import_nofolder_dir }}"
         gpo_names: ["{{ gpo_import_fx.gpo_baseline }}"]
@@ -545,17 +545,17 @@
       register: gpo_import_subset_baseline_check
 
     - name: Import the server baseline alone
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_subset_baseline
       register: gpo_import_subset_baseline
 
     - name: Import it alone again
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_subset_baseline
       register: gpo_import_subset_baseline_again
 
     - name: Plan it alone again (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_subset_baseline
       check_mode: true
       register: gpo_import_subset_baseline_again_check
@@ -609,7 +609,7 @@
         fail_msg: "{{ gpo_import_subset_baseline_check }} / {{ gpo_import_subset_baseline }} / {{ gpo_import_read.result | to_nice_json }}"
 
     - name: Converge the domain back after the subsets, re-importing every GPO
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         <<: *gpo_import_converge
         force: true
       register: gpo_import_subset_restore
@@ -646,7 +646,7 @@
           Path: "{{ gpo_import_migtable_path }}"
 
     - name: Plan the import of one GPO through the migration table (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -658,7 +658,7 @@
       register: gpo_import_mapped_check
 
     - name: Import one GPO through the migration table
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -669,7 +669,7 @@
       register: gpo_import_mapped
 
     - name: Import it through the migration table again
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -709,7 +709,7 @@
         gpo_import_mapped_action: "import GPO '{{ gpo_import_fx.gpo_ws_admins }}' (backup content or migration table changed) [migration table]"
 
     - name: Import it again without the migration table
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -749,13 +749,13 @@
       register: gpo_import_state_before_errors
 
     - name: Leave the source directory out
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
       register: gpo_import_no_source
       failed_when: "'missing required arguments: source_dir' not in (gpo_import_no_source.msg | default(''))"
 
     - name: Name a migration table that doesn't exist
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -780,7 +780,7 @@
           Folder: "{{ gpo_import_manifest.gpos[gpo_import_fx.gpo_baseline].backup_dir }}"
 
     - name: Import the poisoned export (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_cpassword_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -804,7 +804,7 @@
           Folder: "{{ gpo_import_manifest.gpos[gpo_import_fx.gpo_rdp].backup_dir }}"
 
     - name: Import the export with the broken backup folder (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_incomplete_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -820,7 +820,7 @@
         state: directory
 
     - name: Import from the empty directory (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_empty_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"
@@ -844,7 +844,7 @@
           User: "{{ ansible_user }}"
 
     - name: Plan against the unwritable state_dir (check mode)
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_denied_state_dir }}"
@@ -926,7 +926,7 @@
       when: not gpo_import_tests_done | default(false)
 
     - name: Converge the domain back on the export
-      git_cgallagher.windows.gpo_import:
+      git_cgallagher.windows.gpo_sync_import:
         domain: "{{ setup_gpo_lab_domain }}"
         source_dir: "{{ gpo_import_source_dir }}"
         state_dir: "{{ gpo_import_state_dir }}"

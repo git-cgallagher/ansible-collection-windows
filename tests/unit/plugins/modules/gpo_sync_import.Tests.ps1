@@ -1,12 +1,12 @@
-# Pester 5 unit tests for gpo_import's logic: the pure functions it calls from
+# Pester 5 unit tests for gpo_sync_import's logic: the pure functions it calls from
 # plugins/module_utils/_GpoCommon.psm1 that decide what it imports and how it
 # reorders links, its argument handling, and the module's wiring to that util.
 # The module's behaviour against a domain is its integration target
-# (tests/integration/targets/gpo_import). Run with Invoke-Pester -Path tests/unit.
+# (tests/integration/targets/gpo_sync_import). Run with Invoke-Pester -Path tests/unit.
 
 BeforeAll {
     $script:repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../../../..')).Path
-    $script:modulePath = Join-Path $script:repoRoot 'plugins/modules/gpo_import.ps1'
+    $script:modulePath = Join-Path $script:repoRoot 'plugins/modules/gpo_sync_import.ps1'
     Import-Module (Join-Path $script:repoRoot 'plugins/module_utils/_GpoCommon.psm1') -Force
 
     function script:New-Link {
@@ -53,7 +53,7 @@ AfterAll {
     Remove-Module _GpoCommon -ErrorAction SilentlyContinue
 }
 
-Describe 'gpo_import''s wiring' {
+Describe 'gpo_sync_import''s wiring' {
     BeforeAll {
         $script:ast = [System.Management.Automation.Language.Parser]::ParseFile($script:modulePath, [ref]$null, [ref]$null)
     }

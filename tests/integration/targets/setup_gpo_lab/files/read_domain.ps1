@@ -3,7 +3,7 @@
 #
 # Returns:
 #   domain, pdc, root_dn, netbios
-#   topology   what gpo_export records and gpo_import converges, free of
+#   topology   what gpo_sync_export records and gpo_sync_import converges, free of
 #              anything a re-import changes: every GPO's status, WMI filter and
 #              Apply trustees (domain-relative, sorted); every WMI filter's
 #              description, namespace and query; every SOM's (the root and
