@@ -76,11 +76,14 @@ argument_specs:
         elements: str
         default: []
         description:
-          - Limit content import and GPO property reconciliation to these GPO display names. Empty means every GPO
-            in the manifest.
-          - Links are still reconciled for every container in the manifest, and its WMI filters are checked, so
-            moving a subset of GPOs into a domain that lacks the others isn't supported yet (issue 57,
-            U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57)).
+          - Limit the import to these GPO display names. Empty means every GPO in the manifest.
+          - Scopes every step, so a subset moves into a domain that lacks the other GPOs. Only these GPOs' content
+            and properties, only the WMI filters they link, and only their own links on each container are
+            reconciled. Other GPOs' links and every container's block-inheritance are left alone, even with
+            O(gpo_import_remove_unmanaged_links). Export the subset with the same names in the C(gpo_backup) role's
+            C(gpo_backup_gpos).
+          - Before 0.16.0 links and WMI filters were reconciled for the whole manifest
+            (U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57)).
       gpo_import_workdir:
         type: str
         default: 'C:\ProgramData\gpo-iac\import'

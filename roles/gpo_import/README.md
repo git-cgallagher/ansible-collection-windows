@@ -33,10 +33,17 @@ mode), `notices` (what was left alone, also shown as task warnings),
 `errors`, `imported`, `gpo_count`, `som_count`, `server`, `state_file` and
 the `preflight` facts (`ansible-doc git_cgallagher.windows.gpo_import`).
 
-`gpo_import_gpos` limits the GPO content import and properties to the named
-GPOs; links (every manifest container's whole list) and WMI filters are
-still reconciled for the whole manifest. So moving a subset of GPOs into a
-domain that lacks the others isn't supported yet
+`gpo_import_gpos` limits the whole run to the named GPOs: their content and
+properties, only the WMI filters they link, and only their own links on
+each container. Every other GPO's links, and every container's
+block-inheritance, are left as they are, even with
+`gpo_import_remove_unmanaged_links`, and a container the domain lacks is
+skipped when none of the named GPOs is linked there. Each named GPO's link
+goes right after the link the manifest puts before it (or first, when the
+domain has none of those). So a subset of GPOs moves into a domain that
+lacks the others: export it with `gpo_backup_gpos` and import it with the
+same names in `gpo_import_gpos`. Before 0.16.0 links and WMI filters were
+reconciled for the whole manifest
 ([issue #57](https://github.com/git-cgallagher/ansible-collection-windows/issues/57)).
 
 Runs against the domain's PDC emulator unless `gpo_import_server` is set.

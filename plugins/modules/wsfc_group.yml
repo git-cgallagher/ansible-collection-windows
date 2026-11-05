@@ -15,7 +15,7 @@ DOCUMENTATION:
       Microsoft documents setting through the cluster.
     - Every action is listed in RV(actions), and in diff mode as the diff. In check mode the actions are planned and
       nothing is changed.
-  version_added: 0.16.0
+  version_added: 0.17.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:

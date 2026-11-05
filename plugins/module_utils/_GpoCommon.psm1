@@ -453,6 +453,41 @@ Function Get-GpoImportReason {
     ''
 }
 
+Function Get-GpoImportScope {
+    <#
+    .SYNOPSIS
+    Says which of a manifest's GPOs and WMI filters an import covers:
+    @{ filtered; gpos; wmi_filters }.
+
+    .DESCRIPTION
+    Gpos maps each manifest GPO name to its entry (manifest.gpos, whose
+    wmi_filter names the filter it links); WmiFilters is the manifest's WMI
+    filter names. With no Selected names the import covers every GPO and every
+    filter. With Selected (gpo_import's gpo_names), gpos is the selected names
+    the manifest has, spelt as the manifest spells them (a name it doesn't have
+    selects nothing), and wmi_filters only the manifest's filters a selected
+    GPO links: a subset moved into another domain neither creates nor warns
+    about the other GPOs' filters. Both lists are sorted; names compare
+    case-insensitively, as GPMC's do.
+    #>
+    [CmdletBinding()]
+    param (
+        [hashtable]$Gpos = @{},
+        [string[]]$WmiFilters = @(),
+        [string[]]$Selected = @()
+    )
+
+    $filter = @($Selected | Where-Object { $_ })
+    $filtered = $filter.Count -gt 0
+    $names = @($Gpos.Keys | Where-Object { -not $filtered -or $filter -contains $_ } | Sort-Object)
+    $filters = @($WmiFilters | Where-Object { $_ } | Sort-Object)
+    if ($filtered) {
+        $linked = @($names | ForEach-Object { [string]$Gpos[$_].wmi_filter } | Where-Object { $_ })
+        $filters = @($filters | Where-Object { $linked -contains $_ })
+    }
+    @{ filtered = $filtered; gpos = $names; wmi_filters = $filters }
+}
+
 Function Get-GpoLinkPlan {
     <#
     .SYNOPSIS
@@ -518,6 +553,113 @@ Function Get-GpoLinkPlan {
     }
 }
 
+Function Get-GpoSubsetLinkPlan {
+    <#
+    .SYNOPSIS
+    Plans the link changes on one container for an import limited to some GPOs
+    (gpo_import's gpo_names): the selected GPOs' links match the manifest's,
+    and no other link is touched.
+
+    .DESCRIPTION
+    Current, Desired and the operations returned are Get-GpoLinkPlan's; Desired
+    is the container's whole manifest list. Only links of Selected GPOs get an
+    operation. Every other link keeps its enforced and enabled, its place
+    relative to the others, and gets no operation or report, whatever
+    RemoveUnmanaged says.
+
+    The orders are absolute positions on the container, which also holds links
+    the plan leaves alone, so each selected GPO the manifest links here is
+    placed right after the link that precedes it in the manifest: after the
+    previous selected one, or after the nearest earlier manifest link the
+    container has (first when it has none). A GPO the target domain lacks, or
+    one that isn't selected and isn't linked here, is skipped over. Placing
+    them in manifest order converges in one pass: each placement only moves
+    the selected link itself, and one placed earlier stays next to its
+    predecessor. A selected GPO linked here that the manifest doesn't link
+    here is 'remove' with RemoveUnmanaged, 'unmanaged' without, after the
+    placements. GPO names compare case-insensitively.
+    #>
+    [CmdletBinding()]
+    param (
+        [object[]]$Current = @(),
+        [object[]]$Desired = @(),
+        [string[]]$Selected = @(),
+        [bool]$RemoveUnmanaged
+    )
+
+    $picked = @($Selected | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
+    $desiredList = @($Desired | Where-Object { $null -ne $_ })
+    $desiredKeys = @($desiredList | ForEach-Object { ([string]$_.gpo).ToLowerInvariant() })
+    $work = New-Object System.Collections.ArrayList
+    foreach ($l in @($Current | Where-Object { $null -ne $_ })) {
+        [void]$work.Add(@{ name = [string]$l.name; enforced = [bool]$l.enforced; enabled = [bool]$l.enabled })
+    }
+    # The links the plan doesn't place, in their current order. Each selected
+    # GPO lands after one of them (the latest the manifest puts before it) or
+    # after the selected GPO placed before it.
+    $fixed = @($work | ForEach-Object { $_.name.ToLowerInvariant() } |
+            Where-Object { ($picked -notcontains $_) -or ($desiredKeys -notcontains $_) })
+
+    $anchor = -1
+    $previous = $null
+    for ($i = 0; $i -lt $desiredList.Count; $i++) {
+        if ($picked -notcontains $desiredKeys[$i]) { continue }
+        $d = $desiredList[$i]
+        $dName = [string]$d.gpo
+        $dEnf = [bool]$d.enforced
+        $dEna = [bool]$d.enabled
+        $a = -1
+        for ($k = 0; $k -lt $i; $k++) {
+            $f = [array]::IndexOf($fixed, $desiredKeys[$k])
+            if ($f -gt $a) { $a = $f }
+        }
+        # A later GPO's manifest predecessors include an earlier one's, so $a
+        # never drops below $anchor: the same anchor means right after the
+        # selected GPO placed before it.
+        $after = $null
+        if ($previous -and $a -eq $anchor) { $after = $previous }
+        elseif ($a -ge 0) { $after = $fixed[$a] }
+        $anchor = $a
+        $previous = $desiredKeys[$i]
+
+        $idx = -1
+        $p = -1
+        for ($j = 0; $j -lt $work.Count; $j++) {
+            $key = ([string]$work[$j].name).ToLowerInvariant()
+            if ($key -eq $desiredKeys[$i]) { $idx = $j }
+            if ($after -and $key -eq $after) { $p = $j }
+        }
+        # Right after the link at $p; removing a link above it first shifts it up by one.
+        $target = 0
+        if ($after) {
+            $target = $p + 1
+            if ($idx -ge 0 -and $idx -lt $p) { $target = $p }
+        }
+        $op = [ordered]@{ action = ''; name = $dName; order = $target + 1; enforced = $dEnf; enabled = $dEna }
+        if ($idx -lt 0) {
+            $op.action = 'new'
+            $op
+            $work.Insert($target, @{ name = $dName; enforced = $dEnf; enabled = $dEna })
+        }
+        else {
+            $cur = $work[$idx]
+            if (($idx -ne $target) -or ($cur.enforced -ne $dEnf) -or ($cur.enabled -ne $dEna)) {
+                $op.action = 'set'
+                $op
+                $work.RemoveAt($idx)
+                $work.Insert($target, @{ name = $dName; enforced = $dEnf; enabled = $dEna })
+            }
+        }
+    }
+    foreach ($w in @($work)) {
+        $key = ([string]$w.name).ToLowerInvariant()
+        if (($picked -notcontains $key) -or ($desiredKeys -contains $key)) { continue }
+        $action = 'unmanaged'
+        if ($RemoveUnmanaged) { $action = 'remove' }
+        [ordered]@{ action = $action; name = [string]$w.name; order = $null; enforced = $w.enforced; enabled = $w.enabled }
+    }
+}
+
 $exportFunctions = @(
     'ConvertFrom-WmiFilterParm2'
     'ConvertTo-LdapFilterValue'
@@ -528,8 +670,10 @@ $exportFunctions = @(
     'Get-DirContentHash'
     'Get-GpoExportScope'
     'Get-GpoImportReason'
+    'Get-GpoImportScope'
     'Get-GpoLinkPlan'
     'Get-GpoLiveContentHash'
+    'Get-GpoSubsetLinkPlan'
     'Get-GpoSysvolPath'
     'Get-NearestExistingDirectory'
     'Get-RelativeTrusteeName'

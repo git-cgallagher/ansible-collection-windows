@@ -47,10 +47,10 @@ DOCUMENTATION:
           that has left the domain, named here or not, keeps its entry and is reported in RV(deleted) by the next
           unfiltered export. Before 0.14.0 the manifest covered only the selected GPOs, so the next unfiltered export
           reported RV(manifest_changed).
-        - Moving a subset of GPOs between domains (a filtered export, then an import into a domain that lacks the other
-          GPOs) isn't supported yet. M(git_cgallagher.windows.gpo_import) with
-          O(git_cgallagher.windows.gpo_import#module:gpo_names) still reconciles every container's links and every WMI
-          filter in the manifest; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
+        - To move a subset of GPOs into another domain, import the export with the same names in
+          M(git_cgallagher.windows.gpo_import)'s O(git_cgallagher.windows.gpo_import#module:gpo_names), which limits the
+          WMI filters and links it reconciles to those GPOs (since 0.16.0; see
+          U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57)).
       type: list
       elements: str
       default: []

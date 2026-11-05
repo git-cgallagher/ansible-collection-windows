@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.0 — 2026-11-04
+## 0.17.0 — 2026-11-04
 
 Cluster groups and failover tests: phase 1b of issue #48, for the SQL Server
 roles to come.
@@ -30,6 +30,35 @@ roles to come.
   test group on a one-node cluster: check mode, the change, a repeat, drift
   and the error messages. The two-node `wsfc_fileserver` lab runs `groups` on
   `Cluster Group` and ends with `failover` on it, to the other node and back.
+
+## 0.16.0 — 2026-11-04
+
+A subset of GPOs moves between domains: `gpo_import`'s `gpo_names` now
+scopes the WMI filters and links too (issue #57).
+
+### Changed
+
+- `gpo_import`'s `gpo_names` (the `gpo_import` role's `gpo_import_gpos`)
+  scopes every step to the selected GPOs. It checks, or creates with
+  `create_wmi_filters`, only the WMI filters they link, and on each
+  container reconciles only their links: each goes right after the link the
+  manifest puts before it, or first when the domain has none of those.
+  Other GPOs' links, even with `remove_unmanaged_links`, and every
+  container's block-inheritance are left as they are, and a container the
+  domain lacks is skipped when no selected GPO is linked there. Before, a
+  filtered import reconciled every manifest container's whole link list and
+  every WMI filter, so in a domain lacking the other GPOs it failed on their
+  links. 0.14.0 documented that as unsupported; export with `gpo_names` and
+  import with the same names now works.
+- With `gpo_names`, `som_count` counts the containers the manifest links a
+  selected GPO to.
+
+### Other
+
+- The import's scope and the subset's link plan are pure functions in
+  `_GpoCommon.psm1`, `Get-GpoImportScope` and `Get-GpoSubsetLinkPlan`, with
+  Pester tests, including 300 random containers that each converge in one
+  pass without touching another GPO's link.
 
 ## 0.15.0 — 2026-11-04
 
