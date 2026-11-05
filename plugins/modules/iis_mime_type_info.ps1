@@ -38,11 +38,9 @@ try {
     $entries = @(Get-IisMimeMapEntry -Collection (Get-IisSectionCollection -AdminManager $reader -Section $section -ConfigPath $level.ConfigPath))
 
     # What the parent level serves, to tell inherited entries from local ones.
-    $parent = @{}
+    $parentEntries = @()
     if ($level.ParentPath) {
-        foreach ($entry in (Get-IisMimeMapEntry -Collection (Get-IisSectionCollection -AdminManager $reader -Section $section -ConfigPath $level.ParentPath))) {
-            $parent[$entry.Extension] = $entry.MimeType
-        }
+        $parentEntries = @(Get-IisMimeMapEntry -Collection (Get-IisSectionCollection -AdminManager $reader -Section $section -ConfigPath $level.ParentPath))
     }
 }
 catch {
@@ -64,35 +62,15 @@ if ($level.ParentPath) {
     }
 }
 
-# Sorted by extension, ordinally and ignoring case, so the order doesn't
-# depend on the host's culture.
-$sorted = [System.Collections.Generic.List[object]]$entries
-$sorted.Sort([System.Comparison[object]] {
-        param ($x, $y)
-        [string]::CompareOrdinal($x.Extension.ToLowerInvariant(), $y.Extension.ToLowerInvariant())
-    })
-
-# An entry is inherited when the parent level serves the same mapping and the
-# level doesn't store its own (in a <location> element of applicationHost.config
-# or in the level's web.config). At the server level nothing is inherited.
-$mimeTypes = New-Object -TypeName 'System.Collections.Generic.List[object]'
-foreach ($entry in $sorted) {
-    if ($null -ne $extension -and $entry.Extension -ne $extension) {
-        continue
-    }
-    if ($null -ne $mimeType -and $entry.MimeType -ne $mimeType) {
-        continue
-    }
-
-    $sameAsParent = $parent.ContainsKey($entry.Extension) -and $parent[$entry.Extension] -ceq $entry.MimeType
-    $definedHere = $null -ne $stored -and $stored.Contains($entry.Extension)
-    $mimeTypes.Add([ordered]@{
-            extension = $entry.Extension
-            mime_type = $entry.MimeType
-            config_path = $level.ConfigPath
-            inherited = [bool]($sameAsParent -and -not $definedHere)
-        })
+# Sorted by extension, filtered, and each entry marked inherited (the parent
+# level serves the same mapping and the level doesn't store its own) or not.
+$listArgs = @{
+    Entries = $entries
+    ParentEntries = $parentEntries
+    Stored = $stored
+    ConfigPath = $level.ConfigPath
+    Extension = $extension
+    MimeType = $mimeType
 }
-
-$module.Result.mime_types = $mimeTypes
+$module.Result.mime_types = Get-IisMimeTypeList @listArgs
 $module.ExitJson()

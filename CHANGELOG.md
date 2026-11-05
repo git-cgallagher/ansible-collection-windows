@@ -29,6 +29,23 @@ scopes the WMI filters and links too (issue #57).
   Pester tests, including 300 random containers that each converge in one
   pass without touching another GPO's link.
 
+## 0.15.0 — 2026-11-04
+
+Unit tests for the IIS modules (issue #47): every module now has an
+integration target and Pester unit tests.
+
+- `iis_mime_type`'s and `iis_mime_type_info`'s decisions move from the
+  modules into `plugins/module_utils/_IisConfig.psm1`, unchanged, so Pester
+  tests them without IIS: the `extension` and `mime_type` checks, the
+  add/change/remove decision against the map IIS serves at the level, the
+  file to write and the web.config check, the change itself (committed only
+  outside check mode), and the info module's filtering, sorting and
+  `inherited` flag. The modules' options, results and messages are the same.
+- New suites: `tests/unit/plugins/module_utils/_IisConfig.Tests.ps1`,
+  `tests/unit/plugins/modules/iis_mime_type.Tests.ps1` and
+  `iis_mime_type_info.Tests.ps1`, with a fake of IIS's configuration API
+  (`tests/unit/plugins/module_utils/IisFake.ps1`).
+
 ## 0.14.0 — 2026-11-04
 
 A filtered `gpo_export` run no longer makes the next full run report a change
