@@ -8,6 +8,10 @@ the last import, then GPO status, WMI filter links, security filtering
 (downgrading removed Apply trustees to Read — MS16-072) and each manifest
 container's whole ordered link list, including block-inheritance.
 
+To import a few GPOs' settings from backup folders, without the manifest or
+any topology, use the [`gpo_import`](../../plugins/modules/gpo_import.yml)
+module instead (0.19.0, issue #64); it's a module, not this role.
+
 Safety behaviour:
 
 - the module refuses any backup containing GPP `cpassword`, before it

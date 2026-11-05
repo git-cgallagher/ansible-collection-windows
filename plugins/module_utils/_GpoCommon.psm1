@@ -362,18 +362,7 @@ Function Get-GpoExportScope {
         [hashtable]$State
     )
 
-    $dirs = [ordered]@{}
-    $seen = @{}
-    foreach ($name in @($Names | Where-Object { $_ } | Sort-Object)) {
-        $safe = ConvertTo-SafeName -Name $name
-        $key = $safe.ToLowerInvariant()
-        if ($seen.ContainsKey($key)) {
-            throw ("GPO display names '{0}' and '{1}' map to the same folder name '{2}'; rename one." -f
-                $seen[$key], $name, $safe)
-        }
-        $seen[$key] = $name
-        $dirs[$name] = $safe
-    }
+    $dirs = Get-GpoFolderName -Names $Names
     $filter = @($Selected | Where-Object { $_ })
     $filtered = $filter.Count -gt 0
     $picked = @($dirs.Keys | Where-Object { -not $filtered -or $filter -contains $_ })
@@ -387,6 +376,312 @@ Function Get-GpoExportScope {
         }
     }
     @{ filtered = $filtered; backup_dirs = $dirs; selected = $picked; carried = $carried }
+}
+
+Function Get-GpoFolderName {
+    <#
+    .SYNOPSIS
+    Maps GPO display names to their folder names (ConvertTo-SafeName), as an
+    ordered hashtable sorted by name. Two names that map to the same folder
+    name (case-insensitively, as Windows compares them) throw.
+    #>
+    [CmdletBinding()]
+    param ([string[]]$Names = @())
+
+    $dirs = [ordered]@{}
+    $seen = @{}
+    foreach ($name in @($Names | Where-Object { $_ } | Sort-Object)) {
+        $safe = ConvertTo-SafeName -Name $name
+        $key = $safe.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) {
+            throw ("GPO display names '{0}' and '{1}' map to the same folder name '{2}'; rename one." -f
+                $seen[$key], $name, $safe)
+        }
+        $seen[$key] = $name
+        $dirs[$name] = $safe
+    }
+    $dirs
+}
+
+Function ConvertTo-GpoId {
+    <#
+    .SYNOPSIS
+    Returns a GUID in one form, lower case without braces, so GUIDs from GPMC,
+    AD and backup files compare as strings; '' when the value isn't a GUID.
+    #>
+    [CmdletBinding()]
+    param ([string]$Value)
+
+    $guid = [guid]::Empty
+    if ($Value -and [guid]::TryParse($Value.Trim(), [ref]$guid)) { return $guid.ToString('D') }
+    ''
+}
+
+Function Read-GpoExportRecord {
+    <#
+    .SYNOPSIS
+    Reads the export record gpo_export writes into a GPO's folder
+    (gpo-export.json): @{ name; id; content_hash }, or $null when the folder
+    has none or it doesn't parse (either way the folder is exported again).
+    #>
+    [CmdletBinding()]
+    param ([string]$Path)
+
+    $file = [System.IO.Path]::Combine($Path, 'gpo-export.json')
+    if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $file -PathType Leaf)) { return $null }
+    try {
+        $raw = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json
+        @{
+            name = [string]$raw.name
+            id = ConvertTo-GpoId -Value ([string]$raw.id)
+            content_hash = [string]$raw.content_hash
+        }
+    }
+    catch { $null }
+}
+
+Function ConvertTo-GpoExportRecordJson {
+    <#
+    .SYNOPSIS
+    Returns the export record's JSON (Read-GpoExportRecord's input): the GPO's
+    name and GUID and the hash of the live content the backup was taken from.
+    #>
+    [CmdletBinding()]
+    param ([string]$Name, [string]$Id, [string]$Domain, [string]$ContentHash)
+
+    [ordered]@{
+        name = $Name
+        id = ConvertTo-GpoId -Value $Id
+        domain = $Domain
+        content_hash = $ContentHash
+        hash_basis = 'sysvol'
+    } | ConvertTo-Json
+}
+
+Function Get-GpoExportReason {
+    <#
+    .SYNOPSIS
+    Returns why gpo_export must (re-)export a GPO into its folder, or '' when
+    the folder already holds a complete backup of the GPO's live content.
+
+    .DESCRIPTION
+    In order: the folder is missing; it is incomplete (Problem, from
+    Test-GpoBackupFolder); it has no export record (Record, from
+    Read-GpoExportRecord); the record names another GPO (a GPO deleted and
+    recreated under the same name, say); the live content hash differs from
+    the recorded one.
+    #>
+    [CmdletBinding()]
+    param (
+        [bool]$FolderExists,
+        [string]$Problem,
+        [hashtable]$Record,
+        [string]$Id,
+        [string]$ContentHash
+    )
+
+    if (-not $FolderExists) { return 'not exported yet' }
+    if ($Problem) { return "backup folder incomplete ($Problem)" }
+    if ($null -eq $Record) { return 'no export record' }
+    if ($Record.id -ne (ConvertTo-GpoId -Value $Id)) { return 'the folder holds another GPO''s backup' }
+    if ($Record.content_hash -ne $ContentHash) { return 'content changed' }
+    ''
+}
+
+Function Test-GpoBackupInstance {
+    <#
+    .SYNOPSIS
+    Returns why one Backup-GPO instance (a {backup-id} folder) is incomplete,
+    or '' when it holds Backup.xml, bkupInfo.xml and gpreport.xml.
+    #>
+    [CmdletBinding()]
+    param ([string]$Path)
+
+    foreach ($f in 'Backup.xml', 'bkupInfo.xml', 'gpreport.xml') {
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath ([System.IO.Path]::Combine($Path, $f)) -PathType Leaf)) {
+            return "no $f in $([System.IO.Path]::GetFileName($Path))"
+        }
+    }
+    ''
+}
+
+Function Get-GpoBackupIndex {
+    <#
+    .SYNOPSIS
+    Lists the Backup-GPO instances under a directory, by the GPO display name
+    each backup records: @{ backups; unreadable }.
+
+    .DESCRIPTION
+    An instance is a {backup-id} folder holding bkupInfo.xml, either directly
+    under Path (Backup-GPO -All into one directory) or one level down
+    (gpo_export's Path\<folder>\{backup-id}). backups is a list of
+    [ordered]@{ name; gpo_id; backup_id; dir; parent }, sorted by dir: name,
+    gpo_id and backup_id come from bkupInfo.xml (GPODisplayName, GPOGuid, ID),
+    never from the folder names; dir is the instance's folder and parent the
+    folder Import-GPO's -Path takes. unreadable lists the instance folders
+    whose bkupInfo.xml doesn't parse or lacks those values.
+    #>
+    [CmdletBinding()]
+    param ([string]$Path)
+
+    $backups = [System.Collections.Generic.List[object]]::new()
+    $unreadable = [System.Collections.Generic.List[object]]::new()
+    if (-not $Path -or -not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $Path -PathType Container)) {
+        return @{ backups = @(); unreadable = @() }
+    }
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    foreach ($d in @(Get-ChildItem -LiteralPath $Path -Directory -Force)) {
+        if ($d.Name -match '^\{.+\}$') { $candidates.Add($d); continue }
+        foreach ($sub in @(Get-ChildItem -LiteralPath $d.FullName -Directory -Force | Where-Object { $_.Name -match '^\{.+\}$' })) {
+            $candidates.Add($sub)
+        }
+    }
+    foreach ($c in @($candidates | Sort-Object FullName)) {
+        $info = [System.IO.Path]::Combine($c.FullName, 'bkupInfo.xml')
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $info -PathType Leaf)) { continue }
+        $name = ''
+        $gpoId = ''
+        $backupId = ''
+        try {
+            $xml = New-Object System.Xml.XmlDocument
+            $xml.Load($info)
+            $node = $xml.SelectSingleNode("//*[local-name()='GPODisplayName']")
+            if ($node) { $name = $node.InnerText.Trim() }
+            $node = $xml.SelectSingleNode("//*[local-name()='GPOGuid']")
+            if ($node) { $gpoId = ConvertTo-GpoId -Value $node.InnerText }
+            $node = $xml.SelectSingleNode("//*[local-name()='ID']")
+            if ($node) { $backupId = ConvertTo-GpoId -Value $node.InnerText }
+        }
+        catch {
+            $name = ''
+        }
+        if (-not $name -or -not $backupId) {
+            $unreadable.Add($c.FullName)
+            continue
+        }
+        $backups.Add([ordered]@{
+                name = $name
+                gpo_id = $gpoId
+                backup_id = $backupId
+                dir = $c.FullName
+                parent = $c.Parent.FullName
+            })
+    }
+    @{ backups = @($backups); unreadable = @($unreadable) }
+}
+
+Function Resolve-GpoBackupName {
+    <#
+    .SYNOPSIS
+    Resolves GPO names to backups from Get-GpoBackupIndex:
+    @{ resolved; missing; ambiguous }.
+
+    .DESCRIPTION
+    Names compare case-insensitively, as GPMC's do, and a name given twice
+    counts once. resolved is an ordered hashtable, in the order the names were
+    given, from each name that matches exactly one backup to that backup;
+    missing lists the names no backup records; ambiguous lists, as
+    "<name>: <dir>, <dir>", the names two or more backups record.
+    #>
+    [CmdletBinding()]
+    param (
+        [object[]]$Backups = @(),
+        [string[]]$Names = @()
+    )
+
+    $resolved = [ordered]@{}
+    $missing = [System.Collections.Generic.List[object]]::new()
+    $ambiguous = [System.Collections.Generic.List[object]]::new()
+    $seen = @{}
+    foreach ($name in @($Names | Where-Object { $_ })) {
+        $key = $name.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $hits = @($Backups | Where-Object { $null -ne $_ -and ([string]$_.name).ToLowerInvariant() -eq $key })
+        if ($hits.Count -eq 0) { $missing.Add($name) }
+        elseif ($hits.Count -gt 1) { $ambiguous.Add(('{0}: {1}' -f $name, (($hits | ForEach-Object { $_.dir }) -join ', '))) }
+        else { $resolved[$name] = $hits[0] }
+    }
+    @{ resolved = $resolved; missing = @($missing); ambiguous = @($ambiguous) }
+}
+
+Function Get-GpoCpasswordFile {
+    <#
+    .SYNOPSIS
+    Returns the XML files under the given directories that hold a non-empty
+    Group Policy Preferences cpassword, sorted. GPP writes cpassword="" on
+    items that set no password (renaming the built-in Administrator, say);
+    only a value is a secret.
+    #>
+    [CmdletBinding()]
+    param ([string[]]$Path = @())
+
+    $hits = foreach ($dir in @($Path | Where-Object { $_ })) {
+        if (-not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $dir -PathType Container)) { continue }
+        Get-ChildItem -LiteralPath $dir -Recurse -Filter '*.xml' -File |
+            Select-String -Pattern 'cpassword="[^"]+"' -List | ForEach-Object { $_.Path }
+    }
+    @($hits | Sort-Object -Unique)
+}
+
+Function Get-GpoImportKey {
+    <#
+    .SYNOPSIS
+    Returns what an import of a backup is recorded under: the hash of the
+    backup's DomainSysvol subtree (the settings, without the backup's volatile
+    metadata) and of the migration table, in gpo_sync_import's format.
+    #>
+    [CmdletBinding()]
+    param ([string]$BackupDir, [string]$MigrationTableHash = '')
+
+    $sysvol = ''
+    if ($BackupDir) { $sysvol = [System.IO.Path]::Combine($BackupDir, 'DomainSysvol') }
+    Get-StringHash -Text ((Get-DirContentHash -Path $sysvol) + '|' + $MigrationTableHash)
+}
+
+Function Read-GpoImportRecord {
+    <#
+    .SYNOPSIS
+    Reads gpo_import's record of what it imported into a domain: a hashtable
+    from each target GPO's GUID (ConvertTo-GpoId) to @{ name; import_key;
+    version }, version being Get-GpoVersionStamp's right after the import.
+    Empty when the file doesn't exist; throws when it doesn't parse.
+    #>
+    [CmdletBinding()]
+    param ([string]$Path)
+
+    $record = @{}
+    if (-not $Path -or -not (Test-Path -ErrorAction SilentlyContinue -LiteralPath $Path -PathType Leaf)) { return $record }
+    $raw = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json
+    if ($null -eq $raw -or -not $raw.PSObject.Properties['gpos']) { throw "$Path has no 'gpos' object" }
+    foreach ($p in @($raw.gpos.PSObject.Properties)) {
+        $id = ConvertTo-GpoId -Value $p.Name
+        if (-not $id) { continue }
+        $version = ''
+        if ($p.Value.PSObject.Properties['version']) { $version = [string]$p.Value.version }
+        $record[$id] = @{ name = [string]$p.Value.name; import_key = [string]$p.Value.import_key; version = $version }
+    }
+    $record
+}
+
+Function ConvertTo-GpoImportRecordJson {
+    <#
+    .SYNOPSIS
+    Returns Read-GpoImportRecord's input for a record, its GPOs sorted by GUID
+    so an unchanged record writes the same bytes.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Record = @{})
+
+    $out = [ordered]@{ gpos = [ordered]@{} }
+    foreach ($id in @($Record.Keys | Sort-Object)) {
+        $out.gpos[$id] = [ordered]@{
+            name = [string]$Record[$id].name
+            import_key = [string]$Record[$id].import_key
+            version = [string]$Record[$id].version
+        }
+    }
+    $out | ConvertTo-Json -Depth 5
 }
 
 Function Get-DeletedGpoEntry {
@@ -450,6 +745,59 @@ Function Get-GpoImportReason {
     if (-not $LiveExists) { return 'GPO missing in target' }
     if (-not $Recorded) { return 'never imported by this pipeline' }
     if ($RecordedKey -ne $ImportKey) { return 'backup content or migration table changed' }
+    ''
+}
+
+Function Get-GpoVersionStamp {
+    <#
+    .SYNOPSIS
+    Returns a GPO's four version numbers as one string, "computer AD/computer
+    SYSVOL/user AD/user SYSVOL", from a Get-GPO object (its Computer and User
+    DSVersion and SysvolVersion). GPMC bumps them on every edit, so an
+    unchanged stamp means the GPO is as it was.
+    #>
+    [CmdletBinding()]
+    param ($Gpo)
+
+    '{0}/{1}/{2}/{3}' -f [int]$Gpo.Computer.DSVersion, [int]$Gpo.Computer.SysvolVersion,
+    [int]$Gpo.User.DSVersion, [int]$Gpo.User.SysvolVersion
+}
+
+Function Get-GpoImportDecision {
+    <#
+    .SYNOPSIS
+    Returns why gpo_import must import a backup into a domain, or '' when
+    it needn't.
+
+    .DESCRIPTION
+    TargetId is the target GPO's GUID ('' or $null when the domain lacks it)
+    and LiveVersion its Get-GpoVersionStamp; Record is Read-GpoImportRecord's
+    hashtable, empty when the record is missing or didn't parse. Only the
+    target GPO's own entry counts: a GPO the record doesn't name, or names
+    under another GUID, is imported. In order: Get-GpoImportReason's reasons
+    (forced, missing, never imported, backup or migration table changed),
+    then the target edited since the import, when its version stamp differs
+    from the one recorded right after it.
+    #>
+    [CmdletBinding()]
+    param (
+        [bool]$Force,
+        [string]$TargetId,
+        [string]$LiveVersion,
+        [hashtable]$Record = @{},
+        [string]$ImportKey
+    )
+
+    $id = ConvertTo-GpoId -Value $TargetId
+    $recorded = [bool]$id -and $null -ne $Record -and $Record.ContainsKey($id)
+    $recordedKey = ''
+    if ($recorded) { $recordedKey = [string]$Record[$id].import_key }
+    $reason = Get-GpoImportReason -Force $Force -LiveExists ([bool]$id) -Recorded $recorded -RecordedKey $recordedKey -ImportKey $ImportKey
+    if ($reason) { return $reason }
+    $recordedVersion = [string]$Record[$id].version
+    if ($recordedVersion -ne $LiveVersion) {
+        return ('target GPO edited since last import (version {0} -> {1})' -f $recordedVersion, $LiveVersion)
+    }
     ''
 }
 
@@ -662,28 +1010,42 @@ Function Get-GpoSubsetLinkPlan {
 
 $exportFunctions = @(
     'ConvertFrom-WmiFilterParm2'
+    'ConvertTo-GpoExportRecordJson'
+    'ConvertTo-GpoId'
+    'ConvertTo-GpoImportRecordJson'
     'ConvertTo-LdapFilterValue'
     'ConvertTo-RelativeDn'
     'ConvertTo-SafeName'
     'ConvertTo-WmiFilterParm2'
     'Get-DeletedGpoEntry'
     'Get-DirContentHash'
+    'Get-GpoBackupIndex'
+    'Get-GpoCpasswordFile'
+    'Get-GpoExportReason'
     'Get-GpoExportScope'
+    'Get-GpoFolderName'
+    'Get-GpoImportDecision'
+    'Get-GpoImportKey'
     'Get-GpoImportReason'
     'Get-GpoImportScope'
     'Get-GpoLinkPlan'
     'Get-GpoLiveContentHash'
     'Get-GpoSubsetLinkPlan'
     'Get-GpoSysvolPath'
+    'Get-GpoVersionStamp'
     'Get-NearestExistingDirectory'
     'Get-RelativeTrusteeName'
     'Get-StringHash'
     'Get-TrusteeEntry'
     'Get-YesNo'
     'New-ZipFromDirectory'
+    'Read-GpoExportRecord'
+    'Read-GpoImportRecord'
+    'Resolve-GpoBackupName'
     'Resolve-GpoMigrationTablePath'
     'Test-Denied'
     'Test-GpoBackupFolder'
+    'Test-GpoBackupInstance'
     'Write-Utf8File'
 )
 Export-ModuleMember -Function $exportFunctions

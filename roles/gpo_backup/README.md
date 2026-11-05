@@ -7,6 +7,11 @@ Windows management host into a directory on the controller (your repo working
 copy). Only GPOs whose settings content changed since the last run are
 re-shipped, so Git diffs stay reviewable.
 
+To back up a few GPOs' settings to a directory, without the manifest, the
+zip or the repository, use the
+[`gpo_export`](../../plugins/modules/gpo_export.yml) module instead (0.19.0,
+issue #64).
+
 The export itself is the
 [`gpo_sync_export`](../../plugins/modules/gpo_sync_export.yml) module
 (`ansible-doc git_cgallagher.windows.gpo_sync_export`), which runs on the

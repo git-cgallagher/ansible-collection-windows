@@ -20,10 +20,12 @@ setup_gpo_lab_dir: 'C:\ProgramData\gpo-iac-test'
 # The targets' own reads (files/). The targets are this role's siblings, so the
 # calling target's role_path finds them. read_domain.ps1 reads the domain
 # through GPMC and AD, read_export.ps1 reads an export's zip, state file and
-# working directory, and new_migtable.ps1 builds a migration table with GPMC's
-# API: none of them goes through the modules under test.
+# working directory, read_backups.ps1 a directory of GPO backup folders (the
+# primitives' layout), and new_migtable.ps1 builds a migration table with
+# GPMC's API: none of them goes through the modules under test.
 setup_gpo_lab_read_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/read_domain.ps1') }}"
 setup_gpo_lab_read_export_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/read_export.ps1') }}"
+setup_gpo_lab_read_backups_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/read_backups.ps1') }}"
 setup_gpo_lab_migtable_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_gpo_lab/files/new_migtable.ps1') }}"
 
 # The shared lab fixture (tests/domain_lab): gpo_sync_import's target drifts the

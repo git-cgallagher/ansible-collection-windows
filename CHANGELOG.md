@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.19.0 — 2026-11-05
+
+Content-only Group Policy primitives, the second step of issue #64: back up
+named GPOs' settings to a directory, and import them into a domain.
+
+- **Breaking:** `gpo_export` and `gpo_import` are new modules under the
+  names the sync layer's modules had until 0.18.0 (now `gpo_sync_export` and
+  `gpo_sync_import`, unchanged). Settings content only: neither touches
+  links, WMI filters, security filtering, GPO status or block-inheritance.
+- New module `gpo_export` runs `Backup-GPO` for each GPO named in
+  `gpo_names` into its own folder under `path`. Each folder's
+  `gpo-export.json` records the GPO's GUID and the hash of the live content
+  the backup holds, the module's only state; a GPO is backed up again only
+  when its folder is missing or incomplete, has no record, records another
+  GPO, or its live settings changed. A name the domain lacks fails before
+  anything is written. Check mode writes nothing but a preflight probe.
+- New module `gpo_import` resolves each name in `gpo_names` to the one
+  backup under `path` (or one level down) that records it in its
+  `bkupInfo.xml`, and imports it with `Import-GPO`, creating the GPO when
+  missing, through `migration_table_path` when given. It imports only when
+  the target GPO is missing, the backup or the migration table changed since
+  its last import into that GPO, the GPO was edited since (its version
+  numbers moved past the ones recorded right after the import), or with
+  `force`, and records each import in
+  `C:\ProgramData\gpo-iac\gpo-import-<domain>.json`, keyed by the target
+  GPO's GUID, only after that GPO's `Import-GPO` succeeded. The record is
+  host-bound: a run from another host, or with the record missing or
+  damaged, imports every named GPO once more, and never fails because of it.
+  It never deletes, renames or unlinks a GPO, refuses a backup with a
+  `cpassword`, and runs a preflight (backups, migration table, the record's
+  directory, domain, GPMC) before planning, in check mode too.
+- Tests: Pester tests for the new pure functions in `_GpoCommon.psm1` and
+  each module's wiring; an integration target per module, run from the
+  `gpo_backup` and `gpo_import` scenarios after the sync layer's targets.
+
 ## 0.18.0 — 2026-11-05
 
 The Group Policy modules are renamed, the first step of issue #64. The names
