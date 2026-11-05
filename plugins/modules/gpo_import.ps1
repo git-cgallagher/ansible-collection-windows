@@ -14,12 +14,13 @@
 # Each name resolves to the one backup under path whose bkupInfo.xml records
 # that display name (Get-GpoBackupIndex: path\{backup-id} or
 # path\<folder>\{backup-id}), never by folder name. Import-GPO runs when the
-# target GPO is missing, or when the backup's content or the migration table
-# differs from what this module last imported into it, or with force. What it
-# imported is recorded per target domain in a JSON file on the host it runs on
-# (Read-GpoImportRecord), keyed by the target GPO's GUID: Import-GPO
-# re-serialises the security template, so the live GPO can't be compared with
-# the backup directly.
+# target GPO is missing, when the backup's content or the migration table
+# differs from what this module last imported into it, when the GPO was
+# edited since (its version numbers moved), or with force. What it imported
+# is recorded per target domain in a JSON file on the host it runs on
+# (Read-GpoImportRecord), keyed by the target GPO's GUID, with the GPO's
+# versions right after the import: Import-GPO re-serialises the security
+# template, so the live GPO can't be compared with the backup directly.
 #
 # A preflight proves the run could work before anything is planned: the
 # backups resolve and are complete, no cpassword, the migration table parses,
@@ -224,9 +225,14 @@ foreach ($name in $resolution.resolved.Keys) {
     $backup = $resolution.resolved[$name]
     $target = $live | Where-Object { $_.DisplayName -ieq $backup.name } | Select-Object -First 1
     $targetId = $null
-    if ($target) { $targetId = ConvertTo-GpoId -Value ([string]$target.Id) }
+    $liveVersion = ''
+    if ($target) {
+        $targetId = ConvertTo-GpoId -Value ([string]$target.Id)
+        $liveVersion = Get-GpoVersionStamp -Gpo $target
+    }
     $importKey = Get-GpoImportKey -BackupDir $backup.dir -MigrationTableHash $migTableHash
-    $reason = Get-GpoImportDecision -Force $ForceImport -TargetId $targetId -Record $record -ImportKey $importKey
+    $reason = Get-GpoImportDecision -Force $ForceImport -TargetId $targetId -LiveVersion $liveVersion `
+        -Record $record -ImportKey $importKey
 
     if ($reason) {
         try {
@@ -247,9 +253,11 @@ foreach ($name in $resolution.resolved.Keys) {
                 if ($migTable) { $importArgs.MigrationTable = $migTable }
                 $result = Import-GPO @importArgs
                 # Recorded only after Import-GPO succeeded, so a failed import is
-                # retried on the next run.
+                # retried on the next run, with the versions the import left: a
+                # later edit in GPMC bumps them, and the next run imports again.
                 $targetId = ConvertTo-GpoId -Value ([string]$result.Id)
-                $record[$targetId] = @{ name = $backup.name; import_key = $importKey }
+                $after = Get-GPO -Guid $targetId -Domain $Domain -Server $pdc
+                $record[$targetId] = @{ name = $backup.name; import_key = $importKey; version = (Get-GpoVersionStamp -Gpo $after) }
                 $recordChanged = $true
             }
             [void]$imported.Add([ordered]@{ name = $backup.name; reason = $reason; backup = $backup.dir })

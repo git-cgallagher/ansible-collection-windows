@@ -13,10 +13,12 @@ DOCUMENTATION:
       unlinks a GPO. The sync layer (M(git_cgallagher.windows.gpo_sync_import) and the C(gpo_import) role) converges those.
     - C(Import-GPO) replaces the GPO's settings and bumps its version, so clients reprocess it. The module imports only when
       the target GPO is missing, when the backup's settings or the migration table differ from what it last imported into
-      that GPO, or with O(force). It records what it imported per domain on the host it runs on, in
-      C(C:\ProgramData\gpo-iac\gpo-import-<domain>.json), keyed by the target GPO's GUID and holding a hash of the backup's
-      settings and of the migration table. C(Import-GPO) re-serialises some files (the security template), so the live GPO
-      can't be compared with the backup directly.
+      that GPO, when the GPO was edited since that import (in GPMC or otherwise, which moves its version numbers), or with
+      O(force). It records what it imported per domain on the host it runs on, in
+      C(C:\ProgramData\gpo-iac\gpo-import-<domain>.json), keyed by the target GPO's GUID and holding a hash of the
+      backup's settings and of the migration table, and the GPO's four version numbers (computer and user, AD and SYSVOL)
+      right after the import. C(Import-GPO) re-serialises some files (the security template), so the live GPO can't be
+      compared with the backup directly; its versions say whether it changed since.
     - Refuses a backup it would import that contains a Group Policy Preferences C(cpassword), before touching the domain.
     - Before planning, a preflight proves the run could work and reports what it found in RV(preflight). It checks that
       O(path) exists, that every name resolves to exactly one complete backup, that the migration table parses, that the
@@ -79,6 +81,9 @@ DOCUMENTATION:
     - The record is host-bound. A run from another host, or after the record is deleted or damaged, imports every named GPO
       once more (a version bump, so clients reprocess them, but no other harm). Run it from one host per domain to avoid that.
     - The record for a GPO is written only after its C(Import-GPO) succeeded, so a failed import is retried on the next run.
+    - An edit to the target GPO after an import (any setting, through GPMC or a cmdlet) moves its version numbers, and the
+      next run imports the backup again, putting the GPO back. Edits that don't move them (a GPO's links, status, WMI filter
+      or security filtering) aren't settings and are left alone.
     - Before 0.19.0 this name was the whole-domain converge, now M(git_cgallagher.windows.gpo_sync_import).
   seealso:
     - module: git_cgallagher.windows.gpo_export
@@ -119,7 +124,8 @@ RETURN:
       reason:
         description:
           - Why, one of C(forced), C(GPO missing in target), C(never imported by this pipeline) (no record for the target
-            GPO) or C(backup content or migration table changed).
+            GPO), C(backup content or migration table changed) or C(target GPO edited since last import (version <recorded>
+            -> <live>)), the versions being computer AD/computer SYSVOL/user AD/user SYSVOL.
         type: str
         returned: always
         sample: GPO missing in target

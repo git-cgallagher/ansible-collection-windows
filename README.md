@@ -131,7 +131,8 @@ Since 0.19.0 (issue #64) the names `gpo_export` and `gpo_import` are
   the backup records, not the folder name) and imports it with `Import-GPO`,
   creating the GPO when missing, optionally through a migration table. It
   imports only when the backup or the table changed since its last import
-  into that GPO, recorded on the host in
+  into that GPO, or the GPO was edited since (its versions moved), recorded
+  on the host in
   `C:\ProgramData\gpo-iac\gpo-import-<domain>.json`.
 
 Neither touches links, WMI filters, security filtering, GPO status or

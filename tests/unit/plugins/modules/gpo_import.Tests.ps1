@@ -221,12 +221,13 @@ Describe 'The import record' {
     It 'round-trips, keyed by GUID in one form' {
         $file = Join-Path $TestDrive 'record.json'
         $id = [guid]::NewGuid().ToString()
-        $record = @{ $id = @{ name = 'Server Baseline'; import_key = 'K1' } }
+        $record = @{ $id = @{ name = 'Server Baseline'; import_key = 'K1'; version = '2/2/0/0' } }
         Write-Utf8File -Path $file -Content (ConvertTo-GpoImportRecordJson -Record $record)
         $read = Read-GpoImportRecord -Path $file
         @($read.Keys) | Should -Be @($id.ToLowerInvariant())
         $read[$id.ToLowerInvariant()].name | Should -BeExactly 'Server Baseline'
         $read[$id.ToLowerInvariant()].import_key | Should -BeExactly 'K1'
+        $read[$id.ToLowerInvariant()].version | Should -BeExactly '2/2/0/0'
     }
 
     It 'writes the same bytes for the same record, whatever the insertion order' {
@@ -255,7 +256,7 @@ Describe 'The import record' {
 Describe 'Get-GpoImportDecision' {
     BeforeAll {
         $script:target = '6ac1786c-016f-11d2-945f-00c04fb984f9'
-        $script:rec = @{ $script:target = @{ name = 'X'; import_key = 'K1' } }
+        $script:rec = @{ $script:target = @{ name = 'X'; import_key = 'K1'; version = '3/3/0/0' } }
     }
 
     It 'imports a GPO the domain lacks, record or not' {
@@ -278,7 +279,24 @@ Describe 'Get-GpoImportDecision' {
     }
 
     It 'skips a GPO already imported from the same backup and table, whatever the GUID''s form' {
-        Get-GpoImportDecision -TargetId "{$($script:target.ToUpperInvariant())}" -Record $script:rec -ImportKey 'K1' | Should -BeExactly ''
+        Get-GpoImportDecision -TargetId "{$($script:target.ToUpperInvariant())}" -LiveVersion '3/3/0/0' -Record $script:rec -ImportKey 'K1' |
+            Should -BeExactly ''
+    }
+
+    It 'imports again when the target GPO was edited since, naming both versions' {
+        Get-GpoImportDecision -TargetId $script:target -LiveVersion '4/4/0/0' -Record $script:rec -ImportKey 'K1' |
+            Should -BeExactly 'target GPO edited since last import (version 3/3/0/0 -> 4/4/0/0)'
+    }
+
+    It 'gives a changed backup as the reason when the GPO was edited too' {
+        Get-GpoImportDecision -TargetId $script:target -LiveVersion '4/4/0/0' -Record $script:rec -ImportKey 'K2' |
+            Should -BeExactly 'backup content or migration table changed'
+    }
+
+    It 'imports again when the record holds no version for the GPO' {
+        $old = @{ $script:target = @{ name = 'X'; import_key = 'K1'; version = '' } }
+        Get-GpoImportDecision -TargetId $script:target -LiveVersion '3/3/0/0' -Record $old -ImportKey 'K1' |
+            Should -BeExactly 'target GPO edited since last import (version  -> 3/3/0/0)'
     }
 
     It 'imports with force, even when up to date' {
@@ -289,10 +307,31 @@ Describe 'Get-GpoImportDecision' {
         $dir = New-Backup -Root (Join-Path $TestDrive 'e2e') -Name 'X'
         $file = Join-Path $TestDrive 'e2e.json'
         $key = Get-GpoImportKey -BackupDir $dir -MigrationTableHash ''
-        Write-Utf8File -Path $file -Content (ConvertTo-GpoImportRecordJson -Record @{ $script:target = @{ name = 'X'; import_key = $key } })
+        $entry = @{ name = 'X'; import_key = $key; version = '5/5/1/1' }
+        Write-Utf8File -Path $file -Content (ConvertTo-GpoImportRecordJson -Record @{ $script:target = $entry })
         $record = Read-GpoImportRecord -Path $file
-        Get-GpoImportDecision -TargetId $script:target -Record $record -ImportKey (Get-GpoImportKey -BackupDir $dir) | Should -BeExactly ''
-        Get-GpoImportDecision -TargetId $script:target -Record $record -ImportKey (Get-GpoImportKey -BackupDir $dir -MigrationTableHash 'T') |
-            Should -BeExactly 'backup content or migration table changed'
+        Get-GpoImportDecision -TargetId $script:target -LiveVersion '5/5/1/1' -Record $record -ImportKey (Get-GpoImportKey -BackupDir $dir) |
+            Should -BeExactly ''
+        Get-GpoImportDecision -TargetId $script:target -LiveVersion '5/5/1/1' -Record $record `
+            -ImportKey (Get-GpoImportKey -BackupDir $dir -MigrationTableHash 'T') | Should -BeExactly 'backup content or migration table changed'
+        Get-GpoImportDecision -TargetId $script:target -LiveVersion '6/6/1/1' -Record $record -ImportKey (Get-GpoImportKey -BackupDir $dir) |
+            Should -BeExactly 'target GPO edited since last import (version 5/5/1/1 -> 6/6/1/1)'
+    }
+}
+
+Describe 'Get-GpoVersionStamp' {
+    It 'joins the computer and user AD and SYSVOL versions, in that order' {
+        $gpo = [pscustomobject]@{
+            Computer = [pscustomobject]@{ DSVersion = 7; SysvolVersion = 6 }
+            User = [pscustomobject]@{ DSVersion = 2; SysvolVersion = 1 }
+        }
+        Get-GpoVersionStamp -Gpo $gpo | Should -BeExactly '7/6/2/1'
+    }
+
+    It 'moves when an edit bumps any one of them' {
+        $user = [pscustomobject]@{ DSVersion = 0; SysvolVersion = 0 }
+        $before = [pscustomobject]@{ Computer = [pscustomobject]@{ DSVersion = 7; SysvolVersion = 7 }; User = $user }
+        $after = [pscustomobject]@{ Computer = [pscustomobject]@{ DSVersion = 7; SysvolVersion = 8 }; User = $user }
+        Get-GpoVersionStamp -Gpo $after | Should -Not -Be (Get-GpoVersionStamp -Gpo $before)
     }
 }

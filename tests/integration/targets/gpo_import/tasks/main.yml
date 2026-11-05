@@ -226,7 +226,7 @@
           - gpo_import_p_read.output[0] == gpo_import_p_read_first.output[0]
         fail_msg: "{{ gpo_import_p_repeat }} / {{ gpo_import_p_upper }}"
 
-    # --- a changed backup is imported; drift in the domain alone is not -------------------
+    # --- a changed backup is imported, and so is an edit to the target ---------------------
     - name: Change A's setting and back it up again
       ansible.windows.win_powershell:
         script: "{{ gpo_import_p_set_script }}"
@@ -262,20 +262,7 @@
         depth: 5
       register: gpo_import_p_read_changed
 
-    - name: Drift A's setting again, with the backup unchanged
-      ansible.windows.win_powershell:
-        script: "{{ gpo_import_p_set_script }}"
-        parameters:
-          Domain: "{{ setup_gpo_lab_domain }}"
-          Name: "{{ gpo_import_p_a }}"
-          Value: 4
-          Create: false
-
-    - name: Import with only the domain drifted
-      git_cgallagher.windows.gpo_import: *gpo_import_p_args
-      register: gpo_import_p_drift
-
-    - name: Check only A was imported, into the same GPO, and drift alone is not noticed (as documented)
+    - name: Check only A was imported, into the same GPO, as its backup changed
       ansible.builtin.assert:
         that:
           - gpo_import_p_changed is changed
@@ -284,10 +271,63 @@
           - gpo_import_p_after.gpos[gpo_import_p_a].value == 2
           - gpo_import_p_after.gpos[gpo_import_p_a].id == gpo_import_p_read_first.output[0].gpos[gpo_import_p_a].id
           - gpo_import_p_after.gpos[gpo_import_p_b] == gpo_import_p_read_first.output[0].gpos[gpo_import_p_b]
-          - gpo_import_p_drift is not changed
         fail_msg: "{{ gpo_import_p_changed }} / {{ gpo_import_p_after }}"
       vars:
         gpo_import_p_after: "{{ gpo_import_p_read_changed.output[0] }}"
+
+    # An edit to the imported GPO moves its versions past the recorded ones,
+    # so the next run puts the backup back.
+    - name: Edit A in the domain out of band, with the backup unchanged
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_set_script }}"
+        parameters:
+          Domain: "{{ setup_gpo_lab_domain }}"
+          Name: "{{ gpo_import_p_a }}"
+          Value: 4
+          Create: false
+
+    - name: Plan with A edited (check mode)
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      check_mode: true
+      register: gpo_import_p_edited_check
+
+    - name: Read the domain after the plan
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read_edited
+
+    - name: Import with A edited
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_edited
+
+    - name: Import again after the edit was undone
+      git_cgallagher.windows.gpo_import: *gpo_import_p_args
+      register: gpo_import_p_edited_repeat
+
+    - name: Read the domain after the re-import
+      ansible.windows.win_powershell:
+        script: "{{ gpo_import_p_read_script }}"
+        parameters: "{{ gpo_import_p_read_params }}"
+        depth: 5
+      register: gpo_import_p_read
+
+    - name: Check the edit was predicted, then undone by importing A alone, and the repeat changed nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_p_edited_check is changed
+          - gpo_import_p_edited_check.imported | map(attribute='name') | list == [gpo_import_p_a]
+          - gpo_import_p_edited_check.imported[0].reason is match('target GPO edited since last import [(]version [0-9/]+ -> [0-9/]+[)]$')
+          - gpo_import_p_read_edited.output[0].gpos[gpo_import_p_a].value == 4
+          - gpo_import_p_read_edited.output[0].record == gpo_import_p_read_changed.output[0].record
+          - gpo_import_p_edited is changed
+          - gpo_import_p_edited.imported == gpo_import_p_edited_check.imported
+          - gpo_import_p_read.output[0].gpos[gpo_import_p_a].value == 2
+          - gpo_import_p_read.output[0].gpos[gpo_import_p_a].id == gpo_import_p_read_first.output[0].gpos[gpo_import_p_a].id
+          - gpo_import_p_read.output[0].gpos[gpo_import_p_b] == gpo_import_p_read_first.output[0].gpos[gpo_import_p_b]
+          - gpo_import_p_edited_repeat is not changed
+        fail_msg: "{{ gpo_import_p_edited_check }} / {{ gpo_import_p_edited }} / {{ gpo_import_p_read.output[0] }}"
 
     # --- a lost record and force ----------------------------------------------------------
     - name: Lose the record

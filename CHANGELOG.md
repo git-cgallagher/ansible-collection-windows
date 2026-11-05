@@ -21,7 +21,9 @@ named GPOs' settings to a directory, and import them into a domain.
   `bkupInfo.xml`, and imports it with `Import-GPO`, creating the GPO when
   missing, through `migration_table_path` when given. It imports only when
   the target GPO is missing, the backup or the migration table changed since
-  its last import into that GPO, or with `force`, and records each import in
+  its last import into that GPO, the GPO was edited since (its version
+  numbers moved past the ones recorded right after the import), or with
+  `force`, and records each import in
   `C:\ProgramData\gpo-iac\gpo-import-<domain>.json`, keyed by the target
   GPO's GUID, only after that GPO's `Import-GPO` succeeded. The record is
   host-bound: a run from another host, or with the record missing or

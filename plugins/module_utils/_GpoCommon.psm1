@@ -643,7 +643,8 @@ Function Read-GpoImportRecord {
     <#
     .SYNOPSIS
     Reads gpo_import's record of what it imported into a domain: a hashtable
-    from each target GPO's GUID (ConvertTo-GpoId) to @{ name; import_key }.
+    from each target GPO's GUID (ConvertTo-GpoId) to @{ name; import_key;
+    version }, version being Get-GpoVersionStamp's right after the import.
     Empty when the file doesn't exist; throws when it doesn't parse.
     #>
     [CmdletBinding()]
@@ -656,7 +657,9 @@ Function Read-GpoImportRecord {
     foreach ($p in @($raw.gpos.PSObject.Properties)) {
         $id = ConvertTo-GpoId -Value $p.Name
         if (-not $id) { continue }
-        $record[$id] = @{ name = [string]$p.Value.name; import_key = [string]$p.Value.import_key }
+        $version = ''
+        if ($p.Value.PSObject.Properties['version']) { $version = [string]$p.Value.version }
+        $record[$id] = @{ name = [string]$p.Value.name; import_key = [string]$p.Value.import_key; version = $version }
     }
     $record
 }
@@ -672,7 +675,11 @@ Function ConvertTo-GpoImportRecordJson {
 
     $out = [ordered]@{ gpos = [ordered]@{} }
     foreach ($id in @($Record.Keys | Sort-Object)) {
-        $out.gpos[$id] = [ordered]@{ name = [string]$Record[$id].name; import_key = [string]$Record[$id].import_key }
+        $out.gpos[$id] = [ordered]@{
+            name = [string]$Record[$id].name
+            import_key = [string]$Record[$id].import_key
+            version = [string]$Record[$id].version
+        }
     }
     $out | ConvertTo-Json -Depth 5
 }
@@ -741,22 +748,42 @@ Function Get-GpoImportReason {
     ''
 }
 
+Function Get-GpoVersionStamp {
+    <#
+    .SYNOPSIS
+    Returns a GPO's four version numbers as one string, "computer AD/computer
+    SYSVOL/user AD/user SYSVOL", from a Get-GPO object (its Computer and User
+    DSVersion and SysvolVersion). GPMC bumps them on every edit, so an
+    unchanged stamp means the GPO is as it was.
+    #>
+    [CmdletBinding()]
+    param ($Gpo)
+
+    '{0}/{1}/{2}/{3}' -f [int]$Gpo.Computer.DSVersion, [int]$Gpo.Computer.SysvolVersion,
+    [int]$Gpo.User.DSVersion, [int]$Gpo.User.SysvolVersion
+}
+
 Function Get-GpoImportDecision {
     <#
     .SYNOPSIS
     Returns why gpo_import must import a backup into a domain, or '' when
-    it needn't: Get-GpoImportReason over its record.
+    it needn't.
 
     .DESCRIPTION
-    TargetId is the target GPO's GUID ('' or $null when the domain lacks it);
-    Record is Read-GpoImportRecord's hashtable, empty when the record is
-    missing or didn't parse. Only the target GPO's own entry counts: a GPO
-    the record doesn't name, or names under another GUID, is imported.
+    TargetId is the target GPO's GUID ('' or $null when the domain lacks it)
+    and LiveVersion its Get-GpoVersionStamp; Record is Read-GpoImportRecord's
+    hashtable, empty when the record is missing or didn't parse. Only the
+    target GPO's own entry counts: a GPO the record doesn't name, or names
+    under another GUID, is imported. In order: Get-GpoImportReason's reasons
+    (forced, missing, never imported, backup or migration table changed),
+    then the target edited since the import, when its version stamp differs
+    from the one recorded right after it.
     #>
     [CmdletBinding()]
     param (
         [bool]$Force,
         [string]$TargetId,
+        [string]$LiveVersion,
         [hashtable]$Record = @{},
         [string]$ImportKey
     )
@@ -765,7 +792,13 @@ Function Get-GpoImportDecision {
     $recorded = [bool]$id -and $null -ne $Record -and $Record.ContainsKey($id)
     $recordedKey = ''
     if ($recorded) { $recordedKey = [string]$Record[$id].import_key }
-    Get-GpoImportReason -Force $Force -LiveExists ([bool]$id) -Recorded $recorded -RecordedKey $recordedKey -ImportKey $ImportKey
+    $reason = Get-GpoImportReason -Force $Force -LiveExists ([bool]$id) -Recorded $recorded -RecordedKey $recordedKey -ImportKey $ImportKey
+    if ($reason) { return $reason }
+    $recordedVersion = [string]$Record[$id].version
+    if ($recordedVersion -ne $LiveVersion) {
+        return ('target GPO edited since last import (version {0} -> {1})' -f $recordedVersion, $LiveVersion)
+    }
+    ''
 }
 
 Function Get-GpoImportScope {
@@ -999,6 +1032,7 @@ $exportFunctions = @(
     'Get-GpoLiveContentHash'
     'Get-GpoSubsetLinkPlan'
     'Get-GpoSysvolPath'
+    'Get-GpoVersionStamp'
     'Get-NearestExistingDirectory'
     'Get-RelativeTrusteeName'
     'Get-StringHash'

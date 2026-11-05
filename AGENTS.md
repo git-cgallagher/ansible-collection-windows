@@ -52,10 +52,13 @@ Pester tests like every module:
   -CreateIfNeeded`. It records each import per domain in
   `C:\ProgramData\gpo-iac\gpo-import-<domain>.json` (fixed, no option),
   keyed by the target GPO's GUID: the backup's `DomainSysvol` hash plus the
-  migration table's (`Get-GpoImportKey`, the sync layer's key format).
-  `Import-GPO` re-serialises `GptTmpl.inf`, so the live GPO is never
-  compared with the backup; drift in the domain alone isn't noticed. It
-  never deletes, renames or unlinks a GPO and never touches topology.
+  migration table's (`Get-GpoImportKey`, the sync layer's key format), and
+  the GPO's four version numbers (`Get-GpoVersionStamp`: computer and user,
+  AD and SYSVOL) read right after the import. `Import-GPO` re-serialises
+  `GptTmpl.inf`, so the live GPO is never compared with the backup; an edit
+  to it moves its versions instead, and the next run imports again
+  (`Get-GpoImportDecision`, the manager's review of PR #66). It never
+  deletes, renames or unlinks a GPO and never touches topology.
   Owner decisions (2026-11-05): the record lives on the host (not in SYSVOL,
   not in the GPO's comment) and is **host-bound**, so a run from another
   host imports every named GPO once more; a missing or unreadable record
@@ -189,8 +192,8 @@ role):
   from both domain and export, an ACL-denied `state_dir`), each leaving the
   domain and the state file as they were. Then the `gpo_import` primitive's
   target (0.19.0): two throwaway GPOs backed up (one per layout), deleted,
-  then created by the import, repeated, a changed backup, a lost record, a
-  damaged one, `force`, a migration table, and every failure; it never imports into the
+  then created by the import, repeated, a changed backup, an out-of-band
+  edit undone, a lost record, a damaged one, `force`, a migration table, and every failure; it never imports into the
   fixture's GPOs.
 - `roles/mssql_prereqs/molecule/default`: a fresh forest. Before it has a
   KDS root key, `check` refuses the gMSA and a report-only `create` plans one
