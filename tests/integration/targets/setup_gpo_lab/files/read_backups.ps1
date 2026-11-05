@@ -64,4 +64,5 @@ if ($result.exists) {
     }
 }
 
-$result
+$Ansible.Changed = $false
+$Ansible.Result = $result
