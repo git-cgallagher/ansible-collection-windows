@@ -39,6 +39,8 @@
     gpo_import_migtable_path: '{{ gpo_import_source_dir }}\migtables\helpdesk.migtable'
     gpo_import_servers_som: "OU=Servers,OU={{ gpo_import_fx.ou }},{{ setup_gpo_lab_root_dn }}"
     gpo_import_workstations_som: "OU=Workstations,OU={{ gpo_import_fx.ou }},{{ setup_gpo_lab_root_dn }}"
+    gpo_import_servers_rel: "OU=Servers,OU={{ gpo_import_fx.ou }}"
+    gpo_import_ws_rel: "OU=Workstations,OU={{ gpo_import_fx.ou }}"
     gpo_import_result_keys: [preflight, actions, notices, errors, imported, gpo_count, som_count, server, state_file]
     gpo_import_read_params:
       Domain: "{{ setup_gpo_lab_domain }}"
@@ -414,6 +416,218 @@
           - gpo_import_read.result.topology == gpo_import_authored.result.topology
           - gpo_import_read.result.settings == gpo_import_authored.result.settings
         fail_msg: "{{ gpo_import_converged }} / {{ gpo_import_converged_again }} / {{ gpo_import_read.result | to_nice_json }}"
+
+    # --- gpo_names: a subset moves without touching the rest (issue #57) --------------------
+    # gpo_names scopes the WMI filters and the links too: a filtered run creates
+    # only the filters the selected GPOs link and reconciles only their links.
+    # The drifted domain stands in for a target that lacks the other GPOs: the
+    # RDP GPO is gone, and the export without its backup folder can't create
+    # it. Before 0.16.0 a filtered run planned the RDP GPO's links anyway and
+    # failed on them. The drift outside each subset stays, remove_unmanaged_links
+    # and create_wmi_filters notwithstanding: the unmanaged password link on the
+    # servers OU, the unblocked workstations OU, Default Domain Policy above the
+    # password GPO, the other GPOs' settings. Then a full converge puts the
+    # domain back for the migration-table tests.
+    - name: Drift the domain again
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_fixture_script }}"
+        parameters:
+          Action: Drift
+          Domain: "{{ setup_gpo_lab_domain }}"
+          FixtureJson: "{{ setup_gpo_lab_fixture | to_json }}"
+
+    - name: Read the domain drifted again
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 8
+      register: gpo_import_subset_drifted
+
+    - name: Check the drift took again
+      ansible.builtin.assert:
+        that:
+          - gpo_import_fx.gpo_rdp not in gpo_import_subset_drifted.result.topology.gpos
+          - gpo_import_fx.wmi_filter not in gpo_import_subset_drifted.result.topology.wmi_filters
+          - gpo_import_subset_drifted.result.topology.soms[gpo_import_ws_rel].links == []
+          - not gpo_import_subset_drifted.result.topology.soms[gpo_import_ws_rel].block_inheritance
+        fail_msg: "{{ gpo_import_subset_drifted.result | to_nice_json }}"
+
+    # The workstation admins GPO links no WMI filter, and its one link goes
+    # where the manifest puts it relative to the links the domain has: the RDP
+    # link above it is gone, so first.
+    - name: Plan the import of the workstation admins GPO alone (check mode)
+      git_cgallagher.windows.gpo_import: &gpo_import_subset_ws
+        <<: *gpo_import_converge
+        source_dir: "{{ gpo_import_nofolder_dir }}"
+        gpo_names: ["{{ gpo_import_fx.gpo_ws_admins }}"]
+      check_mode: true
+      register: gpo_import_subset_ws_check
+
+    - name: Read the domain after the plan of the subset
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 8
+      register: gpo_import_read
+
+    - name: Check the plan is the one link and touched nothing
+      ansible.builtin.assert:
+        that:
+          - gpo_import_subset_ws_check is changed
+          - gpo_import_subset_ws_check.errors == []
+          - gpo_import_subset_ws_check.notices == []
+          - gpo_import_subset_ws_check.imported == 0
+          - gpo_import_subset_ws_check.gpo_count == 1
+          - gpo_import_subset_ws_check.som_count == 1
+          - >-
+            gpo_import_subset_ws_check.actions == ["SOM '" ~ gpo_import_workstations_som ~ "': link '" ~ gpo_import_fx.gpo_ws_admins
+            ~ "' at order 1 (enforced=False, enabled=True)"]
+          - gpo_import_read.result.topology == gpo_import_subset_drifted.result.topology
+        fail_msg: "{{ gpo_import_subset_ws_check }} / {{ gpo_import_read.result.topology | to_nice_json }}"
+
+    - name: Import the workstation admins GPO alone
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_subset_ws
+      register: gpo_import_subset_ws
+
+    - name: Import it alone again
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_subset_ws
+      register: gpo_import_subset_ws_again
+
+    - name: Plan it alone again (check mode)
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_subset_ws
+      check_mode: true
+      register: gpo_import_subset_ws_again_check
+
+    - name: Read the domain after the subset import
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 8
+      register: gpo_import_read
+
+    - name: Check the subset import linked the GPO, stays converged and left the rest drifted
+      ansible.builtin.assert:
+        that:
+          - gpo_import_subset_ws is changed
+          - gpo_import_subset_ws.errors == []
+          - gpo_import_subset_ws.notices == []
+          - gpo_import_subset_ws.actions == gpo_import_subset_ws_check.actions
+          - gpo_import_subset_ws_again is not changed
+          - gpo_import_subset_ws_again.actions == []
+          - gpo_import_subset_ws_again_check is not changed
+          - gpo_import_subset_ws_again_check.actions == []
+          - >-
+            gpo_import_read.result.topology.soms[gpo_import_ws_rel].links
+            == gpo_import_authored.result.topology.soms[gpo_import_ws_rel].links | rejectattr('gpo', 'eq', gpo_import_fx.gpo_rdp) | list
+          - not gpo_import_read.result.topology.soms[gpo_import_ws_rel].block_inheritance
+          - >-
+            gpo_import_read.result.topology.soms | dict2items | rejectattr('key', 'eq', gpo_import_ws_rel) | list
+            == gpo_import_subset_drifted.result.topology.soms | dict2items | rejectattr('key', 'eq', gpo_import_ws_rel) | list
+          - gpo_import_read.result.topology.gpos == gpo_import_subset_drifted.result.topology.gpos
+          - gpo_import_read.result.topology.wmi_filters == gpo_import_subset_drifted.result.topology.wmi_filters
+          - gpo_import_read.result.versions == gpo_import_subset_drifted.result.versions
+          - gpo_import_read.result.settings == gpo_import_subset_drifted.result.settings
+        fail_msg: "{{ gpo_import_subset_ws }} / {{ gpo_import_subset_ws_again }} / {{ gpo_import_read.result | to_nice_json }}"
+
+    # The baseline links the WMI filter the drift deleted, so the subset
+    # creates that filter, and nothing else outside the baseline. Its link goes
+    # back on top of the servers OU, above the unmanaged password link, which
+    # stays: it isn't the subset's.
+    - name: Plan the import of the server baseline alone (check mode)
+      git_cgallagher.windows.gpo_import: &gpo_import_subset_baseline
+        <<: *gpo_import_converge
+        source_dir: "{{ gpo_import_nofolder_dir }}"
+        gpo_names: ["{{ gpo_import_fx.gpo_baseline }}"]
+      check_mode: true
+      register: gpo_import_subset_baseline_check
+
+    - name: Import the server baseline alone
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_subset_baseline
+      register: gpo_import_subset_baseline
+
+    - name: Import it alone again
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_subset_baseline
+      register: gpo_import_subset_baseline_again
+
+    - name: Plan it alone again (check mode)
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_subset_baseline
+      check_mode: true
+      register: gpo_import_subset_baseline_again_check
+
+    - name: Read the domain after the second subset import
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 8
+      register: gpo_import_read
+
+    - name: Check the second subset fixed the baseline and its filter alone, and stays converged
+      ansible.builtin.assert:
+        that:
+          - gpo_import_subset_baseline_check is changed
+          - gpo_import_subset_baseline_check.errors == []
+          - gpo_import_subset_baseline_check.notices == []
+          - gpo_import_subset_baseline_check.imported == 0
+          - gpo_import_subset_baseline_check.som_count == 1
+          - >-
+            gpo_import_subset_baseline_check.actions | reject('search', "'" ~ gpo_import_fx.gpo_baseline ~ "'") | list
+            == ["create WMI filter '" ~ gpo_import_fx.wmi_filter ~ "'"]
+          - >-
+            gpo_import_subset_baseline_check.actions | select('search', "^SOM '" ~ gpo_import_servers_som ~ "': set link '"
+            ~ gpo_import_fx.gpo_baseline ~ "' order 1 [(]enforced=True, enabled=True[)]$") | list | length == 1
+          - >-
+            gpo_import_subset_baseline_check.actions | select('search', "^GPO '" ~ gpo_import_fx.gpo_baseline ~ "': status ")
+            | list | length == 1
+          - gpo_import_subset_baseline is changed
+          - gpo_import_subset_baseline.errors == []
+          - gpo_import_subset_baseline.notices == []
+          - gpo_import_subset_baseline.actions | length == gpo_import_subset_baseline_check.actions | length
+          - gpo_import_subset_baseline_again is not changed
+          - gpo_import_subset_baseline_again.actions == []
+          - gpo_import_subset_baseline_again_check is not changed
+          - gpo_import_subset_baseline_again_check.actions == []
+          - >-
+            gpo_import_read.result.topology.gpos[gpo_import_fx.gpo_baseline]
+            == gpo_import_authored.result.topology.gpos[gpo_import_fx.gpo_baseline]
+          - >-
+            gpo_import_read.result.topology.gpos | dict2items | rejectattr('key', 'eq', gpo_import_fx.gpo_baseline) | list
+            == gpo_import_subset_drifted.result.topology.gpos | dict2items | rejectattr('key', 'eq', gpo_import_fx.gpo_baseline) | list
+          - gpo_import_read.result.topology.wmi_filters == gpo_import_authored.result.topology.wmi_filters
+          - >-
+            gpo_import_read.result.topology.soms[gpo_import_servers_rel].links | map(attribute='gpo') | list
+            == [gpo_import_fx.gpo_baseline, gpo_import_fx.gpo_password, gpo_import_fx.gpo_server_admins]
+          - gpo_import_read.result.topology.soms[gpo_import_servers_rel].links[0].enforced
+          - gpo_import_read.result.topology.soms[''] == gpo_import_subset_drifted.result.topology.soms['']
+          - not gpo_import_read.result.topology.soms[gpo_import_ws_rel].block_inheritance
+          - gpo_import_read.result.settings == gpo_import_subset_drifted.result.settings
+        fail_msg: "{{ gpo_import_subset_baseline_check }} / {{ gpo_import_subset_baseline }} / {{ gpo_import_read.result | to_nice_json }}"
+
+    - name: Converge the domain back after the subsets, re-importing every GPO
+      git_cgallagher.windows.gpo_import:
+        <<: *gpo_import_converge
+        force: true
+      register: gpo_import_subset_restore
+
+    - name: Read the domain after converging it back
+      ansible.windows.win_powershell:
+        script: "{{ setup_gpo_lab_read_script }}"
+        parameters: "{{ gpo_import_read_params }}"
+        depth: 8
+      register: gpo_import_read
+
+    - name: Check the domain is back to the authored state
+      ansible.builtin.assert:
+        that:
+          - gpo_import_subset_restore.errors == []
+          - gpo_import_read.result.topology == gpo_import_authored.result.topology
+          - gpo_import_read.result.settings == gpo_import_authored.result.settings
+        fail_msg: "{{ gpo_import_subset_restore }} / {{ gpo_import_read.result | to_nice_json }}"
 
     # --- a migration table ----------------------------------------------------------------
     # Restricted Groups members are SIDs in a security setting, so Import-GPO

@@ -279,3 +279,159 @@ Describe 'Get-GpoLinkPlan' {
         @(Get-GpoLinkPlan -Current @($null) -Desired @($null)) | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Get-GpoImportScope' {
+    BeforeAll {
+        $script:gpos = @{
+            'Server Baseline' = [pscustomobject]@{ backup_dir = 'Server Baseline'; wmi_filter = 'Server OS' }
+            'RDP Settings' = [pscustomobject]@{ backup_dir = 'RDP Settings'; wmi_filter = 'Client OS' }
+            'Password Policy' = [pscustomobject]@{ backup_dir = 'Password Policy' }
+        }
+        $script:filters = @('Server OS', 'Client OS', 'Unlinked')
+    }
+
+    It 'covers every GPO and every WMI filter without gpo_names' {
+        $scope = Get-GpoImportScope -Gpos $script:gpos -WmiFilters $script:filters
+        $scope.filtered | Should -BeFalse
+        $scope.gpos | Should -Be @('Password Policy', 'RDP Settings', 'Server Baseline')
+        $scope.wmi_filters | Should -Be @('Client OS', 'Server OS', 'Unlinked')
+    }
+
+    It 'covers the selected GPOs the manifest has, spelt as the manifest spells them' {
+        $scope = Get-GpoImportScope -Gpos $script:gpos -WmiFilters $script:filters -Selected @('server baseline', 'Not In The Manifest', '')
+        $scope.filtered | Should -BeTrue
+        $scope.gpos | Should -BeExactly @('Server Baseline')
+    }
+
+    It 'covers only the WMI filters the selected GPOs link' {
+        (Get-GpoImportScope -Gpos $script:gpos -WmiFilters $script:filters -Selected @('Server Baseline')).wmi_filters |
+            Should -BeExactly @('Server OS')
+        @((Get-GpoImportScope -Gpos $script:gpos -WmiFilters $script:filters -Selected @('Password Policy')).wmi_filters) |
+            Should -BeNullOrEmpty
+    }
+
+    It 'doesn''t list a filter a selected GPO links but the manifest doesn''t define (the GPO''s step reports it)' {
+        @((Get-GpoImportScope -Gpos $script:gpos -WmiFilters @('Server OS') -Selected @('RDP Settings')).wmi_filters) |
+            Should -BeNullOrEmpty
+    }
+
+    It 'covers nothing when gpo_names names no GPO in the manifest' {
+        $scope = Get-GpoImportScope -Gpos $script:gpos -WmiFilters $script:filters -Selected @('Elsewhere')
+        $scope.filtered | Should -BeTrue
+        @($scope.gpos) | Should -BeNullOrEmpty
+        @($scope.wmi_filters) | Should -BeNullOrEmpty
+    }
+
+    It 'copes with an empty manifest' {
+        $scope = Get-GpoImportScope -Gpos @{} -WmiFilters @() -Selected @('A')
+        @($scope.gpos) | Should -BeNullOrEmpty
+        @($scope.wmi_filters) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-GpoSubsetLinkPlan' {
+    BeforeAll {
+        function script:ConvertTo-LinkList {
+            param([string]$Spec, [switch]$Desired)
+            # 'A,B!,c-': '!' enforced, '-' disabled.
+            @($Spec -split ',' | Where-Object { $_ } | ForEach-Object {
+                    $name = $_.TrimEnd('!', '-')
+                    if ($Desired) { New-DesiredLink $name $_.Contains('!') (-not $_.Contains('-')) }
+                    else { New-Link $name $_.Contains('!') (-not $_.Contains('-')) }
+                })
+        }
+    }
+
+    It 'plans the lab''s subset fixes: <Name>' -TestCases @(
+        # The lab drift's servers OU: an unmanaged password link on top, the
+        # baseline no longer enforced, the RDP GPO deleted. Only the baseline
+        # is selected: it goes back on top, enforced; the rest stays.
+        @{ Name = 'the baseline on the servers OU'; Current = 'Password,Baseline,Admins'; Desired = 'Baseline!,RDP,Admins'
+            Selected = 'Baseline'; Ops = 'set Baseline 1'; After = 'Baseline!,Password,Admins'
+        }
+        # The workstations OU, the RDP GPO deleted and the admins GPO unlinked.
+        @{ Name = 'the admins on the workstations OU'; Current = ''; Desired = 'RDP-,Admins'
+            Selected = 'Admins'; Ops = 'new Admins 1'; After = 'Admins'
+        }
+        # The domain root: the password policy belongs above Default Domain
+        # Policy, which the subset doesn't select. A new link goes first, not last.
+        @{ Name = 'the password policy above Default Domain Policy'; Current = 'Default Domain Policy'; Desired = 'Password,Default Domain Policy'
+            Selected = 'Password'; Ops = 'new Password 1'; After = 'Password,Default Domain Policy'
+        }
+    ) {
+        param($Current, $Desired, $Selected, $Ops, $After)
+        $currentLinks = ConvertTo-LinkList $Current
+        $plan = @(Get-GpoSubsetLinkPlan -Current $currentLinks -Desired (ConvertTo-LinkList $Desired -Desired) `
+                -Selected ($Selected -split ',') -RemoveUnmanaged $true)
+        @($plan | ForEach-Object { '{0} {1} {2}' -f $_.action, $_.name, $_.order }) -join ';' | Should -BeExactly $Ops
+        Format-Link (Invoke-LinkPlan -Current $currentLinks -Plan $plan) | Should -Be (Format-Link (ConvertTo-LinkList $After))
+    }
+
+    It 'places <Name>' -TestCases @(
+        @{ Name = 'a GPO after its manifest predecessor'; Current = 'X,Y'; Desired = 'X,A,Y'; Selected = 'A'; After = 'X,A,Y' }
+        @{ Name = 'a GPO back after its manifest predecessor'; Current = 'A,X,Y'; Desired = 'X,A,Y'; Selected = 'A'; After = 'X,A,Y' }
+        @{ Name = 'a GPO whose predecessors the target lacks, first'; Current = 'Y'; Desired = 'P,Q,A,Y'; Selected = 'A'; After = 'A,Y' }
+        @{ Name = 'a GPO past a missing predecessor, after the one before it'; Current = 'X,Y'; Desired = 'X,P,A,Y'; Selected = 'A'; After = 'X,A,Y' }
+        @{ Name = 'two selected GPOs swapped around another link'; Current = 'B,X,A'; Desired = 'A,X,B'; Selected = 'A,B'; After = 'A,X,B' }
+        @{ Name = 'two selected GPOs both after another link'; Current = 'B,X,A'; Desired = 'X,A,B'; Selected = 'A,B'; After = 'X,A,B' }
+        @{ Name = 'GPOs where the container orders the other links differently'; Current = 'Y,X'; Desired = 'X,A,Y,B'; Selected = 'A,B'; After = 'Y,X,A,B' }
+        @{ Name = 'a link a selected GPO no longer has here, removed'; Current = 'A,X'; Desired = 'X'; Selected = 'A'; After = 'X' }
+        @{ Name = 'an unselected link the manifest doesn''t list, left'; Current = 'X,A'; Desired = 'A'; Selected = 'A'; After = 'A,X' }
+        @{ Name = 'GPOs named in another case'; Current = 'x,a'; Desired = 'A,X'; Selected = 'a'; After = 'a,x' }
+    ) {
+        param($Current, $Desired, $Selected, $After)
+        $currentLinks = ConvertTo-LinkList $Current
+        $desiredLinks = ConvertTo-LinkList $Desired -Desired
+        $plan = @(Get-GpoSubsetLinkPlan -Current $currentLinks -Desired $desiredLinks -Selected ($Selected -split ',') -RemoveUnmanaged $true)
+        $result = Invoke-LinkPlan -Current $currentLinks -Plan $plan
+        @($result | ForEach-Object { $_.name.ToLowerInvariant() }) | Should -Be @($After.ToLowerInvariant() -split ',')
+        @(Get-GpoSubsetLinkPlan -Current $result -Desired $desiredLinks -Selected ($Selected -split ',') -RemoveUnmanaged $true) | Should -BeNullOrEmpty
+    }
+
+    It 'sets enforced or enabled on a selected link in place, and never on another' {
+        $plan = @(Get-GpoSubsetLinkPlan -Current (ConvertTo-LinkList 'X!,A,Y-') -Desired (ConvertTo-LinkList 'X,A!-,Y' -Desired) -Selected @('A'))
+        @($plan | ForEach-Object { '{0} {1} {2} {3} {4}' -f $_.action, $_.name, $_.order, $_.enforced, $_.enabled }) |
+            Should -BeExactly @('set A 2 True False')
+    }
+
+    It 'reports a selected GPO''s unmanaged link without remove_unmanaged_links, and nothing about other GPOs'' links' {
+        $plan = @(Get-GpoSubsetLinkPlan -Current (ConvertTo-LinkList 'X,A,Y') -Desired (ConvertTo-LinkList 'B' -Desired) `
+                -Selected @('A', 'B') -RemoveUnmanaged $false)
+        @($plan | ForEach-Object { '{0} {1}' -f $_.action, $_.name }) | Should -BeExactly @('new B', 'unmanaged A')
+    }
+
+    It 'plans nothing when no selected GPO is linked here or wanted here' {
+        @(Get-GpoSubsetLinkPlan -Current (ConvertTo-LinkList 'X,Y') -Desired (ConvertTo-LinkList 'Y,Z,X' -Desired) -Selected @('A') -RemoveUnmanaged $true) |
+            Should -BeNullOrEmpty
+        @(Get-GpoSubsetLinkPlan -Current @() -Desired @() -Selected @('A')) | Should -BeNullOrEmpty
+        @(Get-GpoSubsetLinkPlan -Current @($null) -Desired @($null) -Selected @('A')) | Should -BeNullOrEmpty
+    }
+
+    It 'converges in one pass, touches only selected links and keeps the others in order: 300 random containers' {
+        $rng = New-Object System.Random 57
+        $pool = @('A', 'B', 'C', 'D', 'E', 'F', 'G')
+        for ($n = 0; $n -lt 300; $n++) {
+            $current = @($pool | Where-Object { $rng.Next(2) } | Sort-Object { $rng.Next() } |
+                    ForEach-Object { New-Link $_ ([bool]$rng.Next(2)) ([bool]$rng.Next(2)) })
+            $desired = @($pool | Where-Object { $rng.Next(2) } | Sort-Object { $rng.Next() } |
+                    ForEach-Object { New-DesiredLink $_ ([bool]$rng.Next(2)) ([bool]$rng.Next(2)) })
+            $selected = @($pool | Where-Object { $rng.Next(2) })
+            $case = 'current {0} / desired {1} / selected {2}' -f ((Format-Link $current) -join ','),
+            ((@($desired | ForEach-Object { $_.gpo })) -join ','), ($selected -join ',')
+
+            $plan = @(Get-GpoSubsetLinkPlan -Current $current -Desired $desired -Selected $selected -RemoveUnmanaged $true)
+            @($plan | Where-Object { $selected -notcontains $_.name }) | Should -BeNullOrEmpty -Because $case
+            $result = Invoke-LinkPlan -Current $current -Plan $plan
+            @(Get-GpoSubsetLinkPlan -Current $result -Desired $desired -Selected $selected -RemoveUnmanaged $true) |
+                Should -BeNullOrEmpty -Because $case
+
+            # The other GPOs' links: same links, same order, same flags.
+            $others = { param($links) Format-Link @($links | Where-Object { $selected -notcontains $_.name }) }
+            (& $others $result) -join ',' | Should -BeExactly ((& $others $current) -join ',') -Because $case
+            # The selected GPOs' links: exactly the manifest's, in its order, with its flags.
+            $wanted = @($desired | Where-Object { $selected -contains $_.gpo } | ForEach-Object { New-Link $_.gpo $_.enforced $_.enabled })
+            (Format-Link @($result | Where-Object { $selected -contains $_.name })) -join ',' |
+                Should -BeExactly ((Format-Link $wanted) -join ',') -Because $case
+        }
+    }
+}

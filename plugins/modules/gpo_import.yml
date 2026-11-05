@@ -75,11 +75,19 @@ DOCUMENTATION:
       default: false
     gpo_names:
       description:
-        - Limit content import and GPO property reconciliation to these GPO display names. Empty means every GPO in the
-          manifest.
-        - Links are still reconciled for every container in the manifest, and every WMI filter in it is checked (or
-          created with O(create_wmi_filters)). Moving a subset of GPOs into a domain that lacks the others therefore isn't
-          supported yet; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
+        - Limit the import to these GPO display names. Empty means every GPO in the manifest; a name the manifest
+          doesn't have selects nothing.
+        - It scopes every step, so a subset of GPOs moves into a domain that lacks the others. Only the selected GPOs'
+          content and properties are reconciled, and only the WMI filters they link are checked (or created with
+          O(create_wmi_filters)).
+        - On each container only the selected GPOs' links are reconciled. Each goes right after the link the manifest
+          puts before it, or first when the domain has none of those. A selected GPO linked where the manifest doesn't
+          link it is an unmanaged link (O(remove_unmanaged_links)). Other GPOs' links, even with
+          O(remove_unmanaged_links), and every container's block-inheritance are left as they are, and a container the
+          domain lacks is skipped when no selected GPO is linked there.
+        - Export the subset with the same names in M(git_cgallagher.windows.gpo_export)'s
+          O(git_cgallagher.windows.gpo_export#module:gpo_names). Before 0.16.0 links and WMI filters were reconciled for
+          the whole manifest; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
       type: list
       elements: str
       default: []
@@ -261,7 +269,8 @@ RETURN:
     type: int
     sample: 5
   som_count:
-    description: Number of containers whose links were reconciled.
+    description: Number of containers whose links were reconciled, every one in the manifest or, with O(gpo_names),
+      those the manifest links a selected GPO to.
     returned: always
     type: int
     sample: 2
