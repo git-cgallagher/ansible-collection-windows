@@ -1,0 +1,202 @@
+DOCUMENTATION:
+  module: gpo_export
+  short_description: Back up named GPOs' settings to a directory
+  description:
+    - Runs C(Backup-GPO) for each GPO named in O(gpo_names), into its own self-contained folder under O(path), named after
+      the GPO (the characters C(\/:*?"<>|) become C(_)). M(git_cgallagher.windows.gpo_import) imports such a folder.
+    - Settings content only. Links, link order, WMI filters, security filtering, GPO status and block-inheritance are not
+      exported; the sync layer (M(git_cgallagher.windows.gpo_sync_export) and the C(gpo_backup) role) records those.
+    - Each folder holds C(Backup-GPO)'s output and an export record, C(gpo-export.json), with the GPO's GUID and the hash of
+      the live content the backup was taken from. The record is the module's only state. A GPO is backed up again, its
+      folder replaced, only when the folder is missing or incomplete, has no record, records another GPO (one deleted and
+      recreated under the same name), or the GPO's live content changed. Otherwise the folder is left as it is.
+    - The hash covers the GPO's live Group Policy Template in SYSVOL, read from RV(server), so deciding needs no backup.
+    - Reads from Active Directory and SYSVOL only. It writes nothing but the GPOs' folders under O(path), and nothing at all
+      in check mode. Other folders and files under O(path) are never touched, so several runs can share one O(path).
+  version_added: 0.19.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    domain:
+      description:
+        - DNS name of the domain the GPOs are in, for example V(lab.example.com).
+      type: str
+      required: true
+    server:
+      description:
+        - Domain controller to run against.
+        - Omitted or empty means the domain's PDC emulator, which avoids AD-versus-SYSVOL replication races.
+      type: str
+    gpo_names:
+      description:
+        - Display names of the GPOs to export. At least one; names compare case-insensitively, as GPMC's do.
+        - A name the domain doesn't have fails the task before anything is written. So do two names that map to the same
+          folder name.
+      type: list
+      elements: str
+      required: true
+    path:
+      description:
+        - Directory on the host the module runs on that receives one folder per GPO. Created when missing.
+      type: path
+      required: true
+  extends_documentation_fragment:
+    - ansible.builtin.action_common_attributes
+  attributes:
+    check_mode:
+      support: full
+      details:
+        - Check mode reads Active Directory, the live SYSVOL content and the export records, decides exactly as a real run
+          does and reports in RV(exported) what would be exported. No C(Backup-GPO) runs and O(path) isn't created.
+        - Its one write is a preflight probe that proves O(path) could be written, a uniquely named file created in
+          O(path) (or, when it doesn't exist, in the nearest existing parent it would be created under) and removed at
+          once. A failed probe fails the task with a message naming the directory, and RV(preflight) reports the result.
+    diff_mode:
+      support: none
+    platform:
+      platforms: windows
+  notes:
+    - Needs the B(GroupPolicy) and B(ActiveDirectory) PowerShell modules (RSAT) on the host it runs on, and rights to read
+      the GPOs.
+    - The content hash covers the GPO's folder under C(\\<dc>\SYSVOL\<domain>\Policies), every file and directory except
+      C(gpt.ini), which holds the version counter GPMC bumps on every edit, the same hash
+      M(git_cgallagher.windows.gpo_sync_export) uses.
+    - Before 0.19.0 this name was the whole-domain export, now M(git_cgallagher.windows.gpo_sync_export).
+  seealso:
+    - module: git_cgallagher.windows.gpo_import
+    - module: git_cgallagher.windows.gpo_sync_export
+
+EXAMPLES: |
+  - name: Back up two GPOs into a directory on the management host
+    git_cgallagher.windows.gpo_export:
+      domain: lab.example.com
+      gpo_names:
+        - Server Baseline
+        - RDP Access
+      path: D:\gpo-backups
+    register: export
+
+  - name: See which of them changed since their last export, writing nothing
+    git_cgallagher.windows.gpo_export:
+      domain: lab.example.com
+      gpo_names:
+        - Server Baseline
+        - RDP Access
+      path: D:\gpo-backups
+    check_mode: true
+    register: plan
+
+RETURN:
+  exported:
+    description:
+      - The GPOs backed up by this run (in check mode, the ones that would be), each with its folder under O(path) and why.
+        Empty when every folder was up to date, and then C(changed) is false.
+    returned: always
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The GPO's display name, as the domain spells it.
+        type: str
+        returned: always
+        sample: IacLab - RDP Settings
+      folder:
+        description: Its folder's name under O(path).
+        type: str
+        returned: always
+        sample: IacLab - RDP Settings
+      reason:
+        description:
+          - Why it was exported, one of C(not exported yet), C(backup folder incomplete (<why>)), C(no export record),
+            C(the folder holds another GPO's backup) or C(content changed).
+        type: str
+        returned: always
+        sample: content changed
+  gpos:
+    description: Every GPO named in O(gpo_names), exported or not, sorted by name.
+    returned: success
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The GPO's display name, as the domain spells it.
+        type: str
+        returned: always
+        sample: IacLab - RDP Settings
+      id:
+        description: The GPO's GUID, lower case without braces.
+        type: str
+        returned: always
+        sample: 6ac1786c-016f-11d2-945f-00c04fb984f9
+      folder:
+        description: Its folder's name under O(path).
+        type: str
+        returned: always
+        sample: IacLab - RDP Settings
+      content_hash:
+        description: The hash of its live content, which the export record holds once it's exported.
+        type: str
+        returned: always
+        sample: 9B2B8887D4560937465D7B588BE9B1ED55E0F94EC18124A311DB40A89380AFA5
+      exported:
+        description: Whether this run exported it (would, in check mode).
+        type: bool
+        returned: always
+        sample: false
+  path:
+    description: O(path), as given.
+    returned: always
+    type: str
+    sample: D:\gpo-backups
+  server:
+    description: The domain controller the export ran against. V(null) when the domain couldn't be read.
+    returned: always
+    type: str
+    sample: dc01.lab.example.com
+  errors:
+    description: One message per GPO that couldn't be hashed or backed up, when the task failed because of them.
+    returned: always
+    type: list
+    elements: str
+    sample: []
+  preflight:
+    description:
+      - What the run proved before exporting anything, checked in this order, AD, GPMC, then O(path). A fact is V(true) or
+        V(false) once checked and V(null) when the run stopped before checking it. A real run proves O(path) by writing to
+        it; check mode with a probe file it removes at once.
+    returned: always
+    type: dict
+    contains:
+      ad:
+        description:
+          - Active Directory answered for O(domain) (C(Get-ADDomain) succeeded); V(null) when not checked.
+        type: bool
+        returned: always
+        sample: true
+      gpmc:
+        description:
+          - GPMC listed the domain's GPOs on RV(server) (C(Get-GPO -All) succeeded); V(null) when not checked (AD didn't
+            answer).
+        type: bool
+        returned: always
+        sample: true
+      path_exists:
+        description: Whether O(path) exists, read when the task starts and, in a real run, again at its end.
+        type: bool
+        returned: always
+        sample: true
+      path_writable:
+        description:
+          - Whether O(path) took a file. In check mode, the probe's result (V(false) fails the task). In a real run, V(true)
+            once a GPO's folder was written, and V(null) when there was nothing to write. V(null) too when the run stopped
+            before the path check, or when O(path) has no existing parent.
+        type: bool
+        returned: always
+        sample: true
+      path_probed:
+        description:
+          - The directory the writability proof applies to. O(path) itself, or in check mode the nearest existing parent
+            when O(path) doesn't exist yet. V(null) when nothing was proven.
+        type: str
+        returned: always
+        sample: D:\gpo-backups

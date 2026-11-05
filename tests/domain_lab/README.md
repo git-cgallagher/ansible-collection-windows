@@ -13,7 +13,7 @@ one in `tests/integration`:
 Each one boots its own Windows Server 2022 VM under QEMU/KVM; the GPO
 scenarios promote it to the first DC of a new forest (`gpolab.test`) and run
 their role against it, then the module's integration target from
-`tests/integration/targets/` (`gpo_sync_export`, `gpo_sync_import`, with the shared
+`tests/integration/targets/` (`gpo_sync_export` and `gpo_export`, `gpo_sync_import` and `gpo_import`, with the shared
 `setup_gpo_lab`), the way `wsfc`'s runs `wsfc_cluster`. CI runs them in
 [`.github/workflows/domain-lab.yml`](../../.github/workflows/domain-lab.yml)
 on `ubuntu-latest`, one job per scenario, in parallel (about 14 minutes).
