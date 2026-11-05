@@ -393,12 +393,15 @@
         that:
           - gpo_export_p_denied_run is not changed
           - gpo_export_p_denied_run.preflight.ad
+          - gpo_export_p_denied_run.preflight.gpmc is none
           - gpo_export_p_denied_run.preflight.path_exists
           - not gpo_export_p_denied_run.preflight.path_writable
           - gpo_export_p_denied_run.preflight.path_probed | lower == gpo_export_p_denied | lower
           - gpo_export_p_denied_run.exported == []
           - gpo_export_p_denied_files.files | length == 0
           - gpo_export_p_no_parent is not changed
+          - gpo_export_p_no_parent.preflight.ad
+          - gpo_export_p_no_parent.preflight.gpmc is none
           - not gpo_export_p_no_parent.preflight.path_exists
           - not gpo_export_p_no_parent.preflight.path_writable
           - gpo_export_p_no_parent.preflight.path_probed is none

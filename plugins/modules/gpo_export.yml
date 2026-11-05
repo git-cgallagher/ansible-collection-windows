@@ -167,12 +167,16 @@ RETURN:
     type: dict
     contains:
       ad:
-        description: Active Directory answered for O(domain) (C(Get-ADDomain) succeeded).
+        description:
+          - Active Directory answered for O(domain) (C(Get-ADDomain) succeeded); V(false) when it didn't, V(null) when
+            the run stopped before asking.
         type: bool
         returned: always
         sample: true
       gpmc:
-        description: GPMC listed the domain's GPOs on RV(server) (C(Get-GPO -All) succeeded).
+        description:
+          - GPMC listed the domain's GPOs on RV(server) (C(Get-GPO -All) succeeded); V(false) when it didn't, V(null) when
+            the run stopped before asking (a failed O(path) check comes first).
         type: bool
         returned: always
         sample: true

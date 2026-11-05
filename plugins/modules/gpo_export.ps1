@@ -53,9 +53,11 @@ $module.Result.gpos = @()
 $module.Result.path = $DestPath
 $module.Result.server = $null
 $module.Result.errors = @()
+# ad and gpmc are $null until checked, $false when the check failed: a run
+# that stops at the path check reports GPMC as not checked, not as down.
 $module.Result.preflight = [ordered]@{
-    ad = $false
-    gpmc = $false
+    ad = $null
+    gpmc = $null
     path_exists = $false
     path_writable = $false
     path_probed = $null
@@ -77,6 +79,7 @@ try {
         throw "The GroupPolicy and ActiveDirectory PowerShell modules are required (install RSAT): $_"
     }
 
+    $module.Result.preflight.ad = $false
     $adDomain = Get-ADDomain -Identity $Domain
     $pdc = $Server
     if (-not $pdc) { $pdc = $adDomain.PDCEmulator }
@@ -111,6 +114,7 @@ try {
     # One Get-GPO -All rather than Get-GPO -Name per GPO: a missing name is
     # then simply absent, and anything else (access denied, DC unreachable)
     # still throws. Names compare case-insensitively, as GPMC's do.
+    $module.Result.preflight.gpmc = $false
     $all = @(Get-GPO -All -Domain $Domain -Server $pdc)
     $module.Result.preflight.gpmc = $true
     $selected = [ordered]@{}

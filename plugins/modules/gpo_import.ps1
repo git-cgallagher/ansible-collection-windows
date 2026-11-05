@@ -81,8 +81,8 @@ $preflight = [ordered]@{
     record_valid = $false
     record_dir_writable = $false
     record_dir_probed = $null
-    domain_reachable = $false
-    gpmc_reachable = $false
+    domain_reachable = $null
+    gpmc_reachable = $null
     passed = $false
     errors = @()
 }
@@ -193,11 +193,14 @@ catch {
 }
 $pdc = $Server
 $live = @()
+# $null until checked (a cpassword refusal stops before), $false when it failed.
+$preflight.domain_reachable = $false
 try {
     $adDomain = Get-ADDomain -Identity $Domain
     $preflight.domain_reachable = $true
     if (-not $pdc) { $pdc = $adDomain.PDCEmulator }
     $module.Result.server = $pdc
+    $preflight.gpmc_reachable = $false
     try {
         $live = @(Get-GPO -All -Domain $Domain -Server $pdc)
         $preflight.gpmc_reachable = $true

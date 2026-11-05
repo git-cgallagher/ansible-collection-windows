@@ -246,12 +246,12 @@ RETURN:
         returned: always
         sample: C:\ProgramData\gpo-iac
       domain_reachable:
-        description: Whether C(Get-ADDomain) answered for O(domain).
+        description: Whether C(Get-ADDomain) answered for O(domain); V(null) when not asked (a C(cpassword) refusal stops first).
         type: bool
         returned: always
         sample: true
       gpmc_reachable:
-        description: Whether GPMC listed the domain's GPOs.
+        description: Whether GPMC listed the domain's GPOs; V(null) when not asked.
         type: bool
         returned: always
         sample: true

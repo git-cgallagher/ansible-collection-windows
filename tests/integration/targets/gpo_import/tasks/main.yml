@@ -640,9 +640,14 @@
           - not gpo_import_p_cpassword.preflight.cpassword_clean
           - gpo_import_p_cpassword.cpassword_files | length == 1
           - gpo_import_p_cpassword.cpassword_files[0] is search('Groups[.]xml$')
+          - gpo_import_p_cpassword.preflight.domain_reachable is none
           - gpo_import_p_cpassword_other is not changed
           - gpo_import_p_read.output[0] == gpo_import_p_read_before_errors.output[0]
-        fail_msg: "{{ gpo_import_p_read.output[0] }} / {{ gpo_import_p_read_before_errors.output[0] }}"
+        fail_msg: >-
+          cpassword: {{ gpo_import_p_cpassword | string }} / unknown: {{ gpo_import_p_unknown | string }} /
+          incomplete: {{ gpo_import_p_incomplete | string }} / ambiguous: {{ gpo_import_p_ambiguous | string }} /
+          domain and record after: {{ gpo_import_p_read.output[0] | string }} /
+          before: {{ gpo_import_p_read_before_errors.output[0] | string }}
 
     # The record's directory denying writes fails the preflight.
     - name: Deny everyone write access to the record's directory
