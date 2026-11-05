@@ -93,12 +93,13 @@ jobs:
       # Most runners have about 85 GB free on / (145 GB, /dev/root), but some
       # come up with a 72 GB root (/dev/mapper/cow-root) and about 16 GB free
       # (issue #62, actions/runner-images#15238). Then this step deletes big
-      # preinstalled toolchains the lab never uses and moves the lab to a
-      # directory on /: the same disk as /mnt today, the right one if /mnt is
-      # ever a small disk of its own. The later steps read the new path from
-      # ${{ env.MOLECULE_LAB_DIR }}. NEED_GB is more than the driver's 20 GB:
-      # the image pull, apt and pip below use some of the room first, and
-      # wsfc_fileserver's three VMs use the most.
+      # preinstalled toolchains the lab never uses (about 25 GB, in a minute)
+      # and moves the lab to a directory on /: the same disk as /mnt today, the
+      # right one if /mnt is ever a small disk of its own. The later steps read
+      # the new path from ${{ env.MOLECULE_LAB_DIR }}. NEED_GB leaves margin
+      # over the driver's 20 GB, part of which the image pull, apt and pip
+      # below use. The biggest lab, wsfc_fileserver's three VMs, ends at 15 GB
+      # (2026-11-05), so the driver's check is what has to pass.
       - name: Make room for the lab
         timeout-minutes: 10
         env:

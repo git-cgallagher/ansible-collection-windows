@@ -112,3 +112,9 @@ the VM console (`<vm>-screen.ppm`, from the driver repository's
 `domain-lab-diagnostics-<job>` artifact (`gpo_backup`, `gpo_import`, `wsfc`,
 `iis`). A boot-stage failure (BSOD, stuck OOBE) shows on the screen dump; a
 role failure shows in the Ansible output and the exported manifests.
+
+Each job prints its lab directory and the room it has ("Make room for the
+lab": on a runner with under 30 GB free, it deletes toolchains the lab never
+uses and moves the lab to `$HOME/gpo-lab`; issue #62) and, after `molecule
+test`, what the lab used ("Show the lab's disk use"). QEMU pauses a VM that
+runs out of room: the screen capture reports `VM status: paused (io-error)`.
