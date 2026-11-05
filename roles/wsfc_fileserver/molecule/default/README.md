@@ -28,12 +28,13 @@ by their lab addresses. Each disk has the same UniqueId on both nodes, so
 |---|---|---|
 | create | Boot the three VMs side by side | WinRM/PSRP answers on each |
 | prepare | Quiet every VM; promote dc01 (renamed DC01); install the iSCSI target and serve both disks; on the nodes, use dc01 for DNS, give the lab NIC a default gateway (New-Cluster puts a static address only on a network with one), rename and join the domain, open file sharing, connect to the iSCSI target | Both nodes see both disks |
-| converge | Read the disks' UniqueIds; `wsfc` builds cluster `FSCLU` (10.42.0.100, Active Directory access point) after `Test-Cluster` with storage tests, takes the management network out of cluster use, formats and adds both disks (`FS Data` as S:) and sets the disk witness; `wsfc_fileserver` builds file server `FSLAB` (10.42.0.101) on `FS Data` with shares `Projects` and `AppData` | — |
+| converge | Read the disks' UniqueIds; `wsfc` builds cluster `FSCLU` (10.42.0.100, Active Directory access point) after `Test-Cluster` with storage tests, takes the management network out of cluster use, formats and adds both disks (`FS Data` as S:), sets the disk witness, puts each node in its own site (DC1 preferred) and takes NODE2's vote; `wsfc`'s `groups` entry point gives `Cluster Group` preferred owners and a description; `wsfc_fileserver` builds file server `FSLAB` (10.42.0.101) on `FS Data` with shares `Projects` and `AppData` | — |
 | idempotence | Run both roles again | No task reports a change |
-| verify | Read the cluster and the file server | Two nodes up; the cluster address; disk witness; both disks online; network roles; the file server online with its address, preferred owners, disk and both shares' paths, settings and exact permissions |
+| verify | Read the cluster and the file server | Two nodes up; the cluster address; disk witness; both disks online; network roles; sites, the preferred site and votes; `Cluster Group`'s preferred owners and description; the file server online with its address, preferred owners, disk and both shares' paths, settings and exact permissions |
 | | `tasks_from: validate` from dc01 | Every share takes a write and returns it |
 | | `tasks_from: failover`, then back to the first owner | The role moved each time, came online, and the markers written before each move read back after it |
 | | Change a share's description out-of-band, run the role report-only, then for real | The plan has exactly that fix; the real run makes it |
+| | `wsfc`'s `tasks_from: failover` on `Cluster Group`, last | The group moved to the other node and back, each move timed; afterwards it's online on its first owner, both nodes are up and the disk witness is online |
 
 The roles' variables are in [molecule.yml](molecule.yml) (`group_vars`
 `lab_nodes`), so converge and verify run them with the same ones. Cluster

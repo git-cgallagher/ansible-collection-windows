@@ -1,7 +1,7 @@
 ---
 # Every variable is documented in meta/argument_specs.yml
 # (`ansible-doc -t role git_cgallagher.windows.wsfc`). Required, no
-# default: wsfc_name.
+# default: wsfc_name (main), wsfc_failover_group (failover).
 
 # Cluster node computer names; empty = every host in the play.
 wsfc_nodes: []
@@ -63,3 +63,19 @@ wsfc_become_password: ''
 
 # Validation reports, on the managing node.
 wsfc_report_dir: 'C:\ProgramData\wsfc-iac'
+
+# --- entry point groups ----------------------------------------------------------
+# Cluster groups to converge with the wsfc_group module. Only tasks_from:
+# groups applies them; main never touches groups.
+wsfc_groups: []
+
+# --- entry point failover --------------------------------------------------------
+# The node to move wsfc_failover_group to; empty = another node that is up,
+# the group's preferred owners first.
+wsfc_failover_to: ''
+
+# Move the group back to where it was afterwards.
+wsfc_failover_back: true
+
+# Seconds each move may take.
+wsfc_failover_timeout: 300

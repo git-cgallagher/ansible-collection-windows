@@ -10,6 +10,7 @@ $clusterNodes = @(Get-ClusterNode -Cluster $conn)
 $quorum = Get-ClusterQuorum -Cluster $conn
 $group = Get-ClusterGroup -Cluster $conn -Name $FileServer
 $owner = [string]$group.OwnerNode.Name
+$coreGroup = Get-ClusterGroup -Cluster $conn -Name 'Cluster Group'
 
 # Sites from the topology XML, as "site:node,node" strings (win_powershell
 # renders deeper nesting as type names).
@@ -58,6 +59,12 @@ $Ansible.Result = @{
     # Whether the cluster places nodes in sites by itself (a diagnostic).
     auto_assign_node_site = [string]$cluster.AutoAssignNodeSite
     witness = [string]$quorum.QuorumResource.Name
+    witness_state = [string]$quorum.QuorumResource.State
+    # The core group, which wsfc's groups and failover entry points act on.
+    cluster_group_owner = [string]$coreGroup.OwnerNode.Name
+    cluster_group_state = [string]$coreGroup.State
+    cluster_group_description = [string]$coreGroup.Description
+    cluster_group_preferred_owners = (@((Get-ClusterOwnerNode -Cluster $conn -Group 'Cluster Group').OwnerNodes | ForEach-Object { [string]$_.Name }) -join ',')
     disks = @(Get-ClusterResource -Cluster $conn | Where-Object { [string]$_.ResourceType -eq 'Physical Disk' } |
             ForEach-Object { @{ name = [string]$_.Name; group = [string]$_.OwnerGroup.Name; state = [string]$_.State } })
     networks = @(Get-ClusterNetwork -Cluster $conn | ForEach-Object {

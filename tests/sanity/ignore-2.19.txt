@@ -8,3 +8,5 @@ plugins/modules/gpo_export.ps1 validate-modules:missing-gplv3-license # MIT, lik
 plugins/modules/gpo_export.yml validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
 plugins/modules/wsfc_cluster.ps1 validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
 plugins/modules/wsfc_cluster.yml validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
+plugins/modules/wsfc_group.ps1 validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header
+plugins/modules/wsfc_group.yml validate-modules:missing-gplv3-license # MIT, like the whole collection: validate-modules wants a GPLv3 header

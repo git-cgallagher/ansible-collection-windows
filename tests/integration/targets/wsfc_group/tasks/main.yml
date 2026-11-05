@@ -1,0 +1,376 @@
+---
+# Integration tests for git_cgallagher.windows.wsfc_group on one node.
+# setup_wsfc (meta/main.yml) has installed Failover Clustering and read the
+# node's computer name. The target builds its own one-node cluster (with
+# wsfc_cluster, not the module under test), adds a test group holding an
+# offline Generic Application resource, and removes the cluster at the end.
+# Every check reads the group through setup_wsfc's group_state.ps1 (the
+# FailoverClusters cmdlets), never through the module under test. Each change
+# runs in check mode first (predicts it, writes nothing), then for real, then
+# again (no change).
+#
+# A move needs a second node: wsfc_fileserver's two-node lab moves a group
+# with the wsfc role's failover entry point. Here the owner is the only node,
+# which tests the no-move path.
+- name: Remove any cluster the node is in
+  ansible.windows.win_powershell:
+    script: "{{ setup_wsfc_remove_script }}"
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ ansible_user }}"
+  vars:
+    ansible_become_password: "{{ ansible_password }}"
+
+- name: Test wsfc_group, then clean up
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ ansible_user }}"
+  vars:
+    ansible_become_password: "{{ ansible_password }}"
+    wsfc_group_test_group: WSFC Test Group
+    wsfc_group_test_resource: WSFC Test App
+    wsfc_group_test_command: C:\Windows\System32\cmd.exe
+    wsfc_group_test_directory: C:\Windows\Temp
+    wsfc_group_host: "{{ ansible_facts.hostname | upper }}"
+  block:
+    - name: Create a one-node cluster
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+
+    - name: Add a test group holding an offline Generic Application resource
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Group, [string]$Resource)
+          $ErrorActionPreference = 'Stop'
+          Import-Module -Name FailoverClusters
+          $conn = $env:COMPUTERNAME
+          $null = Add-ClusterGroup -Cluster $conn -Name $Group
+          $null = Add-ClusterResource -Cluster $conn -Name $Resource -Group $Group -ResourceType 'Generic Application'
+        parameters:
+          Group: "{{ wsfc_group_test_group }}"
+          Resource: "{{ wsfc_group_test_resource }}"
+
+    # The cmdlets' references don't document every property they return, so
+    # put them in the log: each with its value and type.
+    - name: Read the group and its resource as the cmdlets return them
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Group, [string]$Resource)
+          $Ansible.Changed = $false
+          Import-Module -Name FailoverClusters
+          $conn = $env:COMPUTERNAME
+          $describe = {
+              param($o)
+              @($o.PSObject.Properties | ForEach-Object { '{0}={1} [{2}]' -f $_.Name, (@($_.Value) -join ','), $_.TypeNameOfValue }) -join '; '
+          }
+          'group: ' + (& $describe (Get-ClusterGroup -Cluster $conn -Name $Group))
+          $r = Get-ClusterResource -Cluster $conn -Name $Resource
+          'resource: ' + (& $describe $r)
+          foreach ($p in @(Get-ClusterParameter -InputObject $r)) { 'parameter: {0}={1} [{2}]' -f $p.Name, $p.Value, $p.Type }
+        parameters:
+          Group: "{{ wsfc_group_test_group }}"
+          Resource: "{{ wsfc_group_test_resource }}"
+      register: wsfc_group_dump
+
+    - name: Show them
+      ansible.builtin.debug:
+        var: wsfc_group_dump.output
+
+    - name: Read the group before the changes
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_group_script }}"
+        parameters: &wsfc_group_read_params
+          Group: "{{ wsfc_group_test_group }}"
+          Resource: "{{ wsfc_group_test_resource }}"
+        depth: 5
+      register: wsfc_group_before
+
+    # --- converge ---------------------------------------------------------------
+    - name: Plan the group's changes (check mode)
+      git_cgallagher.windows.wsfc_group: &wsfc_group_args
+        name: "{{ wsfc_group_test_group }}"
+        preferred_owners: ["{{ ansible_facts.hostname }}"]
+        owner: "{{ ansible_facts.hostname }}"
+        failback:
+          allowed: true
+          window_start: 1
+          window_end: 4
+        properties:
+          Description: Test group
+          Priority: 1000
+        resources:
+          - name: "{{ wsfc_group_test_resource }}"
+            properties:
+              RestartThreshold: 7
+            parameters:
+              CommandLine: "{{ wsfc_group_test_command }}"
+              CurrentDirectory: "{{ wsfc_group_test_directory }}"
+              UseNetworkName: 1
+      check_mode: true
+      diff: true
+      register: wsfc_group_check
+
+    - name: Read the group after the check-mode run
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_group_script }}"
+        parameters: *wsfc_group_read_params
+        depth: 5
+      register: wsfc_group_after_check
+
+    - name: Check check mode planned every change, no move, and wrote nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_check is changed
+          - wsfc_group_check.actions | select('search', "property Description from '' to 'Test group'") | list | length == 1
+          - wsfc_group_check.actions | select('search', 'property Priority from') | list | length == 1
+          - wsfc_group_check.actions | select('search', "property AutoFailbackType from '0' to '1'") | list | length == 1
+          - wsfc_group_check.actions | select('search', "property FailbackWindowStart from '-1' to '1'") | list | length == 1
+          - wsfc_group_check.actions | select('search', "property FailbackWindowEnd from '-1' to '4'") | list | length == 1
+          - wsfc_group_check.actions | select('search', "(?i)preferred owners from none to " ~ wsfc_group_host) | list | length == 1
+          - wsfc_group_check.actions | select('search', 'property RestartThreshold from') | list | length == 1
+          - wsfc_group_check.actions | select('search', 'private property CommandLine from') | list | length == 1
+          - wsfc_group_check.actions | select('search', 'private property CurrentDirectory from') | list | length == 1
+          - wsfc_group_check.actions | select('search', 'private property UseNetworkName from') | list | length == 1
+          - wsfc_group_check.actions | length == 10
+          - wsfc_group_check.move is none
+          - wsfc_group_check.diff.prepared.splitlines() == wsfc_group_check.actions
+          - wsfc_group_after_check.result == wsfc_group_before.result
+        fail_msg: "{{ wsfc_group_check }} / {{ wsfc_group_after_check.result }}"
+
+    - name: Converge the group
+      git_cgallagher.windows.wsfc_group: *wsfc_group_args
+      register: wsfc_group_apply
+
+    - name: Read the group after the converge
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_group_script }}"
+        parameters: *wsfc_group_read_params
+        depth: 5
+      register: wsfc_group_after
+
+    - name: Check the group matches the options
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_apply is changed
+          - wsfc_group_apply.actions == wsfc_group_check.actions
+          - wsfc_group_apply.move is none
+          - wsfc_group_apply.group.owner | upper == wsfc_group_host
+          - wsfc_group_apply.group.preferred_owners | map('upper') | list == [wsfc_group_host]
+          - not wsfc_group_apply.group.availability_group
+          - wsfc_group_apply.nodes_up | map('upper') | list == [wsfc_group_host]
+          - wsfc_group_after.result.description == 'Test group'
+          - wsfc_group_after.result.priority == '1000'
+          - wsfc_group_after.result.auto_failback_type == '1'
+          - wsfc_group_after.result.failback_window_start == '1'
+          - wsfc_group_after.result.failback_window_end == '4'
+          - wsfc_group_after.result.preferred_owners | map('upper') | list == [wsfc_group_host]
+          - wsfc_group_after.result.resource.restart_threshold == '7'
+          - wsfc_group_after.result.resource.parameters.CommandLine == wsfc_group_test_command
+          - wsfc_group_after.result.resource.parameters.CurrentDirectory == wsfc_group_test_directory
+          - wsfc_group_after.result.resource.parameters.UseNetworkName == '1'
+        fail_msg: "{{ wsfc_group_apply }} / {{ wsfc_group_after.result }}"
+
+    - name: Converge the group again
+      git_cgallagher.windows.wsfc_group: *wsfc_group_args
+      register: wsfc_group_again
+
+    - name: Check the repeat changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_again is not changed
+          - wsfc_group_again.actions == []
+        fail_msg: "{{ wsfc_group_again | string }}"
+
+    - name: Read the group with no options
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group | lower }}"
+      register: wsfc_group_read
+
+    - name: Check a read changes nothing and reports the group
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_read is not changed
+          - wsfc_group_read.group.name == wsfc_group_test_group
+          - wsfc_group_read.group.state == wsfc_group_after.result.state
+          - wsfc_group_read.group.resources | length == 1
+          - wsfc_group_read.group.resources[0] is search(wsfc_group_test_resource ~ ' [(]Generic Application[)]')
+        fail_msg: "{{ wsfc_group_read | string }}"
+
+    # --- out-of-band drift ----------------------------------------------------------
+    - name: Drift a property, the failback window and a private property out-of-band
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Group, [string]$Resource)
+          $ErrorActionPreference = 'Stop'
+          Import-Module -Name FailoverClusters
+          $conn = $env:COMPUTERNAME
+          $g = Get-ClusterGroup -Cluster $conn -Name $Group
+          $g.Description = 'Drifted'
+          $g.FailbackWindowStart = [uint32]4294967295
+          $g.FailbackWindowEnd = [uint32]4294967295
+          $r = Get-ClusterResource -Cluster $conn -Name $Resource
+          Set-ClusterParameter -InputObject $r -Name CommandLine -Value 'C:\drifted.exe' -WarningAction SilentlyContinue
+        parameters: *wsfc_group_read_params
+
+    - name: Plan the fix (check mode)
+      git_cgallagher.windows.wsfc_group: *wsfc_group_args
+      check_mode: true
+      register: wsfc_group_drift_check
+
+    - name: Read the group after the plan
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_group_script }}"
+        parameters: *wsfc_group_read_params
+        depth: 5
+      register: wsfc_group_drifted
+
+    - name: Check the plan has exactly the four fixes and the drift is still there
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_drift_check is changed
+          - >-
+            wsfc_group_drift_check.actions == [
+              "set group " ~ wsfc_group_test_group ~ " property Description from 'Drifted' to 'Test group'",
+              "set group " ~ wsfc_group_test_group ~ " property FailbackWindowStart from '-1' to '1'",
+              "set group " ~ wsfc_group_test_group ~ " property FailbackWindowEnd from '-1' to '4'",
+              "set resource " ~ wsfc_group_test_resource ~ " private property CommandLine from 'C:\\drifted.exe' to '"
+                ~ wsfc_group_test_command ~ "'"]
+          - wsfc_group_drifted.result.description == 'Drifted'
+          - wsfc_group_drifted.result.failback_window_start == '4294967295'
+        fail_msg: "{{ wsfc_group_drift_check }} / {{ wsfc_group_drifted.result }}"
+
+    - name: Fix the drift
+      git_cgallagher.windows.wsfc_group: *wsfc_group_args
+      register: wsfc_group_drift_fix
+
+    - name: Read the group after the fix
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_group_script }}"
+        parameters: *wsfc_group_read_params
+        depth: 5
+      register: wsfc_group_fixed
+
+    - name: Check the drift was fixed, and only that
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_drift_fix is changed
+          - wsfc_group_drift_fix.actions == wsfc_group_drift_check.actions
+          - wsfc_group_fixed.result == wsfc_group_after.result
+        fail_msg: "{{ wsfc_group_drift_fix }} / {{ wsfc_group_fixed.result }}"
+
+    # --- errors: each fails before changing anything ---------------------------------------
+    - name: Name a group that doesn't exist
+      git_cgallagher.windows.wsfc_group:
+        name: WSFC No Such Group
+      register: wsfc_group_missing
+      failed_when: >-
+        "Cluster group WSFC No Such Group doesn't exist" not in (wsfc_group_missing.msg | default(''))
+
+    - name: Set a group property the group doesn't have
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        properties:
+          NoSuchProperty: 1
+      register: wsfc_group_bad_property
+      failed_when: "'has no common property' not in (wsfc_group_bad_property.msg | default(''))"
+
+    - name: Set failback two ways
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        failback:
+          allowed: false
+        properties:
+          AutoFailbackType: 0
+      register: wsfc_group_failback_twice
+      failed_when: "'not both' not in (wsfc_group_failback_twice.msg | default(''))"
+
+    - name: Give a failback window an hour out of range
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        failback:
+          window_start: 1
+          window_end: 24
+      register: wsfc_group_bad_window
+      failed_when: "'must be -1 (no failback window) or an hour from 0 to 23' not in (wsfc_group_bad_window.msg | default(''))"
+
+    - name: Prefer a node outside the cluster
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        preferred_owners: [WSFCNOSUCHNODE]
+      register: wsfc_group_bad_owner
+      failed_when: >-
+        "Node WSFCNOSUCHNODE in preferred_owners isn't in the cluster" not in (wsfc_group_bad_owner.msg | default(''))
+
+    - name: Move the group to a node outside the cluster
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        owner: WSFCNOSUCHNODE
+      register: wsfc_group_bad_move
+      failed_when: >-
+        "Node WSFCNOSUCHNODE isn't in the cluster" not in (wsfc_group_bad_move.msg | default(''))
+
+    - name: Set a resource that isn't in the group
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        resources:
+          - name: WSFC No Such Resource
+            properties:
+              RestartThreshold: 1
+      register: wsfc_group_bad_resource
+      failed_when: >-
+        "Resource WSFC No Such Resource isn't in group" not in (wsfc_group_bad_resource.msg | default(''))
+
+    - name: Set a private property the resource doesn't have
+      git_cgallagher.windows.wsfc_group:
+        name: "{{ wsfc_group_test_group }}"
+        resources:
+          - name: "{{ wsfc_group_test_resource }}"
+            parameters:
+              NoSuchParameter: 1
+      register: wsfc_group_bad_parameter
+      failed_when: "'has no private property' not in (wsfc_group_bad_parameter.msg | default(''))"
+
+    - name: Read the group after the failures
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_group_script }}"
+        parameters: *wsfc_group_read_params
+        depth: 5
+      register: wsfc_group_after_errors
+
+    - name: Check the failures changed nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_group_missing is not changed
+          - wsfc_group_bad_property is not changed
+          - wsfc_group_failback_twice is not changed
+          - wsfc_group_bad_window is not changed
+          - wsfc_group_bad_owner is not changed
+          - wsfc_group_bad_move is not changed
+          - wsfc_group_bad_resource is not changed
+          - wsfc_group_bad_parameter is not changed
+          - wsfc_group_after_errors.result == wsfc_group_after.result
+        fail_msg: "{{ wsfc_group_after_errors.result | string }}"
+  always:
+    - name: Remove the test cluster
+      ansible.windows.win_powershell:
+        script: "{{ setup_wsfc_remove_script }}"
+      register: wsfc_group_cleanup
+
+- name: Read the cluster after the cleanup
+  ansible.windows.win_powershell:
+    script: "{{ setup_wsfc_read_script }}"
+    depth: 5
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ ansible_user }}"
+  vars:
+    ansible_become_password: "{{ ansible_password }}"
+  register: wsfc_group_read_final
+
+- name: Check the tests left no cluster behind
+  ansible.builtin.assert:
+    that: not wsfc_group_read_final.result.exists
+    fail_msg: "{{ wsfc_group_read_final.result | string }}"

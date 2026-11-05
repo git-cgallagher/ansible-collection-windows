@@ -33,7 +33,12 @@ Its second area is **failover clustering** (0.3.0):
   common properties, named shared disks and the quorum witness, through the
   `wsfc_cluster` module
   (`plugins/modules/wsfc_cluster.ps1`, which was the role's
-  `files/converge_cluster.ps1` until 0.7.0). It's the base
+  `files/converge_cluster.ps1` until 0.7.0). Two more entry points (0.15.0)
+  act on cluster groups through the `wsfc_group` module: `groups` converges
+  `wsfc_groups` (owners, failback, properties, resources' properties, a
+  move), and `failover` moves `wsfc_failover_group` to another node and back,
+  timed into `wsfc_failover_result`; `main` never touches groups, since a
+  workload's group exists only after the workload creates it. It's the base
   for file servers, SQL Server FCIs and AGs; it doesn't install SQL Server or
   create shares or AGs. The role is plain `wsfc` (owner's choice,
   2026-10-31; it was `wsfc_cluster` before PR #20 merged), so its variables
@@ -159,13 +164,19 @@ role):
   cluster planned in check mode, created, converged and drifted, with the
   repeat-changes-nothing check after each change, and the error messages;
   then sites, a preferred site and the node's vote the same way (0.13.0).
+  Then the `wsfc_group` target (0.15.0): a one-node cluster of its own with a
+  test group holding an offline Generic Application resource, converged,
+  repeated, drifted and refused the same way.
 - `roles/wsfc_fileserver/molecule/default`: **three VMs** on a lab network
   (dc01 = DC + iSCSI target + client, node1/node2 joined): `wsfc` builds a
   two-node cluster (AD access point, static address, storage validation, two
   formatted iSCSI disks, disk witness, management network role 0, a site
-  per node with DC1 preferred and node2's vote taken), then
-  `wsfc_fileserver` a file server with two shares; idempotence, `validate`
-  from dc01, `failover` there and back, and a report-only plan and drift fix.
+  per node with DC1 preferred and node2's vote taken, and `wsfc`'s `groups`
+  entry point on `Cluster Group`), then `wsfc_fileserver` a file server with
+  two shares; idempotence, `validate` from dc01, `failover` there and back, a
+  report-only plan and drift fix, and last `wsfc`'s `failover` entry point on
+  `Cluster Group` (out and back, cluster up, witness online). It's the only
+  lab where a group moves.
   It's `wsfc`'s multi-node coverage and the slowest job (about 35 minutes
   when it passes; its `molecule test` limit is 120 minutes, the job's 150).
   First passed end to end on 2026-11-02 (PR #36, 697ddc7), after eleven red
@@ -271,9 +282,11 @@ lab to the scripts — and record the surprise below as a gotcha.
   (`Get-ShortName`, `Get-Setting`, `Get-ResourceTypeName`,
   `Test-NetworkMatch`) and the site and vote planners (`Get-WsfcSitePlan`,
   `Get-WsfcNodeWeightPlan`), which take what the cluster reports as plain
-  hashtables and return the changes. The coming `wsfc_group` module and the
-  SQL Server modules use it too, rather than copies. Lists in it are made
-  with `[System.Collections.Generic.List[object]]::new()` (see Gotchas).
+  hashtables and return the changes. `wsfc_group` (0.15.0) plans with its
+  `Get-WsfcGroupPlan`, refusals included (an availability group's group is
+  SQL Server's); the SQL Server modules will use it too, rather than copies.
+  Lists in it are made with `[System.Collections.Generic.List[object]]::new()`
+  (see Gotchas).
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -434,7 +447,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   `tests/integration/targets`): `wsfc_cluster` from `roles/wsfc` (a cluster
   needs the workgroup prerequisites its prepare.yml sets; the target removes
   the role's cluster, builds its own and removes it, reading through
-  `setup_wsfc/files/cluster_state.ps1`), `gpo_export` from `roles/gpo_backup`
+  `setup_wsfc/files/cluster_state.ps1`) and then `wsfc_group` (it builds its
+  own cluster with `wsfc_cluster`, adds a test group, and reads it through
+  `setup_wsfc/files/group_state.ps1`), `gpo_export` from `roles/gpo_backup`
   and `gpo_import` from `roles/gpo_import` (both need the promoted, seeded
   domain; `setup_gpo_lab` reads the domain's name from the host, checks the
   fixture is seeded, never seeds, since the fixture reports a change on every
@@ -567,6 +582,20 @@ ansible-galaxy collection build --force
   `-FaultDomainType` (alias `-Type`) and `-FaultDomain` (alias `-Parent`).
   The labs' read scripts read sites through `Get-ClusterFaultDomainXML`, a
   different path from the module's.
+
+- **`Move-ClusterGroup -Wait` returns when the move ends, not when the group
+  is online.** `wsfc_group` (like `wsfc_fileserver`'s `failover_group.ps1`)
+  then waits for the group to settle on the target: online there if it was
+  online before, otherwise just owned there, since an offline group never
+  comes online by moving.
+
+- **Some private properties only apply when their resource restarts.**
+  `Set-ClusterParameter` says so as a warning (the AG listener's
+  `RegisterAllProvidersIP` and `HostRecordTTL` are the usual case).
+  `wsfc_group` passes it on through `$module.Warn` and never restarts a
+  resource: that's an outage the operator schedules. Failback window hours
+  read back as 4294967295 (0xFFFFFFFF) for "no window", which the options
+  spell `-1`.
 
 - **A domain cluster starts with a site of its own.** On the three-VM lab
   (Windows Server 2022, AD access point) `New-Cluster` created

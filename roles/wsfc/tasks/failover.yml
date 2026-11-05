@@ -1,0 +1,106 @@
+---
+# tasks_from: failover. A planned failover with timings: moves
+# wsfc_failover_group to another node with the wsfc_group module, which waits
+# for it to settle there, then (unless wsfc_failover_back is false) moves it
+# back the same way. The result is in wsfc_failover_result. An availability
+# group fails over through T-SQL instead, so its group is refused.
+- name: Require a group to move, a usable managing node and a timeout
+  ansible.builtin.assert:
+    that:
+      - wsfc_failover_group | default('') | length > 0
+      - wsfc_manage_node | length == 0 or wsfc_manage_node in ansible_play_hosts_all
+      - wsfc_failover_timeout | int > 0
+    fail_msg: >-
+      wsfc_failover_group must name a cluster group, wsfc_manage_node, when set, must be a host in this play, and
+      wsfc_failover_timeout must be positive
+    quiet: true
+
+# A read: with no options to converge, the module changes nothing, so it runs
+# in check mode too.
+- name: Read the group, its owners and the nodes that are up
+  git_cgallagher.windows.wsfc_group:
+    name: "{{ wsfc_failover_group }}"
+  vars: &become_vars
+    ansible_become_password: "{{ wsfc_become_password }}"
+  become: "{{ wsfc_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_become_user }}"
+  delegate_to: &manage_node "{{ wsfc_manage_node if wsfc_manage_node | length > 0 else ansible_play_hosts[0] }}"
+  run_once: true
+  register: wsfc_failover_read
+  check_mode: false
+
+- name: Choose the node to move to
+  ansible.builtin.set_fact:
+    wsfc_failover_from: "{{ wsfc_failover_read.group.owner }}"
+    wsfc_failover_target: >-
+      {{ wsfc_failover_to if wsfc_failover_to | length > 0 else
+         (wsfc_failover_read.group.preferred_owners + wsfc_failover_read.nodes_up)
+         | select('in', wsfc_failover_read.nodes_up)
+         | reject('equalto', wsfc_failover_read.group.owner)
+         | first | default('') }}
+  run_once: true
+
+- name: Require a group that may move, and another node that is up
+  ansible.builtin.assert:
+    that:
+      - not wsfc_failover_read.group.availability_group
+      - wsfc_failover_target | length > 0
+    fail_msg: >-
+      {{ wsfc_failover_group }} can't fail over here: {{
+        'it holds an availability group, which fails over through T-SQL'
+        if wsfc_failover_read.group.availability_group else
+        'no other node is up (nodes up: ' ~ (wsfc_failover_read.nodes_up | join(', ')) ~ ')' }}
+    quiet: true
+  run_once: true
+
+- name: Move the group to the other node
+  git_cgallagher.windows.wsfc_group:
+    name: "{{ wsfc_failover_group }}"
+    owner: "{{ wsfc_failover_target }}"
+    move_timeout: "{{ wsfc_failover_timeout | int }}"
+  vars: *become_vars
+  become: "{{ wsfc_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_become_user }}"
+  delegate_to: *manage_node
+  run_once: true
+  register: wsfc_failover_out
+  check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+
+- name: Move the group back
+  git_cgallagher.windows.wsfc_group:
+    name: "{{ wsfc_failover_group }}"
+    owner: "{{ wsfc_failover_from }}"
+    move_timeout: "{{ wsfc_failover_timeout | int }}"
+  vars: *become_vars
+  become: "{{ wsfc_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_become_user }}"
+  delegate_to: *manage_node
+  run_once: true
+  register: wsfc_failover_return
+  check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+  when: wsfc_failover_back | bool
+
+- name: Record the failover
+  ansible.builtin.set_fact:
+    wsfc_failover_result:
+      group: "{{ wsfc_failover_read.group.name }}"
+      from: "{{ wsfc_failover_from }}"
+      to: "{{ wsfc_failover_out.move.to | default(wsfc_failover_target) }}"
+      seconds: "{{ (wsfc_failover_out.move | default({}, true)).seconds | default(none) }}"
+      moved_back: "{{ (wsfc_failover_return.move | default(none)) is not none }}"
+      back_seconds: "{{ (wsfc_failover_return.move | default({}, true)).seconds | default(none) }}"
+      planned_only: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+  run_once: true
+
+- name: Report the failover
+  ansible.builtin.debug:
+    msg:
+      - "{{ wsfc_failover_result.group }}: {{ wsfc_failover_result.from }} -> {{ wsfc_failover_result.to }}{{
+          ' (planned only)' if wsfc_failover_result.planned_only else ' in ' ~ wsfc_failover_result.seconds ~ ' s' }}"
+      - "{{ 'moved back in ' ~ wsfc_failover_result.back_seconds ~ ' s' if wsfc_failover_result.moved_back
+            else 'then back to ' ~ wsfc_failover_result.from if wsfc_failover_back | bool
+            else 'left on ' ~ wsfc_failover_result.to }}"
+  run_once: true

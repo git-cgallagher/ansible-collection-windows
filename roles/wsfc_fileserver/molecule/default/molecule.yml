@@ -97,6 +97,13 @@ provisioner:
           - {name: DC2, nodes: [NODE2]}
         wsfc_preferred_site: DC1
         wsfc_node_weights: {NODE2: 0}
+        # wsfc's groups entry point (converge.yml) on the core group, never on
+        # FSLAB, whose preferred owners wsfc_fileserver manages.
+        wsfc_groups:
+          - name: Cluster Group
+            preferred_owners: [NODE1, NODE2]
+            properties:
+              Description: Core cluster resources
         wsfc_become_user: "{{ lab_admin_user }}"
         wsfc_become_password: "{{ lab_admin_password }}"
         wsfc_fileserver_name: "{{ lab_fileserver.name }}"

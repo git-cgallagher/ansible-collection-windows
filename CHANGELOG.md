@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.15.0 — 2026-11-04
+
+Cluster groups and failover tests: phase 1b of issue #48, for the SQL Server
+roles to come.
+
+- New module `wsfc_group` converges one existing cluster group. It sets the
+  group's common properties and `failback` (`AutoFailbackType` and the
+  failback window, with `-1` for no window), and its exact, ordered
+  `preferred_owners`. It sets its resources' common and private properties
+  (`Set-ClusterParameter`). Last, it moves the group to `owner` when it's
+  elsewhere, waiting until it settles there. It never creates or removes
+  groups or resources, and never restarts a resource: a private property
+  that needs a restart says so in a warning. Check and diff mode list every
+  action.
+- An availability group's cluster group belongs to SQL Server. `wsfc_group`
+  refuses its owners, failback, properties and moves, and any change to the
+  availability group resource. It still sets its other resources, such as
+  the listener's `RegisterAllProvidersIP` and `HostRecordTTL`, as Microsoft
+  documents.
+- The `wsfc` role gets two entry points. `groups` runs `wsfc_group` for each
+  of `wsfc_groups`; `main` never touches groups, because a workload's group
+  exists only once the workload has created it. `failover` moves
+  `wsfc_failover_group` to another node and back, timing each move into
+  `wsfc_failover_result`.
+- Tests: `wsfc_group`'s planner (`Get-WsfcGroupPlan` in `_WsfcCommon.psm1`)
+  has Pester tests, refusals included. Its integration target converges a
+  test group on a one-node cluster: check mode, the change, a repeat, drift
+  and the error messages. The two-node `wsfc_fileserver` lab runs `groups` on
+  `Cluster Group` and ends with `failover` on it, to the other node and back.
+
 ## 0.14.0 — 2026-11-04
 
 A filtered `gpo_export` run no longer makes the next full run report a change

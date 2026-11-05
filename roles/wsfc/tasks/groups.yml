@@ -1,0 +1,50 @@
+---
+# tasks_from: groups. Converges the cluster groups in wsfc_groups with the
+# wsfc_group module, once, from the managing node. main never touches groups:
+# a workload's group exists only once the workload has created it (an FCI's,
+# after SQL Server setup), so this runs after the workload, or before it for
+# the groups every cluster has (Available Storage, Cluster Group).
+- name: Require a usable managing node and each group once
+  ansible.builtin.assert:
+    that:
+      - wsfc_manage_node | length == 0 or wsfc_manage_node in ansible_play_hosts_all
+      - wsfc_groups | map(attribute='name') | map('lower') | unique | list | length == wsfc_groups | length
+    fail_msg: >-
+      wsfc_manage_node, when set, must be a host in this play, and each group may be listed in wsfc_groups only
+      once
+    quiet: true
+
+- name: Converge the cluster groups
+  git_cgallagher.windows.wsfc_group:
+    name: "{{ item.name }}"
+    preferred_owners: "{{ item.preferred_owners | default(omit) }}"
+    owner: "{{ item.owner | default(omit) }}"
+    move_timeout: "{{ item.move_timeout | default(omit) }}"
+    failback: "{{ item.failback | default(omit) }}"
+    properties: "{{ item.properties | default(omit) }}"
+    resources: "{{ item.resources | default(omit) }}"
+  loop: "{{ wsfc_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    ansible_become_password: "{{ wsfc_become_password }}"
+  become: "{{ wsfc_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ wsfc_become_user }}"
+  delegate_to: "{{ wsfc_manage_node if wsfc_manage_node | length > 0 else ansible_play_hosts[0] }}"
+  run_once: true
+  register: wsfc_groups_run
+  # wsfc_report_only plans the groups (the module's check mode); the "or
+  # ansible_check_mode" keeps --check honest, as in main.
+  check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+
+- name: Report each group's actions and warnings
+  ansible.builtin.debug:
+    msg:
+      - "planned only: {{ wsfc_report_only | bool or ansible_check_mode }}"
+      - "actions: {{ item.actions | default([]) }}"
+      - "warnings: {{ item.warnings | default([]) }}"
+  loop: "{{ wsfc_groups_run.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  run_once: true
