@@ -15,7 +15,7 @@ DOCUMENTATION:
       Microsoft documents setting through the cluster.
     - Every action is listed in RV(actions), and in diff mode as the diff. In check mode the actions are planned and
       nothing is changed.
-  version_added: 0.15.0
+  version_added: 0.16.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:
@@ -92,6 +92,8 @@ DOCUMENTATION:
           description:
             - The resource's private properties to set, by name (C(Set-ClusterParameter)), for example a network name's
               V(HostRecordTTL). Compared as strings; a name the resource doesn't have fails the task.
+            - The changes are written together, in one call, because a resource checks its private properties as a set
+              (a Generic Application refuses a C(CommandLine) while its C(CurrentDirectory) is empty).
             - Some take effect only when the resource restarts, which a warning says. The module never restarts a
               resource.
           type: dict

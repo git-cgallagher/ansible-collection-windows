@@ -142,9 +142,18 @@ Describe 'Get-WsfcGroupPlan' {
     It 'sets resource properties and private properties that differ' {
         $app = @{ name = 'App'; properties = @{ RestartThreshold = 2 }; parameters = @{ CommandLine = 'other.exe'; UseNetworkName = 0 } }
         $plan = Invoke-Plan -Options @{ Resources = @($app) }
-        @($plan.Actions | ForEach-Object { $_.Kind }) | Should -Be @('SetResourceProperty', 'SetResourceParameter')
-        $plan.Actions[1].Name | Should -Be 'CommandLine'
-        $plan.Actions[1].From | Should -Be 'app.exe'
+        @($plan.Actions | ForEach-Object { $_.Kind }) | Should -Be @('SetResourceProperty', 'SetResourceParameters')
+        @($plan.Actions[1].Changes).Count | Should -Be 1
+        $plan.Actions[1].Changes[0].Name | Should -Be 'CommandLine'
+        $plan.Actions[1].Changes[0].From | Should -Be 'app.exe'
+    }
+
+    It 'sets a resource''s private properties together, in one action' {
+        $app = @{ name = 'App'; parameters = @{ CommandLine = 'other.exe'; UseNetworkName = 1 } }
+        $plan = Invoke-Plan -Options @{ Resources = @($app) }
+        @($plan.Actions).Count | Should -Be 1
+        $plan.Actions[0].Resource | Should -Be 'App'
+        @($plan.Actions[0].Changes | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('CommandLine', 'UseNetworkName')
     }
 
     It 'moves the group last, to the node''s own name' {
@@ -158,7 +167,7 @@ Describe 'Get-WsfcGroupPlan' {
     It 'still lets other resources in an availability group''s group be set' {
         $options = @{ Resources = @(@{ name = 'AG1_LISTENER'; parameters = @{ HostRecordTTL = 300 } }) }
         $plan = Invoke-Plan -Options $options -Group $script:agGroup
-        $plan.Actions[0].Kind | Should -Be 'SetResourceParameter'
+        $plan.Actions[0].Kind | Should -Be 'SetResourceParameters'
         $plan.Actions[0].Resource | Should -Be 'AG1_LISTENER'
     }
 

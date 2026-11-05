@@ -225,18 +225,26 @@ function Invoke-Main {
                     $target.($step.Name) = ConvertTo-CurrentType -Value $step.Value -Current $target.($step.Name)
                 }
             }
-            'SetResourceParameter' {
-                Invoke-Change "set resource $($step.Resource) private property $($step.Name) from '$($step.From)' to '$($step.To)'" {
+            'SetResourceParameters' {
+                # One action line per property, one write for them all: the
+                # resource validates its private properties as a set.
+                foreach ($change in @($step.Changes)) {
+                    $actions.Add("set resource $($step.Resource) private property $($change.Name) from '$($change.From)' to '$($change.To)'")
+                }
+                if (-not $checkMode) {
                     $target = Get-ClusterResource -Cluster $conn -Name $step.Resource
-                    $current = (Get-ClusterParameter -InputObject $target -Name $step.Name).Value
+                    $values = @{}
+                    foreach ($change in @($step.Changes)) {
+                        $current = (Get-ClusterParameter -InputObject $target -Name $change.Name).Value
+                        $values[$change.Name] = ConvertTo-CurrentType -Value $change.Value -Current $current
+                    }
                     # Some changes take effect only when the resource restarts,
                     # which Set-ClusterParameter says as a warning. Never
                     # restart a resource here: pass the warning on.
                     $parameterWarnings = $null
                     $setParams = @{
                         InputObject = $target
-                        Name = $step.Name
-                        Value = ConvertTo-CurrentType -Value $step.Value -Current $current
+                        Multiple = $values
                         WarningVariable = 'parameterWarnings'
                         WarningAction = 'SilentlyContinue'
                     }

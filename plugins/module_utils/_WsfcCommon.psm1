@@ -295,7 +295,8 @@ Function Get-WsfcGroupPlan {
     out, the move last: @{ Kind = 'SetGroupProperty'; Name; From; To; Value },
     @{ Kind = 'SetPreferredOwners'; From; To },
     @{ Kind = 'SetResourceProperty'; Resource; Name; From; To; Value },
-    @{ Kind = 'SetResourceParameter'; Resource; Name; From; To; Value } and
+    @{ Kind = 'SetResourceParameters'; Resource; Changes } (one per resource,
+    each change @{ Name; From; To; Value }, set together) and
     @{ Kind = 'Move'; From; To }. Value is what to write; From and To are
     for display (failback window hours as -1 to 23).
     #>
@@ -423,12 +424,13 @@ Function Get-WsfcGroupPlan {
         }
         foreach ($set in @(
                 @{ Kind = 'SetResourceProperty'; Wanted = $wantedProperties; Current = $res.properties; Label = 'common' },
-                @{ Kind = 'SetResourceParameter'; Wanted = $wantedParameters; Current = $res.parameters; Label = 'private' }
+                @{ Kind = 'SetResourceParameters'; Wanted = $wantedParameters; Current = $res.parameters; Label = 'private' }
             )) {
             $currentByName = @{}
             if ($null -ne $set.Current) {
                 foreach ($k in @($set.Current.Keys)) { $currentByName[[string]$k] = $set.Current[$k] }
             }
+            $changes = [System.Collections.Generic.List[object]]::new()
             foreach ($k in @($set.Wanted.Keys)) {
                 $propName = [string]$k
                 if (-not $currentByName.ContainsKey($propName)) {
@@ -436,11 +438,19 @@ Function Get-WsfcGroupPlan {
                 }
                 $current = [string]$currentByName[$propName]
                 if ($current -ne [string]$set.Wanted[$k]) {
-                    $actions.Add(@{
-                            Kind = $set.Kind; Resource = $resName; Name = $propName
-                            From = $current; To = [string]$set.Wanted[$k]; Value = $set.Wanted[$k]
-                        })
+                    $changes.Add(@{ Name = $propName; From = $current; To = [string]$set.Wanted[$k]; Value = $set.Wanted[$k] })
                 }
+            }
+            if ($set.Kind -eq 'SetResourceProperty') {
+                foreach ($c in $changes) {
+                    $actions.Add(@{ Kind = $set.Kind; Resource = $resName; Name = $c.Name; From = $c.From; To = $c.To; Value = $c.Value })
+                }
+            }
+            elseif ($changes.Count -gt 0) {
+                # One action for all of a resource's private properties: the
+                # resource validates them as a set (a Generic Application
+                # refuses a CommandLine while its CurrentDirectory is empty).
+                $actions.Add(@{ Kind = $set.Kind; Resource = $resName; Changes = @($changes) })
             }
         }
     }

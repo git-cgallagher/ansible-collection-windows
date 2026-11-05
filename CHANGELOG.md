@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.15.0 — 2026-11-04
+## 0.16.0 — 2026-11-04
 
 Cluster groups and failover tests: phase 1b of issue #48, for the SQL Server
 roles to come.
@@ -9,7 +9,8 @@ roles to come.
   group's common properties and `failback` (`AutoFailbackType` and the
   failback window, with `-1` for no window), and its exact, ordered
   `preferred_owners`. It sets its resources' common and private properties
-  (`Set-ClusterParameter`). Last, it moves the group to `owner` when it's
+  (`Set-ClusterParameter`, all of a resource's at once, since a resource
+  checks them as a set). Last, it moves the group to `owner` when it's
   elsewhere, waiting until it settles there. It never creates or removes
   groups or resources, and never restarts a resource: a private property
   that needs a restart says so in a warning. Check and diff mode list every
@@ -29,6 +30,23 @@ roles to come.
   test group on a one-node cluster: check mode, the change, a repeat, drift
   and the error messages. The two-node `wsfc_fileserver` lab runs `groups` on
   `Cluster Group` and ends with `failover` on it, to the other node and back.
+
+## 0.15.0 — 2026-11-04
+
+Unit tests for the IIS modules (issue #47): every module now has an
+integration target and Pester unit tests.
+
+- `iis_mime_type`'s and `iis_mime_type_info`'s decisions move from the
+  modules into `plugins/module_utils/_IisConfig.psm1`, unchanged, so Pester
+  tests them without IIS: the `extension` and `mime_type` checks, the
+  add/change/remove decision against the map IIS serves at the level, the
+  file to write and the web.config check, the change itself (committed only
+  outside check mode), and the info module's filtering, sorting and
+  `inherited` flag. The modules' options, results and messages are the same.
+- New suites: `tests/unit/plugins/module_utils/_IisConfig.Tests.ps1`,
+  `tests/unit/plugins/modules/iis_mime_type.Tests.ps1` and
+  `iis_mime_type_info.Tests.ps1`, with a fake of IIS's configuration API
+  (`tests/unit/plugins/module_utils/IisFake.ps1`).
 
 ## 0.14.0 — 2026-11-04
 

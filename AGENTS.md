@@ -33,7 +33,7 @@ Its second area is **failover clustering** (0.3.0):
   common properties, named shared disks and the quorum witness, through the
   `wsfc_cluster` module
   (`plugins/modules/wsfc_cluster.ps1`, which was the role's
-  `files/converge_cluster.ps1` until 0.7.0). Two more entry points (0.15.0)
+  `files/converge_cluster.ps1` until 0.7.0). Two more entry points (0.16.0)
   act on cluster groups through the `wsfc_group` module: `groups` converges
   `wsfc_groups` (owners, failback, properties, resources' properties, a
   move), and `failover` moves `wsfc_failover_group` to another node and back,
@@ -164,7 +164,7 @@ role):
   cluster planned in check mode, created, converged and drifted, with the
   repeat-changes-nothing check after each change, and the error messages;
   then sites, a preferred site and the node's vote the same way (0.13.0).
-  Then the `wsfc_group` target (0.15.0): a one-node cluster of its own with a
+  Then the `wsfc_group` target (0.16.0): a one-node cluster of its own with a
   test group holding an offline Generic Application resource, converged,
   repeated, drifted and refused the same way.
 - `roles/wsfc_fileserver/molecule/default`: **three VMs** on a lab network
@@ -282,11 +282,23 @@ lab to the scripts — and record the surprise below as a gotcha.
   (`Get-ShortName`, `Get-Setting`, `Get-ResourceTypeName`,
   `Test-NetworkMatch`) and the site and vote planners (`Get-WsfcSitePlan`,
   `Get-WsfcNodeWeightPlan`), which take what the cluster reports as plain
-  hashtables and return the changes. `wsfc_group` (0.15.0) plans with its
+  hashtables and return the changes. `wsfc_group` (0.16.0) plans with its
   `Get-WsfcGroupPlan`, refusals included (an availability group's group is
   SQL Server's); the SQL Server modules will use it too, rather than copies.
   Lists in it are made with `[System.Collections.Generic.List[object]]::new()`
   (see Gotchas).
+- The IIS modules share `plugins/module_utils/_IisConfig.psm1`: the calls
+  into IIS's configuration API, resolving `site`/`application` to a
+  configuration level (`Resolve-IisConfigLevel`), reading a level's MIME map
+  and what the level stores itself, and (0.15.0, issue #47) the modules'
+  decisions: the option checks (`Get-IisFileExtensionProblem`,
+  `Test-IisMimeType`), add/change/remove against the effective map
+  (`Get-IisMimeMapDecision`), the file to write (`Get-IisCommitTarget`,
+  `Get-IisWebConfigOverride`), the change itself, committed only outside
+  check mode (`Invoke-IisMimeMapChange`), and `iis_mime_type_info`'s list
+  (`Get-IisMimeTypeList`). Its Pester tests run without IIS against
+  `tests/unit/plugins/module_utils/IisFake.ps1`, a fake of the API behind a
+  mock of the util's one call into it (`Invoke-IisComInvokeMember`).
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -397,9 +409,8 @@ lab to the scripts — and record the surprise below as a gotcha.
   to call a module doesn't count for the module. No CI step checks this (the
   owner dropped the hygiene gate PR 46 first proposed, 2026-11-01): it's a
   rule every change follows, so a PR that adds or changes a role or module
-  adds or updates its tests in the same PR. Still owed: the unit tests of
-  `iis_mime_type` and `iis_mime_type_info` (issue #47); `wsfc_cluster`'s
-  arrived with 0.13.0.
+  adds or updates its tests in the same PR. Every module has both since
+  0.15.0 (issue #47 added the IIS modules' unit tests).
 - **A module's unit tests** are Pester 5, in
   `tests/unit/plugins/modules/<name>.Tests.ps1`, with shared code's in
   `tests/unit/plugins/module_utils/<util>.Tests.ps1`; the `powershell` CI job
@@ -588,6 +599,16 @@ ansible-galaxy collection build --force
   then waits for the group to settle on the target: online there if it was
   online before, otherwise just owned there, since an offline group never
   comes online by moving.
+
+- **A resource checks its private properties as a set.** Setting a Generic
+  Application's `CommandLine` alone, while its required `CurrentDirectory`
+  was still empty, failed with "Unable to save property changes" (PR #61's
+  first lab run, 2026-11-05). `wsfc_group` writes all of a resource's
+  changes in one `Set-ClusterParameter -Multiple` call, while still listing
+  one action per property. The same run showed that `Remove-Cluster`
+  refuses a cluster that still has non-core groups ("It has non-core
+  application groups which must be deleted"), so `setup_wsfc`'s
+  `remove_cluster.ps1` removes those first.
 
 - **Some private properties only apply when their resource restarts.**
   `Set-ClusterParameter` says so as a warning (the AG listener's
