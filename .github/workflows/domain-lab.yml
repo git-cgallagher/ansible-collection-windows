@@ -88,15 +88,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # TEMPORARY, never merged: leave / with 15.7 GB free, as a short runner
-      # has (issue #62), so this run takes the fallback path below.
-      - name: 'TEMP: shrink the disk to a short runner''s'
-        timeout-minutes: 2
-        run: |
-          avail=$(df -Pk / | awk 'NR == 2 {print $4}')
-          fallocate -l "$((avail - 16462643))K" "$HOME/short-runner-filler"
-          df -h /
-
       # The driver refuses to create a VM with under 20 GB free in the lab
       # directory (its windows_vm create.yml, measured with df -Pk, as here).
       # Most runners have about 85 GB free on / (145 GB, /dev/root), but some
