@@ -53,8 +53,7 @@ provisioner:
         # The shared lab: its playbooks and files/lab_fixture.ps1.
         lab_tests_dir: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/domain_lab
         # The exported GPO repos go here, next to the driver's box cache and VM
-        # disk (same variable and default; CI points it at the runner's large
-        # /mnt disk).
+        # disk (same variable and default; CI sets it, see domain-lab.yml).
         lab_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_LAB_DIR') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.cache/molecule-lab', true) }}"
         lab_domain: gpolab.test
         lab_netbios: GPOLAB

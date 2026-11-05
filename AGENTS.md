@@ -834,6 +834,27 @@ ansible-galaxy collection build --force
   `requirements/collections.yml` first; until an image with it is pinned, the
   setup step fails and names the file. Molecule's own `dependency` step then
   finds everything installed ("Nothing to do").
+- **Some runners come up short of disk, and `/mnt` is no disk of its own.**
+  On `ubuntu-latest` (2026-11), `/mnt` is a directory on the root
+  filesystem: usually `/dev/root`, 145 GB with about 85 GB free, but some
+  runners come up with a 72 GB `/dev/mapper/cow-root` and 15.7 GB free
+  (actions/runner-images#15238). There the driver refused to create the VM
+  ("/mnt/gpo-lab has 15.7 GB free; this run needs 20.0 GB"), before any VM
+  booted, in random jobs (three on PR #61; issue #62). `domain-lab.yml`'s
+  first step, "Make room for the lab", measures `/mnt` and, under 30 GB,
+  deletes preinstalled toolchains the lab never uses and moves the lab to
+  `$HOME/gpo-lab` through `$GITHUB_ENV`. On the 2026-11-01 image that frees
+  25 GB in about a minute (Android SDK 11.0, .NET 5.7, GHCup 3.7, Swift 3.5,
+  CodeQL 1.3; `/opt/ghc` is gone). Later steps read the path from
+  `${{ env.MOLECULE_LAB_DIR }}` (or `$MOLECULE_LAB_DIR`), so never write
+  `/mnt/gpo-lab` into a step. "Show the lab's disk use" prints what the lab
+  holds at the end: the 5.6 GB box plus a 1-2 GB disk for a one-VM lab, and
+  15 GB for `wsfc_fileserver`'s three VMs (3.8 + 2.7 + 2.7 GB). A
+  `workflow_dispatch` run that first left every runner 15.7 GB free (run
+  42058223330, 2026-11-05) passed all six jobs this way, `wsfc_fileserver`
+  with 26 GB to spare. A real `cow-root` runner is provisioned differently
+  (copy-on-write, going by the device name; unconfirmed), so read the step's
+  log the first time a run lands on one.
 - **A composite action's steps can't set `timeout-minutes`** (the runner's
   `action_yaml.json` schema has no such key), so the 10-minute guard the
   KVM/QEMU install step got after a stuck apt hung a run for two hours
