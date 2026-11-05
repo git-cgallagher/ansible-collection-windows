@@ -145,6 +145,10 @@
           - gpo_export_p_repeat is not changed
           - gpo_export_p_repeat.exported == []
           - gpo_export_p_repeat.gpos | map(attribute='exported') | unique == [false]
+          - gpo_export_p_repeat.preflight.path_exists
+          - gpo_export_p_repeat.preflight.path_writable is none
+          - gpo_export_p_repeat.preflight.path_probed is none
+          - gpo_export_p_repeat_check.preflight.path_writable
           - gpo_export_p_repeat_check is not changed
           - gpo_export_p_repeat_check.exported == []
           - gpo_export_p_read.result.files == gpo_export_p_read_first.result.files
@@ -393,7 +397,7 @@
         that:
           - gpo_export_p_denied_run is not changed
           - gpo_export_p_denied_run.preflight.ad
-          - gpo_export_p_denied_run.preflight.gpmc is none
+          - gpo_export_p_denied_run.preflight.gpmc
           - gpo_export_p_denied_run.preflight.path_exists
           - not gpo_export_p_denied_run.preflight.path_writable
           - gpo_export_p_denied_run.preflight.path_probed | lower == gpo_export_p_denied | lower
@@ -401,9 +405,9 @@
           - gpo_export_p_denied_files.files | length == 0
           - gpo_export_p_no_parent is not changed
           - gpo_export_p_no_parent.preflight.ad
-          - gpo_export_p_no_parent.preflight.gpmc is none
+          - gpo_export_p_no_parent.preflight.gpmc
           - not gpo_export_p_no_parent.preflight.path_exists
-          - not gpo_export_p_no_parent.preflight.path_writable
+          - gpo_export_p_no_parent.preflight.path_writable is none
           - gpo_export_p_no_parent.preflight.path_probed is none
         fail_msg: "{{ gpo_export_p_denied_run }} / {{ gpo_export_p_no_parent }}"
   always:

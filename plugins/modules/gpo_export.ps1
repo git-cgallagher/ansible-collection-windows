@@ -53,13 +53,14 @@ $module.Result.gpos = @()
 $module.Result.path = $DestPath
 $module.Result.server = $null
 $module.Result.errors = @()
-# ad and gpmc are $null until checked, $false when the check failed: a run
-# that stops at the path check reports GPMC as not checked, not as down.
+# Each fact is $true or $false once checked and $null until then (the run
+# stops at the first failure): AD, then GPMC, then the path, cheapest and
+# most telling first. path_exists needs neither and is read at once.
 $module.Result.preflight = [ordered]@{
     ad = $null
     gpmc = $null
-    path_exists = $false
-    path_writable = $false
+    path_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $DestPath -PathType Container)
+    path_writable = $null
     path_probed = $null
 }
 
@@ -86,17 +87,25 @@ try {
     $module.Result.server = $pdc
     $module.Result.preflight.ad = $true
 
+    # GPMC before the path, so a path failure still reports whether GPMC
+    # answers. One Get-GPO -All rather than Get-GPO -Name per GPO: a missing
+    # name is then simply absent, and anything else (access denied, DC
+    # unreachable) still throws.
+    $module.Result.preflight.gpmc = $false
+    $all = @(Get-GPO -All -Domain $Domain -Server $pdc)
+    $module.Result.preflight.gpmc = $true
+
     # --- preflight: can path be written? ------------------------------------
-    # The real run proves it by creating the folders; check mode with a
+    # The real run proves it by writing the folders; check mode with a
     # uniquely named probe file in path or its nearest existing parent,
     # removed at once.
-    $module.Result.preflight.path_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $DestPath -PathType Container)
     $probeDir = Get-NearestExistingDirectory -Path $DestPath
     if (-not $probeDir) {
         throw "preflight failed: path $DestPath can't be created: none of its parents exist."
     }
     if ($checkMode) {
         $module.Result.preflight.path_probed = $probeDir
+        $module.Result.preflight.path_writable = $false
         $probeFile = [System.IO.Path]::Combine($probeDir, ('.gpo_export-probe-{0}.tmp' -f [guid]::NewGuid().ToString('N')))
         try {
             [System.IO.File]::WriteAllText($probeFile, 'gpo_export check-mode writability probe')
@@ -111,12 +120,7 @@ try {
     }
 
     # --- resolve the names --------------------------------------------------
-    # One Get-GPO -All rather than Get-GPO -Name per GPO: a missing name is
-    # then simply absent, and anything else (access denied, DC unreachable)
-    # still throws. Names compare case-insensitively, as GPMC's do.
-    $module.Result.preflight.gpmc = $false
-    $all = @(Get-GPO -All -Domain $Domain -Server $pdc)
-    $module.Result.preflight.gpmc = $true
+    # Names compare case-insensitively, as GPMC's do.
     $selected = [ordered]@{}
     $missing = New-Object System.Collections.ArrayList
     foreach ($name in $GpoNames) {
@@ -188,10 +192,14 @@ try {
         }
         [void]$exported.Add([ordered]@{ name = $entry.name; folder = $entry.folder; reason = $entry.reason })
     }
+    # A real run proves path writable by writing a GPO's folder into it; with
+    # nothing to export it doesn't write, and path_writable stays $null.
     if (-not $checkMode) {
-        $module.Result.preflight.path_probed = $DestPath
-        $module.Result.preflight.path_writable = $true
-        $module.Result.preflight.path_exists = $true
+        $module.Result.preflight.path_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $DestPath -PathType Container)
+        if ($exported.Count -gt 0) {
+            $module.Result.preflight.path_probed = $DestPath
+            $module.Result.preflight.path_writable = $true
+        }
     }
 
     $module.Result.exported = @($exported)

@@ -194,7 +194,10 @@ RETURN:
     elements: str
     sample: ['D:\gpo-backups\Local Admins\{0E1D2C3B-4A59-6877-8695-A4B3C2D1E0F9}\DomainSysvol\GPO\Machine\Preferences\Groups\Groups.xml']
   preflight:
-    description: What the run proved before planning anything.
+    description:
+      - What the run proved before planning anything, in both modes. Every check runs whatever failed before it, apart from
+        the C(cpassword) refusal, which stops at once. A fact is V(true) or V(false) once checked and V(null) when it
+        couldn't be.
     returned: when the preflight ran
     type: dict
     contains:
@@ -209,7 +212,7 @@ RETURN:
         returned: always
         sample: 5
       resolved:
-        description: Whether every name resolved to exactly one backup.
+        description: Whether every name resolved to exactly one backup; V(null) when O(path) doesn't exist.
         type: bool
         returned: always
         sample: true
@@ -224,7 +227,7 @@ RETURN:
         returned: always
         sample: true
       cpassword_clean:
-        description: Whether the backups to import are free of C(cpassword).
+        description: Whether the backups to import are free of C(cpassword); V(null) when O(path) doesn't exist.
         type: bool
         returned: always
         sample: true
@@ -236,7 +239,9 @@ RETURN:
         returned: always
         sample: true
       record_dir_writable:
-        description: Whether the record's directory, or its nearest existing parent, took the probe file.
+        description:
+          - Whether the record's directory, or its nearest existing parent, took the probe file, in check mode and real runs
+            alike; V(null) when none of its parents exist.
         type: bool
         returned: always
         sample: true

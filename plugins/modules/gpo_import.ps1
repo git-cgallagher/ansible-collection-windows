@@ -71,15 +71,19 @@ if ($GpoNames.Count -eq 0) {
 }
 
 # --- preflight: prove the run could work, before planning anything ------------
+# Every check runs, whatever failed before it, except the cpassword refusal,
+# which stops at once. A fact is $true or $false once checked and $null when
+# it couldn't be (resolved and cpassword_clean without a path, the domain's
+# after a refusal).
 $preflight = [ordered]@{
     path_exists = [bool](Test-Path -ErrorAction SilentlyContinue -LiteralPath $SourcePath -PathType Container)
     backups = 0
-    resolved = $false
+    resolved = $null
     migration_table = $null
     migration_table_valid = $null
-    cpassword_clean = $true
+    cpassword_clean = $null
     record_valid = $false
-    record_dir_writable = $false
+    record_dir_writable = $null
     record_dir_probed = $null
     domain_reachable = $null
     gpmc_reachable = $null
@@ -114,6 +118,7 @@ else {
 
 # -- cpassword: deprecated, trivially decryptable, and a secret. Checked in the
 #    backups this run would import only, before touching the domain. --
+if ($preflight.path_exists) { $preflight.cpassword_clean = $true }
 # @(): one file would otherwise unroll to a string, not a list.
 $cpasswordFiles = @(Get-GpoCpasswordFile -Path @($resolution.resolved.Values | ForEach-Object { $_.dir }))
 if ($cpasswordFiles.Count -gt 0) {
@@ -170,6 +175,7 @@ if (-not $probeDir) {
     [void]$preflightErrors.Add("record directory $recordDir has no existing parent to create it under")
 }
 else {
+    $preflight.record_dir_writable = $false
     $probeFile = [System.IO.Path]::Combine($probeDir, ('.gpo_import-probe-{0}.tmp' -f [guid]::NewGuid().ToString('N')))
     try {
         [System.IO.File]::WriteAllText($probeFile, 'gpo_import preflight')

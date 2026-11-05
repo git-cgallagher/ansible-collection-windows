@@ -81,6 +81,13 @@ Describe 'gpo_import''s wiring' {
         $src | Should -Match 'cpassword_files = @\(\$cpasswordFiles\)'
     }
 
+    It 'reports a preflight fact as $null until it is checked, not as $false' {
+        $src = Get-Content -LiteralPath $script:modulePath -Raw
+        foreach ($fact in 'resolved', 'cpassword_clean', 'record_dir_writable', 'domain_reachable', 'gpmc_reachable') {
+            $src | Should -Match ('(?m)^\s+{0} = \$null\r?$' -f $fact)
+        }
+    }
+
     It 'never deletes a GPO, unlinks one, or touches links, filtering, WMI filters, status or inheritance' {
         $forbidden = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
                 ForEach-Object { $_.GetCommandName() } |

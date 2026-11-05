@@ -60,6 +60,15 @@ Describe 'gpo_export''s wiring' {
         $unguarded | Should -BeNullOrEmpty
     }
 
+    It 'reports a preflight fact as $null until it is checked, not as $false' {
+        $src = Get-Content -LiteralPath $script:modulePath -Raw
+        foreach ($fact in 'ad', 'gpmc', 'path_writable', 'path_probed') {
+            $src | Should -Match ('(?m)^\s+{0} = \$null\r?$' -f $fact)
+        }
+        # GPMC is read before the path probe, so a path failure still reports it.
+        $src.IndexOf('preflight.gpmc = $true') | Should -BeLessThan $src.IndexOf('Get-NearestExistingDirectory -Path $DestPath')
+    }
+
     It 'never touches links, filtering, WMI filters, status or inheritance' {
         $topology = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
                 ForEach-Object { $_.GetCommandName() } |

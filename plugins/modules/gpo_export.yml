@@ -161,39 +161,42 @@ RETURN:
     sample: []
   preflight:
     description:
-      - What the run proved before exporting anything. A real run proves O(path) by writing to it; check mode with a probe
-        file it removes at once.
+      - What the run proved before exporting anything, checked in this order, AD, GPMC, then O(path). A fact is V(true) or
+        V(false) once checked and V(null) when the run stopped before checking it. A real run proves O(path) by writing to
+        it; check mode with a probe file it removes at once.
     returned: always
     type: dict
     contains:
       ad:
         description:
-          - Active Directory answered for O(domain) (C(Get-ADDomain) succeeded); V(false) when it didn't, V(null) when
-            the run stopped before asking.
+          - Active Directory answered for O(domain) (C(Get-ADDomain) succeeded); V(null) when not checked.
         type: bool
         returned: always
         sample: true
       gpmc:
         description:
-          - GPMC listed the domain's GPOs on RV(server) (C(Get-GPO -All) succeeded); V(false) when it didn't, V(null) when
-            the run stopped before asking (a failed O(path) check comes first).
+          - GPMC listed the domain's GPOs on RV(server) (C(Get-GPO -All) succeeded); V(null) when not checked (AD didn't
+            answer).
         type: bool
         returned: always
         sample: true
       path_exists:
-        description: Whether O(path) exists (after a real run, it always does).
+        description: Whether O(path) exists, read when the task starts and, in a real run, again at its end.
         type: bool
         returned: always
         sample: true
       path_writable:
-        description: Whether O(path) could be written. False when the check-mode probe failed, which fails the task.
+        description:
+          - Whether O(path) took a file. In check mode, the probe's result (V(false) fails the task). In a real run, V(true)
+            once a GPO's folder was written, and V(null) when there was nothing to write. V(null) too when the run stopped
+            before the path check, or when O(path) has no existing parent.
         type: bool
         returned: always
         sample: true
       path_probed:
         description:
           - The directory the writability proof applies to. O(path) itself, or in check mode the nearest existing parent
-            when O(path) doesn't exist yet. V(null) when the proof didn't get that far.
+            when O(path) doesn't exist yet. V(null) when nothing was proven.
         type: str
         returned: always
         sample: D:\gpo-backups

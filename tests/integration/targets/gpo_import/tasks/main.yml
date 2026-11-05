@@ -178,6 +178,8 @@
         that:
           - gpo_import_p_first is changed
           - gpo_import_p_first.imported == gpo_import_p_first_check.imported
+          - gpo_import_p_first.preflight.passed
+          - gpo_import_p_first.preflight.record_dir_writable
           - gpo_import_p_r.gpos[gpo_import_p_a].exists
           - gpo_import_p_r.gpos[gpo_import_p_a].value == 1
           - gpo_import_p_r.gpos[gpo_import_p_b].exists
@@ -628,6 +630,11 @@
         that:
           - gpo_import_p_no_path is not changed
           - not gpo_import_p_no_path.preflight.path_exists
+          - gpo_import_p_no_path.preflight.resolved is none
+          - gpo_import_p_no_path.preflight.cpassword_clean is none
+          - gpo_import_p_no_path.preflight.record_dir_writable
+          - gpo_import_p_no_path.preflight.domain_reachable
+          - gpo_import_p_no_path.preflight.gpmc_reachable
           - gpo_import_p_unknown is not changed
           - "'IacLab - No Such Backup' in gpo_import_p_unknown.msg"
           - not gpo_import_p_unknown.preflight.resolved
@@ -641,6 +648,7 @@
           - gpo_import_p_cpassword.cpassword_files | length == 1
           - gpo_import_p_cpassword.cpassword_files[0] is search('Groups[.]xml$')
           - gpo_import_p_cpassword.preflight.domain_reachable is none
+          - gpo_import_p_cpassword.preflight.gpmc_reachable is none
           - gpo_import_p_cpassword_other is not changed
           - gpo_import_p_read.output[0] == gpo_import_p_read_before_errors.output[0]
         fail_msg: >-
@@ -691,6 +699,9 @@
         that:
           - gpo_import_p_denied is not changed
           - not gpo_import_p_denied.preflight.record_dir_writable
+          - gpo_import_p_denied.preflight.resolved
+          - gpo_import_p_denied.preflight.domain_reachable
+          - gpo_import_p_denied.preflight.gpmc_reachable
           - gpo_import_p_denied.preflight.record_dir_probed | lower == gpo_import_p_record_dir | lower
           - gpo_import_p_probes.files == []
           - gpo_import_p_read.output[0].gpos == gpo_import_p_read_before_errors.output[0].gpos
