@@ -162,7 +162,7 @@
         that:
           - gpo_export_p_upper is not changed
           - gpo_export_p_upper.gpos | map(attribute='name') | sort == gpo_export_p_names | sort
-        fail_msg: "{{ gpo_export_p_upper }}"
+        fail_msg: "{{ gpo_export_p_upper | string }}"
 
     # --- a changed GPO is exported alone --------------------------------------------------
     - name: Change a setting in the RDP GPO through GPMC
@@ -196,7 +196,7 @@
           - "gpo_export_p_changed_check.exported == [{'name': gpo_export_p_fx.gpo_rdp, 'folder': gpo_export_p_fx.gpo_rdp,
                                                      'reason': 'content changed'}]"
           - gpo_export_p_read.result.files == gpo_export_p_read_first.result.files
-        fail_msg: "{{ gpo_export_p_changed_check }}"
+        fail_msg: "{{ gpo_export_p_changed_check | string }}"
 
     - name: Export the changed GPO
       git_cgallagher.windows.gpo_export: *gpo_export_p_args

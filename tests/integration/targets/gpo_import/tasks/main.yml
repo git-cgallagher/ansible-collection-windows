@@ -416,7 +416,7 @@
           - gpo_import_p_bad_record_check is changed
           - not gpo_import_p_bad_record_check.preflight.record_valid
           - gpo_import_p_bad_record_check.preflight.passed
-          - gpo_import_p_read.output[0].record == '{ "other": 1 }'
+          - "gpo_import_p_read.output[0].record == '{ \"other\": 1 }'"
           - gpo_import_p_bad_record is changed
           - gpo_import_p_bad_record.imported | map(attribute='reason') | unique == ['never imported by this pipeline']
           - gpo_import_p_bad_record.warnings | default([]) | select('search', 'does not parse') | list | length == 1
@@ -689,7 +689,7 @@
           - gpo_import_p_denied.preflight.record_dir_probed | lower == gpo_import_p_record_dir | lower
           - gpo_import_p_probes.files == []
           - gpo_import_p_read.output[0].gpos == gpo_import_p_read_before_errors.output[0].gpos
-        fail_msg: "{{ gpo_import_p_denied }}"
+        fail_msg: "{{ gpo_import_p_denied | string }}"
   always:
     - name: Allow writes to the record's directory
       ansible.windows.win_acl:
@@ -757,4 +757,4 @@
     that:
       - gpo_import_p_after.output[0].gpos == []
       - gpo_import_p_after.output[0].paths == []
-    fail_msg: "{{ gpo_import_p_after.output[0] }}"
+    fail_msg: "{{ gpo_import_p_after.output[0] | string }}"
