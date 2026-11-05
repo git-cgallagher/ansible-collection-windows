@@ -1,5 +1,5 @@
 ---
-# Integration tests for git_cgallagher.windows.gpo_export, on a domain
+# Integration tests for git_cgallagher.windows.gpo_sync_export, on a domain
 # controller of the lab domain. setup_gpo_lab (meta/main.yml) has read the
 # domain's name and checked the fixture is seeded. Every check reads the domain
 # through setup_gpo_lab's read_domain.ps1 (GPMC and AD) and the export through
@@ -21,7 +21,7 @@
     depth: 8
   register: gpo_export_domain_before
 
-- name: Test gpo_export, then clean up
+- name: Test gpo_sync_export, then clean up
   vars:
     gpo_export_fx: "{{ setup_gpo_lab_fixture }}"
     gpo_export_work_dir: '{{ setup_gpo_lab_dir }}\export'
@@ -44,7 +44,7 @@
     # --- the first export: check mode, real, repeat ------------------------------------
     # With no state file every GPO is new, so the plan is the whole domain.
     - name: Plan the first export (check mode, no working directory yet)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       check_mode: true
@@ -78,7 +78,7 @@
         fail_msg: "{{ gpo_export_first_check }} / {{ gpo_export_read.result }}"
 
     - name: Export the domain
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_first
@@ -159,7 +159,7 @@
         gpo_export_workstations: "{{ gpo_export_m.soms | selectattr('target', 'equalto', 'OU=Workstations,OU=' ~ gpo_export_fx.ou) | first }}"
 
     - name: Export again
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_again
@@ -190,7 +190,7 @@
 
     # --- check mode with a state file: nothing written -----------------------------------
     - name: Plan again (check mode, working directory in place)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       check_mode: true
@@ -222,7 +222,7 @@
     # describe: the filtered run writes the whole domain's manifest and keeps
     # the other GPOs' hashes, so the full run after it finds nothing to do.
     - name: Export one unchanged GPO by name
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
         gpo_names: ["{{ gpo_export_fx.gpo_password }}"]
@@ -236,14 +236,14 @@
       register: gpo_export_read_subset
 
     - name: Plan the full export after the filtered run (check mode)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       check_mode: true
       register: gpo_export_after_subset_check
 
     - name: Export the whole domain after the filtered run
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_after_subset
@@ -296,14 +296,14 @@
           Name: "{{ gpo_export_fx.gpo_rdp }}"
 
     - name: Plan the export of the changed domain (check mode)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       check_mode: true
       register: gpo_export_changed_check
 
     - name: Export the changed domain
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_changed
@@ -316,7 +316,7 @@
       register: gpo_export_read_changed
 
     - name: Export the changed domain again
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_changed_again
@@ -351,7 +351,7 @@
           Name: "{{ gpo_export_temp_gpo }}"
 
     - name: Export the domain with the new GPO
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_new_gpo
@@ -385,7 +385,7 @@
     # The deleted GPO is named too: a filtered run doesn't look for deletions,
     # so it keeps that GPO's entry for the full run below to report.
     - name: Export two unchanged GPOs and the deleted one by name
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
         gpo_names:
@@ -395,7 +395,7 @@
       register: gpo_export_filtered
 
     - name: Export one GPO by name, whether or not it changed
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
         gpo_names: ["{{ gpo_export_fx.gpo_baseline }}"]
@@ -428,20 +428,20 @@
         fail_msg: "{{ gpo_export_filtered }} / {{ gpo_export_filtered_full }} / {{ gpo_export_read_filtered.result.state }}"
 
     - name: Plan the export after the deletion (check mode)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       check_mode: true
       register: gpo_export_deleted_check
 
     - name: Export after the deletion
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_deleted
 
     - name: Export after the deletion again
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_deleted_again
@@ -498,7 +498,7 @@
       register: gpo_export_domain_before_errors
 
     - name: Leave the domain out
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_no_domain
       failed_when: "'missing required arguments: domain' not in (gpo_export_no_domain.msg | default(''))"
@@ -520,7 +520,7 @@
         state: present
 
     - name: Plan against the denied directory (check mode)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_denied_dir }}"
       check_mode: true
@@ -548,7 +548,7 @@
         fail_msg: "{{ gpo_export_denied | string }}"
 
     - name: Plan against a working directory none of whose parents exist (check mode)
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: 'Q:\gpo-iac-test\export'
       check_mode: true
@@ -565,7 +565,7 @@
         fail_msg: "{{ gpo_export_no_parent | string }}"
 
     - name: Export with the clashing names
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
       register: gpo_export_clash
@@ -574,7 +574,7 @@
     # The manifest names every GPO's folder, so the clash fails a filtered run
     # that selects neither GPO too.
     - name: Export one other GPO by name with the clashing names present
-      git_cgallagher.windows.gpo_export:
+      git_cgallagher.windows.gpo_sync_export:
         domain: "{{ setup_gpo_lab_domain }}"
         work_dir: "{{ gpo_export_work_dir }}"
         gpo_names: ["{{ gpo_export_fx.gpo_baseline }}"]

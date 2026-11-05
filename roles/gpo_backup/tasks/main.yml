@@ -13,7 +13,7 @@
 # management host, and nothing at all in check mode, where it still computes
 # what would ship.
 - name: Export GPOs and topology manifest
-  git_cgallagher.windows.gpo_export:
+  git_cgallagher.windows.gpo_sync_export:
     domain: "{{ gpo_backup_domain }}"
     server: "{{ gpo_backup_server }}"
     work_dir: "{{ gpo_backup_workdir }}"

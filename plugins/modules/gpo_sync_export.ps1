@@ -24,7 +24,7 @@
 #
 # Windows PowerShell 5.1-compatible. The pure logic (hashing, the zip, the
 # manifest's encodings, the state decisions) lives in
-# plugins/module_utils/_GpoCommon.psm1, shared with gpo_import and unit-tested
+# plugins/module_utils/_GpoCommon.psm1, shared with gpo_sync_import and unit-tested
 # with Pester (tests/unit/plugins/).
 
 # The argument spec and Create come first: ansible-test's validate-modules runs
@@ -102,9 +102,9 @@ try {
         }
         else {
             $module.Result.preflight.work_dir_probed = $probeDir
-            $probeFile = Join-Path $probeDir ('gpo_export-probe-{0}.tmp' -f [guid]::NewGuid())
+            $probeFile = Join-Path $probeDir ('gpo_sync_export-probe-{0}.tmp' -f [guid]::NewGuid())
             try {
-                [System.IO.File]::WriteAllText($probeFile, 'gpo_export check-mode writability probe')
+                [System.IO.File]::WriteAllText($probeFile, 'gpo_sync_export check-mode writability probe')
                 $module.Result.preflight.work_dir_writable = $true
             }
             catch {
@@ -334,11 +334,11 @@ try {
 }
 catch {
     $module.Result.errors = @($backupErrors)
-    $module.FailJson("gpo_export failed for $($Domain): $($_.Exception.Message)", $_)
+    $module.FailJson("gpo_sync_export failed for $($Domain): $($_.Exception.Message)", $_)
 }
 
 if ($backupErrors.Count -gt 0) {
-    $module.FailJson(("gpo_export failed for {0} GPO(s) in {1}; see errors: {2}" -f
+    $module.FailJson(("gpo_sync_export failed for {0} GPO(s) in {1}; see errors: {2}" -f
             $backupErrors.Count, $Domain, ($backupErrors -join '; ')))
 }
 

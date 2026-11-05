@@ -1,7 +1,7 @@
 # git_cgallagher.windows.gpo_import
 
 Converges a target domain on a `gpo_backup` export. The role stages the
-export on a Windows management host and runs the collection's `gpo_import`
+export on a Windows management host and runs the collection's `gpo_sync_import`
 module there: `Import-GPO -CreateIfNeeded` (optionally through a migration
 table for cross-domain promotion) for every GPO whose content changed since
 the last import, then GPO status, WMI filter links, security filtering
@@ -31,7 +31,7 @@ second run on a converged domain changes nothing. The module's result is
 registered as `gpo_import_run`: `actions` (performed, or predicted in check
 mode), `notices` (what was left alone, also shown as task warnings),
 `errors`, `imported`, `gpo_count`, `som_count`, `server`, `state_file` and
-the `preflight` facts (`ansible-doc git_cgallagher.windows.gpo_import`).
+the `preflight` facts (`ansible-doc git_cgallagher.windows.gpo_sync_import`).
 
 `gpo_import_gpos` limits the whole run to the named GPOs: their content and
 properties, only the WMI filters they link, and only their own links on

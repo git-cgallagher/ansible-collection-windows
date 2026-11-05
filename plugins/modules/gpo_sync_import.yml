@@ -1,5 +1,5 @@
 DOCUMENTATION:
-  module: gpo_import
+  module: gpo_sync_import
   short_description: Converge a domain on a Group Policy export
   description:
     - Imports a C(gpo_backup) export (GPO backup folders plus C(gpo-manifest.json)) into a domain and reconciles the topology the
@@ -18,7 +18,7 @@ DOCUMENTATION:
       and the WMI filters can be read. A failing check fails the module, in check mode too, before anything is planned.
     - C(changed) is true when there was something to do. A converged domain reports no change. In check mode the module plans
       every action, returns it in RV(actions) and the diff, and writes neither to the domain nor to the state file.
-  version_added: 0.6.0
+  version_added: 0.18.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:
@@ -85,8 +85,8 @@ DOCUMENTATION:
           link it is an unmanaged link (O(remove_unmanaged_links)). Other GPOs' links, even with
           O(remove_unmanaged_links), and every container's block-inheritance are left as they are, and a container the
           domain lacks is skipped when no selected GPO is linked there.
-        - Export the subset with the same names in M(git_cgallagher.windows.gpo_export)'s
-          O(git_cgallagher.windows.gpo_export#module:gpo_names). Before 0.16.0 links and WMI filters were reconciled for
+        - Export the subset with the same names in M(git_cgallagher.windows.gpo_sync_export)'s
+          O(git_cgallagher.windows.gpo_sync_export#module:gpo_names). Before 0.16.0 links and WMI filters were reconciled for
           the whole manifest; see U(https://github.com/git-cgallagher/ansible-collection-windows/issues/57).
       type: list
       elements: str
@@ -106,6 +106,8 @@ DOCUMENTATION:
     platform:
       platforms: windows
   notes:
+    - Named C(gpo_import) from 0.6.0 until 0.18.0, when it became part of the sync layer (the whole-domain mirror) under
+      this name, with no change in behaviour.
     - Needs the GroupPolicy and ActiveDirectory PowerShell modules (RSAT) on the management host, and rights to write GPOs,
       container C(gPLink)/C(gPOptions) and, with O(create_wmi_filters), C(msWMI-Som) objects in the domain.
     - C(Import-GPO) replaces the whole GPO and bumps its version, so clients reprocess it. That's why imports are keyed on
@@ -121,13 +123,13 @@ DOCUMENTATION:
 
 EXAMPLES: |
   - name: Converge the domain on the staged export
-    git_cgallagher.windows.gpo_import:
+    git_cgallagher.windows.gpo_sync_import:
       domain: prod.example.com
       source_dir: C:\ProgramData\gpo-iac\import\stage
       create_wmi_filters: true
 
   - name: Promote one GPO into another domain through a migration table, re-importing it regardless of state
-    git_cgallagher.windows.gpo_import:
+    git_cgallagher.windows.gpo_sync_import:
       domain: prod.example.com
       source_dir: C:\ProgramData\gpo-iac\import\stage
       migration_table_path: migtables/prod.migtable
@@ -136,7 +138,7 @@ EXAMPLES: |
       force: true
 
   - name: Plan only (the same as running the task in check mode)
-    git_cgallagher.windows.gpo_import:
+    git_cgallagher.windows.gpo_sync_import:
       domain: prod.example.com
       source_dir: C:\ProgramData\gpo-iac\import\stage
       remove_unmanaged_links: true

@@ -1,12 +1,12 @@
-# Pester 5 unit tests for gpo_export's logic: the pure functions it calls from
+# Pester 5 unit tests for gpo_sync_export's logic: the pure functions it calls from
 # plugins/module_utils/_GpoCommon.psm1 that decide what it ships and what its
 # manifest records, and the module's wiring to that util. The module's
 # behaviour against a domain is its integration target
-# (tests/integration/targets/gpo_export). Run with Invoke-Pester -Path tests/unit.
+# (tests/integration/targets/gpo_sync_export). Run with Invoke-Pester -Path tests/unit.
 
 BeforeAll {
     $script:repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../../../..')).Path
-    $script:modulePath = Join-Path $script:repoRoot 'plugins/modules/gpo_export.ps1'
+    $script:modulePath = Join-Path $script:repoRoot 'plugins/modules/gpo_sync_export.ps1'
     Import-Module (Join-Path $script:repoRoot 'plugins/module_utils/_GpoCommon.psm1') -Force
     $script:nl = [Environment]::NewLine
     # Get-GpoLiveContentHash of the flat tree below (a.txt, empty/, gpt.ini),
@@ -35,7 +35,7 @@ AfterAll {
     Remove-Module _GpoCommon -ErrorAction SilentlyContinue
 }
 
-Describe 'gpo_export''s wiring' {
+Describe 'gpo_sync_export''s wiring' {
     BeforeAll {
         $script:ast = [System.Management.Automation.Language.Parser]::ParseFile($script:modulePath, [ref]$null, [ref]$null)
     }

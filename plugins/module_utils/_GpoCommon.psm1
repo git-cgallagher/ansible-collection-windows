@@ -1,7 +1,7 @@
 # Copyright: (c) 2026, Chris Gallagher (@git-cgallagher)
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-# Shared by the gpo_export and gpo_import modules: the pure logic of Group
+# Shared by the gpo_sync_export and gpo_sync_import modules: the pure logic of Group
 # Policy as code, with no Ansible.Basic, Active Directory or GPMC calls, so
 # Pester tests it without a domain (tests/unit/plugins/module_utils/).
 # Private to this collection, with no compatibility promise. Windows
@@ -463,7 +463,7 @@ Function Get-GpoImportScope {
     Gpos maps each manifest GPO name to its entry (manifest.gpos, whose
     wmi_filter names the filter it links); WmiFilters is the manifest's WMI
     filter names. With no Selected names the import covers every GPO and every
-    filter. With Selected (gpo_import's gpo_names), gpos is the selected names
+    filter. With Selected (gpo_sync_import's gpo_names), gpos is the selected names
     the manifest has, spelt as the manifest spells them (a name it doesn't have
     selects nothing), and wmi_filters only the manifest's filters a selected
     GPO links: a subset moved into another domain neither creates nor warns
@@ -557,7 +557,7 @@ Function Get-GpoSubsetLinkPlan {
     <#
     .SYNOPSIS
     Plans the link changes on one container for an import limited to some GPOs
-    (gpo_import's gpo_names): the selected GPOs' links match the manifest's,
+    (gpo_sync_import's gpo_names): the selected GPOs' links match the manifest's,
     and no other link is touched.
 
     .DESCRIPTION

@@ -17,13 +17,24 @@ status. Problem statement + decisions: `docs/design.md`. Two roles:
 
 - `roles/gpo_backup` — export GPOs + manifest from a domain into a Git
   working copy (zip over WinRM, content-hash state so only changes ship).
-  The export itself is the `gpo_export` module (0.5.0), which the role calls;
-  the role fetches and unpacks the zip on the controller.
+  The export itself is the `gpo_sync_export` module (0.5.0, named
+  `gpo_export` until 0.18.0), which the role calls; the role fetches and
+  unpacks the zip on the controller.
 - `roles/gpo_import` — converge a target domain on the repo: stages the
-  export and runs the module `plugins/modules/gpo_import` (0.6.0; it was the
-  role's `files/import_gpos.ps1` through `win_powershell` before), which
-  imports and reconciles topology, migration-table aware, with real check
-  and diff mode. `gpo_import_report_only` is check mode on that task.
+  export and runs the module `plugins/modules/gpo_sync_import` (0.6.0, named
+  `gpo_import` until 0.18.0; it was the role's `files/import_gpos.ps1`
+  through `win_powershell` before), which imports and reconciles topology,
+  migration-table aware, with real check and diff mode.
+  `gpo_import_report_only` is check mode on that task.
+
+The two modules and the two roles are the **sync layer**: a whole-domain
+mirror (manifest, topology, state files). Owner decision of 2026-11-05
+(issue #64): it's kept but not a priority, and its open defects (#4, #5,
+#8, #9) are deprioritized. 0.18.0 renamed its modules `gpo_sync_export` and
+`gpo_sync_import`, with no change in behaviour, so the names `gpo_export`
+and `gpo_import` can become content-only primitives: settings content by
+GPO name and path, no links, WMI filters, security filtering, status or
+inheritance, and never a deletion.
 
 Its second area is **failover clustering** (0.3.0):
 
@@ -108,8 +119,8 @@ role):
   backup folder), an unchanged domain shipping nothing, a check-mode run of
   the role predicting a changed GPO with the fetch skipped and the repo
   untouched, and that GPO then shipping alone with its repo folder replaced.
-  Then the `gpo_export` module's integration target
-  (`tests/integration/targets/gpo_export`, with `setup_gpo_lab`), which owns
+  Then the `gpo_sync_export` module's integration target
+  (`tests/integration/targets/gpo_sync_export`, with `setup_gpo_lab`), which owns
   the module's checks since 0.10.0: check mode against a missing working
   directory (every GPO planned, the parent probed, nothing created), the
   real export (the zip's layout, the state file, the manifest against the
@@ -129,8 +140,8 @@ role):
   idempotence, verify (the domain read through GPMC, the effective password
   policy, a check-mode re-plan of the role with zero actions and no change,
   the re-export round trip) and an import through a migration table staged
-  from a relative path. Then the `gpo_import` module's integration target
-  (`tests/integration/targets/gpo_import`, with `setup_gpo_lab`), which owns
+  from a relative path. Then the `gpo_sync_import` module's integration target
+  (`tests/integration/targets/gpo_sync_import`, with `setup_gpo_lab`), which owns
   the module's checks since 0.10.0: the authored domain exported and
   unpacked into a source directory of its own, the first plan (every GPO
   "never imported", the preflight facts, no state file, no probe file, the
@@ -227,7 +238,7 @@ Not covered by the lab yet (issue #16 unless noted):
 
 - importing into a *different* domain: link targets rebased onto another
   root DN, domain-relative trustee names, a migration table between domains
-- `--check` runs of a whole play (`gpo_import`'s module runs in check mode
+- `--check` runs of a whole play (the `gpo_import` role's module runs in check mode
   in the lab, through `gpo_import_report_only` and `apply: {check_mode:
   true}` on the role's include; `gpo_backup`'s check mode is covered by its
   scenario)
@@ -268,8 +279,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   `ConvertFrom-Json -AsHashtable`). A script that takes parameters, returns a
   structured result and needs `check_mode: false` to compute its report is
   module-shaped: make it a module with real check-mode support, the way
-  `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28) and
-  `import_gpos.ps1` became `gpo_import` (0.6.0, issue #29) and
+  `backup_gpos.ps1` became `gpo_export` (0.5.0, issue #28; `gpo_sync_export`
+  since 0.18.0) and `import_gpos.ps1` became `gpo_import` (0.6.0, issue #29;
+  `gpo_sync_import` since 0.18.0) and
   `converge_cluster.ps1` became `wsfc_cluster` (0.7.0, issue #27).
 - The GPO modules share `plugins/module_utils/_GpoCommon.psm1` (0.10.0; it
   was a `# region common` block copied into both): the pure logic, with no
@@ -323,7 +335,7 @@ lab to the scripts — and record the surprise below as a gotcha.
 - **Check mode writes nothing on the management host** (owner rule,
   2026-11-01, issue #39): no working directory, no staging, no scratch
   files, no temp path, however short-lived. A module that needs data a write
-  would produce reads the live source instead: `gpo_export` hashes each GPO's
+  would produce reads the live source instead: `gpo_sync_export` hashes each GPO's
   Group Policy Template under `\\<dc>\SYSVOL\<domain>\Policies\{guid}`
   (minus `gpt.ini`) in both modes, so check mode and the real run decide from
   the same hash and `Backup-GPO` runs only for the GPOs that ship (0.8.0).
@@ -331,7 +343,7 @@ lab to the scripts — and record the surprise below as a gotcha.
   export target can be written**, with a uniquely named probe file in the
   target directory (or its nearest existing parent) that is removed at once,
   reported under `preflight` with whether AD and GPMC answered, and a clear
-  failure when the probe fails. The gpo_import module does the same for its
+  failure when the probe fails. The gpo_sync_import module does the same for its
   state directory, and also validates the manifest, backup folders and
   migration table and reads the domain, GPMC, links and WMI filters (issue
   #41, 0.9.0).
@@ -400,7 +412,7 @@ lab to the scripts — and record the surprise below as a gotcha.
   under pwsh on Linux up to `Create` to read the spec. They support check
   mode, and stay Windows PowerShell 5.1-compatible and pslint-clean like the
   roles' scripts. A module's structured warnings go in a key of their own
-  (`gpo_import` returns `notices`) and through `$module.Warn()`: `warnings`
+  (`gpo_sync_import` returns `notices`) and through `$module.Warn()`: `warnings`
   is a reserved result key that Ansible consumes. The IIS modules use IIS's native configuration API
   (`Microsoft.ApplicationHost.AdminManager`/`WritableAdminManager`, what
   `appcmd.exe` uses), which ships with the `Web-Server` feature itself, and
@@ -465,7 +477,7 @@ lab to the scripts — and record the surprise below as a gotcha.
   the role's cluster, builds its own and removes it, reading through
   `setup_wsfc/files/cluster_state.ps1`) and then `wsfc_group` (it builds its
   own cluster with `wsfc_cluster`, adds a test group, and reads it through
-  `setup_wsfc/files/group_state.ps1`), `gpo_export` from `roles/gpo_backup`
+  `setup_wsfc/files/group_state.ps1`), `gpo_sync_export` from `roles/gpo_backup`
   and `gpo_import` from `roles/gpo_import` (both need the promoted, seeded
   domain; `setup_gpo_lab` reads the domain's name from the host, checks the
   fixture is seeded, never seeds, since the fixture reports a change on every
@@ -475,9 +487,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   state under `C:\ProgramData\gpo-iac`). The role scenarios keep role
   behaviour (staging, fetch/unpack, variables, `*_report_only`, the
   converge/idempotence of the role) and leave the module's behaviour to the
-  targets. `gpo_import`'s target builds its source with `gpo_export`
+  targets. `gpo_sync_import`'s target builds its source with `gpo_sync_export`
   (the manifest is the two modules' contract) and its oracle is
-  `read_domain.ps1`, so a `gpo_export` bug can't hide a `gpo_import` one.
+  `read_domain.ps1`, so a `gpo_sync_export` bug can't hide a `gpo_sync_import` one.
   `setup_iis` creates the test website and application with
   `community.windows`'s IIS modules; that collection is a **test dependency**
   in `tests/integration/requirements.yml` (installed by ansible-test and by
@@ -748,12 +760,12 @@ ansible-galaxy collection build --force
   nothing). Matters for the "adopt without reimporting" design (issue #9).
 - **`Import-GPO` restores GPO status** (the computer/user halves), unlike
   links, filtering and the WMI filter link.
-- **`gpo_export`'s `gpo_names` is ship scope only.** The manifest loop goes
+- **`gpo_sync_export`'s `gpo_names` is ship scope only.** The manifest loop goes
   over `$all`, not `$live`, and a filtered run carries every state entry it
   doesn't rewrite (`Get-GpoExportScope`). Building the manifest from the
   selected GPOs only, to save the `Get-GPPermission` calls, reopens issue
   #37: the repo's manifest loses the other GPOs and the next full run
-  reports `manifest_changed` on an unchanged domain. `gpo_import`'s
+  reports `manifest_changed` on an unchanged domain. `gpo_sync_import`'s
   `gpo_names` scopes the WMI filters and links as well (issue #57), so the
   whole-domain manifest doesn't drag the other GPOs into a subset import.
 - **A subset import's link orders are absolute.** `New-GPLink`/`Set-GPLink
@@ -872,7 +884,7 @@ ansible-galaxy collection build --force
 - `Import-GPO` **replaces the whole GPO** and bumps its version (clients
   reprocess). That's why both roles hash content and keep state files
   (`C:\ProgramData\gpo-iac\*-state-<domain>.json` on the management host) —
-  don't "simplify" that away. `gpo_export`'s state hashes the live SYSVOL
+  don't "simplify" that away. `gpo_sync_export`'s state hashes the live SYSVOL
   template (`hash_basis: sysvol`, 0.8.0); a state file without that key came
   from the backup-basis hash of 0.5.0–0.7.x and never matches, so the first
   export after upgrading re-ships every GPO once.
