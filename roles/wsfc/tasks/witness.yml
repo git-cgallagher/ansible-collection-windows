@@ -25,7 +25,7 @@
       The witness share on {{ wsfc_witness_share.host }} and the quorum are
       planned once cluster {{ wsfc_name }} exists
   run_once: true
-  when: wsfc_run.cno.sid | default('') | length == 0
+  when: wsfc_run.actions | default([]) | select('match', '^create cluster ') | list | length > 0
 
 - name: Provision the witness share and set the quorum
   when: wsfc_run.cno.sid | default('') | length > 0

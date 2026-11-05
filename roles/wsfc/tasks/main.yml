@@ -28,8 +28,9 @@
       - wsfc_administrative_access_point == 'ActiveDirectoryAndDns'
     fail_msg: >-
       wsfc_witness_share needs a host from the inventory and a path, a wsfc_quorum
-      of type file_share_witness whose path is \\server\share, with no credential,
-      and the ActiveDirectoryAndDns access point
+      of type file_share_witness whose path is \\server\share (no folder under the
+      share, no trailing backslash), with no credential, and the
+      ActiveDirectoryAndDns access point
     quiet: true
   when: wsfc_witness_share | length > 0
 

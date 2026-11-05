@@ -93,7 +93,9 @@
       ansible.builtin.assert:
         that:
           - lab_a.share_path == lab_cluster.witness_path
-          - lab_a.share_access == lab_a.cno_account ~ ':Allow:Full'
+          # The CNO has Full, and the share's default Everyone entry is gone.
+          - lab_a.cno_account ~ ':Allow:Full' in lab_a.share_access.split(';')
+          - "'Everyone' not in lab_a.share_access"
           - lab_a.folder_rights == 'FullControl'
           - lab_a.machine_account_quota == 0
           - lab_a.cno_create_rules >= 1
