@@ -11,6 +11,11 @@ $quorum = Get-ClusterQuorum -Cluster $conn
 $group = Get-ClusterGroup -Cluster $conn -Name $FileServer
 $owner = [string]$group.OwnerNode.Name
 $coreGroup = Get-ClusterGroup -Cluster $conn -Name 'Cluster Group'
+$witnessType = [string]$quorum.QuorumResource.ResourceType
+$witnessPath = ''
+if ($witnessType -eq 'File Share Witness') {
+    $witnessPath = [string]($quorum.QuorumResource | Get-ClusterParameter -Name SharePath).Value
+}
 
 # Sites from the topology XML, as "site:node,node" strings (win_powershell
 # renders deeper nesting as type names).
@@ -60,6 +65,8 @@ $Ansible.Result = @{
     auto_assign_node_site = [string]$cluster.AutoAssignNodeSite
     witness = [string]$quorum.QuorumResource.Name
     witness_state = [string]$quorum.QuorumResource.State
+    witness_type = $witnessType
+    witness_path = $witnessPath
     # The core group, which wsfc's groups and failover entry points act on.
     cluster_group_owner = [string]$coreGroup.OwnerNode.Name
     cluster_group_state = [string]$coreGroup.State

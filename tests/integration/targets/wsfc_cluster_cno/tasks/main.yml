@@ -1,0 +1,134 @@
+---
+# Integration tests for git_cgallagher.windows.wsfc_cluster's
+# cno_create_computer_objects, which needs a domain cluster. wsfc_fileserver's
+# three-VM scenario runs this from verify.yml (ANSIBLE_ROLES_PATH) on one node
+# of its cluster, whose converge already granted the right. The domain side
+# is read and changed on the domain controller through files/cno_right.ps1,
+# never through the module under test. The grant runs in check mode first
+# (predicts it, writes nothing), then for real, then again (no change).
+#
+# Variables: wsfc_cluster_cno_name (the cluster), wsfc_cluster_cno_nodes (its
+# nodes' computer names), wsfc_cluster_cno_dc (the domain controller's
+# inventory name) and wsfc_cluster_cno_become_user / _password (a domain
+# admin: the module reaches Active Directory from the node, the double hop).
+- name: Test cno_create_computer_objects, leaving the right granted
+  vars:
+    ansible_become_password: "{{ wsfc_cluster_cno_become_password }}"
+    wsfc_cluster_cno_script: "{{ lookup('ansible.builtin.file', 'cno_right.ps1') }}"
+  block:
+    - name: Remove the right out-of-band
+      ansible.windows.win_powershell:
+        script: "{{ wsfc_cluster_cno_script }}"
+        parameters:
+          Cluster: "{{ wsfc_cluster_cno_name }}"
+          Remove: true
+      delegate_to: "{{ wsfc_cluster_cno_dc }}"
+      register: wsfc_cluster_cno_removed
+
+    - name: Plan the grant (check mode)
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ wsfc_cluster_cno_name }}"
+        nodes: "{{ wsfc_cluster_cno_nodes }}"
+        validate: false
+        cno_create_computer_objects: true
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ wsfc_cluster_cno_become_user }}"
+      check_mode: true
+      diff: true
+      register: wsfc_cluster_cno_check
+
+    - name: Read the right after the plan
+      ansible.windows.win_powershell:
+        script: "{{ wsfc_cluster_cno_script }}"
+        parameters:
+          Cluster: "{{ wsfc_cluster_cno_name }}"
+      delegate_to: "{{ wsfc_cluster_cno_dc }}"
+      register: wsfc_cluster_cno_after_check
+
+    - name: Check check mode planned the grant and wrote nothing
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_cno_removed.result.rules == 0
+          - wsfc_cluster_cno_check is changed
+          - wsfc_cluster_cno_check.actions == [wsfc_cluster_cno_grant_action]
+          - wsfc_cluster_cno_check.diff.prepared == wsfc_cluster_cno_grant_action
+          - wsfc_cluster_cno_check.cno.sid == wsfc_cluster_cno_removed.result.sid
+          - (wsfc_cluster_cno_check.cno.account | upper).endswith('\\' ~ wsfc_cluster_cno_name | upper ~ '$')
+          - wsfc_cluster_cno_check.cno.container == wsfc_cluster_cno_removed.result.container
+          - (wsfc_cluster_cno_check.cno.distinguished_name | upper) == ('CN=' ~ wsfc_cluster_cno_name ~ ',' ~ wsfc_cluster_cno_removed.result.container) | upper
+          - wsfc_cluster_cno_after_check.result.rules == 0
+        fail_msg: "{{ wsfc_cluster_cno_check }} / {{ wsfc_cluster_cno_after_check.result }}"
+      vars:
+        wsfc_cluster_cno_grant_action: >-
+          grant {{ wsfc_cluster_cno_check.cno.account }} Create Computer objects on {{ wsfc_cluster_cno_removed.result.container }}
+
+    - name: Grant the right
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ wsfc_cluster_cno_name }}"
+        nodes: "{{ wsfc_cluster_cno_nodes }}"
+        validate: false
+        cno_create_computer_objects: true
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ wsfc_cluster_cno_become_user }}"
+      register: wsfc_cluster_cno_grant
+
+    - name: Read the right after the grant
+      ansible.windows.win_powershell:
+        script: "{{ wsfc_cluster_cno_script }}"
+        parameters:
+          Cluster: "{{ wsfc_cluster_cno_name }}"
+      delegate_to: "{{ wsfc_cluster_cno_dc }}"
+      register: wsfc_cluster_cno_after_grant
+
+    # All = This object and all descendant objects, as Microsoft's guide does.
+    - name: Check the grant made exactly the planned change
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_cno_grant is changed
+          - wsfc_cluster_cno_grant.actions == wsfc_cluster_cno_check.actions
+          - wsfc_cluster_cno_after_grant.result.rules == 1
+          - wsfc_cluster_cno_after_grant.result.inheritance == ['All']
+        fail_msg: "{{ wsfc_cluster_cno_grant }} / {{ wsfc_cluster_cno_after_grant.result }}"
+
+    - name: Grant the right again
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ wsfc_cluster_cno_name }}"
+        nodes: "{{ wsfc_cluster_cno_nodes }}"
+        validate: false
+        cno_create_computer_objects: true
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ wsfc_cluster_cno_become_user }}"
+      register: wsfc_cluster_cno_again
+
+    - name: Leave the right alone with the option off
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ wsfc_cluster_cno_name }}"
+        nodes: "{{ wsfc_cluster_cno_nodes }}"
+        validate: false
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ wsfc_cluster_cno_become_user }}"
+      register: wsfc_cluster_cno_off
+
+    - name: Read the right after the repeats
+      ansible.windows.win_powershell:
+        script: "{{ wsfc_cluster_cno_script }}"
+        parameters:
+          Cluster: "{{ wsfc_cluster_cno_name }}"
+      delegate_to: "{{ wsfc_cluster_cno_dc }}"
+      register: wsfc_cluster_cno_after_repeats
+
+    - name: Check the repeats changed nothing and the right stayed
+      ansible.builtin.assert:
+        that:
+          - wsfc_cluster_cno_again is not changed
+          - wsfc_cluster_cno_again.actions == []
+          - wsfc_cluster_cno_off is not changed
+          - wsfc_cluster_cno_off.cno.sid == wsfc_cluster_cno_check.cno.sid
+          # The names are only looked up for the grant.
+          - wsfc_cluster_cno_off.cno.distinguished_name == ''
+          - wsfc_cluster_cno_after_repeats.result.rules == 1
+        fail_msg: "{{ wsfc_cluster_cno_again }} / {{ wsfc_cluster_cno_off }} / {{ wsfc_cluster_cno_after_repeats.result }}"

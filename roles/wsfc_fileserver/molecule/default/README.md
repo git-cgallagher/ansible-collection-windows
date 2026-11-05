@@ -9,7 +9,7 @@ from `roles/wsfc_fileserver` with `molecule test`. CI runs it as the
 
 | VM | Lab address | Role in the lab |
 |---|---|---|
-| `dc01` (DC01) | 10.42.0.10 | First DC of `gpolab.test`, iSCSI target for the shared disks, the file server's client |
+| `dc01` (DC01) | 10.42.0.10 | First DC of `gpolab.test`, iSCSI target for the shared disks, the cluster's file share witness, the file server's client |
 | `node1` (NODE1) | 10.42.0.11 | Cluster node |
 | `node2` (NODE2) | 10.42.0.12 | Cluster node |
 
@@ -27,14 +27,17 @@ by their lab addresses. Each disk has the same UniqueId on both nodes, so
 | Step | What happens | What's asserted |
 |---|---|---|
 | create | Boot the three VMs side by side | WinRM/PSRP answers on each |
-| prepare | Quiet every VM; promote dc01 (renamed DC01); install the iSCSI target and serve both disks; on the nodes, use dc01 for DNS, give the lab NIC a default gateway (New-Cluster puts a static address only on a network with one), rename and join the domain, open file sharing, connect to the iSCSI target | Both nodes see both disks |
-| converge | Read the disks' UniqueIds; `wsfc` builds cluster `FSCLU` (10.42.0.100, Active Directory access point) after `Test-Cluster` with storage tests, takes the management network out of cluster use, formats and adds both disks (`FS Data` as S:), sets the disk witness, puts each node in its own site (DC1 preferred) and takes NODE2's vote; `wsfc`'s `groups` entry point gives `Cluster Group` preferred owners and a description; `wsfc_fileserver` builds file server `FSLAB` (10.42.0.101) on `FS Data` with shares `Projects` and `AppData` | — |
+| prepare | Quiet every VM; promote dc01 (renamed DC01); install the iSCSI target and serve both disks; on the nodes, use dc01 for DNS, give the lab NIC a default gateway (New-Cluster puts a static address only on a network with one), rename and join the domain, open file sharing, connect to the iSCSI target; set the domain's machine account quota to 0 | Both nodes see both disks |
+| converge | Read the disks' UniqueIds; `wsfc` builds cluster `FSCLU` (10.42.0.100, Active Directory access point) after `Test-Cluster` with storage tests, takes the management network out of cluster use, formats and adds both disks (`FS Data` as S:), grants the cluster name object Create Computer objects on its container, provisions the file share witness `\\DC01.gpolab.test\FSCLU-Witness` on dc01 and sets it, puts each node in its own site (DC1 preferred) and takes NODE2's vote; `wsfc`'s `groups` entry point gives `Cluster Group` preferred owners and a description; `wsfc_fileserver` builds file server `FSLAB` (10.42.0.101) on `FS Data` with shares `Projects` and `AppData` | — |
 | idempotence | Run both roles again | No task reports a change |
-| verify | Read the cluster and the file server | Two nodes up; the cluster address; disk witness; both disks online; network roles; sites, the preferred site and votes; `Cluster Group`'s preferred owners and description; the file server online with its address, preferred owners, disk and both shares' paths, settings and exact permissions |
+| verify | Read the cluster and the file server | Two nodes up; the cluster address; the file share witness online at its path; both disks online; network roles; sites, the preferred site and votes; `Cluster Group`'s preferred owners and description; the file server online with its address, preferred owners, disk and both shares' paths, settings and exact permissions |
+| | Read the witness share and the domain on dc01 | The share holds the folder and grants only the CNO (Full), the folder grants the CNO FullControl; the quota is 0, the CNO may create computer objects in its container, and FSLAB's computer object is in that container with no `ms-DS-CreatorSID` (so the right created it, not a quota) |
 | | `tasks_from: validate` from dc01 | Every share takes a write and returns it |
 | | `tasks_from: failover`, then back to the first owner | The role moved each time, came online, and the markers written before each move read back after it |
 | | Change a share's description out-of-band, run the role report-only, then for real | The plan has exactly that fix; the real run makes it |
-| | `wsfc`'s `tasks_from: failover` on `Cluster Group`, last | The group moved to the other node and back, each move timed; afterwards it's online on its first owner, both nodes are up and the disk witness is online |
+| | `wsfc`'s `tasks_from: failover` on `Cluster Group` | The group moved to the other node and back, each move timed; afterwards it's online on its first owner, both nodes are up and the file share witness is online |
+| | `wsfc_cluster`'s domain integration target ([tests/integration/targets/wsfc_cluster_cno](../../../../tests/integration/targets/wsfc_cluster_cno)) on node1 | With the CNO's right removed on dc01: check mode plans the grant and writes nothing, the grant adds one rule (This object and all descendant objects), a repeat changes nothing, and the option off leaves the right in place |
+| | `wsfc` again with `wsfc_quorum` a disk witness, last | The only action moves the quorum to the `Witness` disk; it's online, both nodes are up and the file server stays online |
 
 The roles' variables are in [molecule.yml](molecule.yml) (`group_vars`
 `lab_nodes`), so converge and verify run them with the same ones. Cluster

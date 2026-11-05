@@ -35,6 +35,14 @@ wsfc_validate_ignore: []
 # Quorum witness; {} = leave the quorum New-Cluster chose.
 wsfc_quorum: {}
 
+# Provision wsfc_quorum's file share witness on a Windows host in inventory
+# ({host, path, description}); {} = the share already exists.
+wsfc_witness_share: {}
+
+# Grant the cluster's computer account (CNO) Create Computer objects on its
+# OU, for clustered roles' computer objects; false = leave it.
+wsfc_cno_create_computer_objects: false
+
 # Cluster networks to rename / give a role, matched by subnet.
 wsfc_networks: []
 

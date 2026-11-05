@@ -1,7 +1,8 @@
 ---
 # Builds what a real two-node file server cluster stands on: a domain, two
-# domain-joined nodes and shared disks. converge.yml then builds the cluster
-# (wsfc) and the file server (wsfc_fileserver) on top.
+# domain-joined nodes and shared disks, and a domain with no machine account
+# quota. converge.yml then builds the cluster (wsfc, with its file share
+# witness on dc01) and the file server (wsfc_fileserver) on top.
 #
 # The shared disks are iSCSI: dc01 runs the iSCSI Target Server role service
 # and serves two virtual disks over the lab network, and both nodes connect to
@@ -181,3 +182,23 @@
       ansible.builtin.assert:
         that: lab_initiator.output | length == lab_cluster.disks | length
         fail_msg: "{{ inventory_hostname }} sees {{ lab_initiator.output | to_json }}"
+
+# With no machine account quota, the cluster name object (CNO) can create the
+# file server's computer object (FSLAB) only through the right wsfc grants
+# (wsfc_cno_create_computer_objects), which verify.yml then proves. After the
+# joins, which a domain admin makes either way.
+- name: Take away the domain's machine account quota
+  hosts: lab_dc
+  gather_facts: false
+  tasks:
+    - name: Set ms-DS-MachineAccountQuota to 0
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $domain = (Get-ADDomain).DistinguishedName
+          $quota = (Get-ADObject -Identity $domain -Properties 'ms-DS-MachineAccountQuota').'ms-DS-MachineAccountQuota'
+          if ([int]$quota -ne 0) {
+              Set-ADObject -Identity $domain -Replace @{ 'ms-DS-MachineAccountQuota' = 0 }
+              $Ansible.Changed = $true
+          }

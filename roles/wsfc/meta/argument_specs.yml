@@ -6,6 +6,8 @@ argument_specs:
       - Installs Failover Clustering on every host in the play, then, from one managing node, validates the nodes
         (C(Test-Cluster)), creates the cluster (C(New-Cluster)) or adds the nodes it is missing, and converges its
         quorum witness, network names and roles, sites, node votes, common properties and named shared disks.
+      - Optionally provisions the file share witness on a Windows host in the inventory (O(wsfc_witness_share)), and
+        lets the cluster name object create computer objects (O(wsfc_cno_create_computer_objects)).
       - Lays the foundation that file servers, SQL Server failover cluster instances and Always On availability groups
         sit on. It doesn't install SQL Server, create file shares or availability groups; the role README says what
         each of those workloads needs from it.
@@ -154,6 +156,51 @@ argument_specs:
                 no_log: true
                 description:
                   - The account's password. Keep it in a vault.
+      wsfc_witness_share:
+        type: dict
+        default: {}
+        description:
+          - Provisions the O(wsfc_quorum) file share witness on a Windows host in the inventory, for example a server in
+            a third datacenter. Empty means the share already exists.
+          - The role creates or converges the cluster without the quorum first, because the cluster name object (CNO)
+            the share is for only exists once C(New-Cluster) has run. It then creates the folder, gives the CNO full
+            control of it, shares it with the CNO only (replacing every other share permission), checks that each node
+            reaches the host on TCP 445, and sets the quorum.
+          - Needs O(wsfc_quorum.type=file_share_witness) with a path of the form C(\\\\server\\share) (the share's
+            name) and no O(wsfc_quorum.credential), and O(wsfc_administrative_access_point=ActiveDirectoryAndDns).
+          - The host looks the CNO up through its own domain controller, which right after the cluster is created may
+            not have it yet. The share task retries for up to ten minutes; past that (sites that replicate on a
+            schedule), run the play again once Active Directory has replicated.
+          - A share on a NAS or outside the domain isn't provisioned; give O(wsfc_quorum.credential) instead.
+        options:
+          # Not required here, like wsfc_quorum's type: tasks/main.yml
+          # requires both whenever the share is set.
+          host:
+            type: str
+            description:
+              - The witness host's name in the inventory. The role connects to it with its own connection settings
+                and needs local administrator rights there.
+          path:
+            type: str
+            description:
+              - The folder to share, on the witness host, for example V(C:\\ClusterWitness\\SQLCLU01). Created when
+                missing.
+          description:
+            type: str
+            description:
+              - The share's description; empty means C(File share witness for cluster <wsfc_name>).
+      wsfc_cno_create_computer_objects:
+        type: bool
+        default: false
+        description:
+          - Grant the cluster name object (CNO, the cluster's computer account) the C(Create Computer objects)
+            permission on the OU or container that holds it, as Microsoft's guide to prestaging cluster objects does.
+          - Clustered roles then create their own computer objects through the CNO, for example a SQL Server failover
+            cluster instance's network name or an availability group listener. Without it they fail wherever the
+            domain's machine account quota (C(ms-DS-MachineAccountQuota)) is 0 or used up.
+          - V(false) leaves the permission alone; the role never removes it. Needs
+            O(wsfc_administrative_access_point=ActiveDirectoryAndDns) and a O(wsfc_become_user) allowed to change the
+            container's permissions, typically a domain admin.
       wsfc_networks:
         type: list
         elements: dict

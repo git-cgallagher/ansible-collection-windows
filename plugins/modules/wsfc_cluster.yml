@@ -79,6 +79,22 @@ DOCUMENTATION:
         - Directory on the managing node for C(Test-Cluster) reports. Created when missing.
       type: str
       default: C:\ProgramData\wsfc-iac
+    cno_create_computer_objects:
+      description:
+        - Grant the cluster name object (CNO, the cluster's computer account in Active Directory) the C(Create Computer
+          objects) permission on the OU or container that holds it, for that container and everything below it, as
+          Microsoft's guide to prestaging cluster objects does.
+        - Clustered roles then create their own computer objects through the CNO, for example a SQL Server failover
+          cluster instance's network name or an availability group listener. Without it they fail wherever the domain's
+          machine account quota (C(ms-DS-MachineAccountQuota)) is 0 or used up.
+        - V(false) leaves the container's permissions alone; the module never removes the permission.
+        - Needs a cluster whose name is in Active Directory (O(administrative_access_point=ActiveDirectoryAndDns)) and an
+          account allowed to change the container's permissions, typically a domain admin. The module writes on the
+          domain controller that created the CNO.
+        - Where that can't be delegated, prestage each role's computer object instead and give the CNO full control of it.
+      type: bool
+      default: false
+      version_added: 0.18.0
     quorum:
       description:
         - The quorum configuration. Leave it out, or leave O(quorum.type) out, to keep the quorum C(New-Cluster) chose
@@ -278,6 +294,8 @@ DOCUMENTATION:
       first refuses when a node still has a cluster database (C(Cluster\CLUSDB)) that no cluster answered for. Run
       C(Clear-ClusterNode) on such a node if its configuration is stale.
     - A disk is only formatted when O(disks[].initialize) is set B(and) it is still RAW.
+    - The cluster name object is looked up through the managing node's domain controller, which right after
+      C(New-Cluster) may not have it yet. For a cluster the run creates, the module retries for up to two minutes.
   seealso:
     - name: The wsfc role
       description: Installs the feature on every node and runs this module once, from the managing node.
@@ -339,6 +357,8 @@ EXAMPLES: |
       properties:
         CrossSiteDelay: 1000
         CrossSiteThreshold: 20
+      # The availability group listeners' computer objects, where the machine account quota is 0.
+      cno_create_computer_objects: true
       quorum:
         type: file_share_witness
         path: \\witness.example.com\witness$\AGCLU02
@@ -371,6 +391,36 @@ RETURN:
     returned: always
     type: bool
     sample: true
+  cno:
+    description:
+      - The cluster name object, the cluster's computer account in Active Directory. Empty when the cluster's name isn't
+        in Active Directory (an administrative access point of C(Dns) or C(None)), and in check mode before the cluster
+        exists.
+      - O(cno_create_computer_objects) also fills in RV(cno.distinguished_name) and RV(cno.container).
+    returned: always
+    type: dict
+    version_added: 0.18.0
+    contains:
+      account:
+        description: The account's name, as C(DOMAIN\\NAME$).
+        type: str
+        sample: EXAMPLE\AGCLU02$
+      sid:
+        description: The account's SID.
+        type: str
+        sample: S-1-5-21-1004336348-1177238915-682003330-1105
+      creating_dc:
+        description: The domain controller the account was created on.
+        type: str
+        sample: dc01.example.com
+      distinguished_name:
+        description: The account's distinguished name, when O(cno_create_computer_objects) is set.
+        type: str
+        sample: CN=AGCLU02,OU=Clusters,DC=example,DC=com
+      container:
+        description: The OU or container that holds the account, when O(cno_create_computer_objects) is set.
+        type: str
+        sample: OU=Clusters,DC=example,DC=com
   actions:
     description:
       - Every action the module took, in order, or planned in check mode. Empty when nothing needed changing.

@@ -355,6 +355,19 @@
       failed_when: >-
         'type is disk_witness but all of the following are missing: disk' not in (wsfc_cluster_bad_quorum.msg | default(''))
 
+    # Access point None: no cluster name, so no cluster name object. The
+    # domain path is tested by wsfc_cluster_cno, in the three-VM lab.
+    - name: Ask a cluster without a cluster name object for the CNO's right
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ setup_wsfc_name }}"
+        nodes: ["{{ ansible_facts.hostname }}"]
+        administrative_access_point: None
+        validate: false
+        cno_create_computer_objects: true
+      register: wsfc_cluster_no_cno
+      failed_when: >-
+        'needs a cluster whose name is in Active Directory' not in (wsfc_cluster_no_cno.msg | default(''))
+
     - name: Read the cluster after the failures
       ansible.windows.win_powershell:
         script: "{{ setup_wsfc_read_script }}"
@@ -367,6 +380,8 @@
           - wsfc_cluster_wrong_name is not changed
           - wsfc_cluster_bad_property is not changed
           - wsfc_cluster_bad_quorum is not changed
+          - wsfc_cluster_no_cno is not changed
+          - wsfc_cluster_no_cno.cno == {}
           - wsfc_cluster_read_after_errors.result == wsfc_cluster_read_converged.result
         fail_msg: "{{ wsfc_cluster_read_after_errors.result | string }}"
 

@@ -1,0 +1,113 @@
+---
+# Provisions the file share witness on a Windows host in the inventory
+# (wsfc_witness_share), then sets the quorum to it. main.yml created or
+# converged the cluster without the quorum first: the share is for the
+# cluster name object (CNO), which only exists once New-Cluster has run.
+#
+# The folder's permission names the CNO by SID, which needs no lookup. The
+# share's does need one, through the witness host's own domain controller,
+# which right after New-Cluster may not have the CNO yet, so sharing retries
+# for up to ten minutes.
+
+- name: Require the cluster name object
+  ansible.builtin.assert:
+    that: wsfc_run.cno.sid | default('') | length > 0
+    fail_msg: >-
+      Cluster {{ wsfc_name }} has no cluster name object to share the witness
+      with; see the cluster task's warnings
+    quiet: true
+  run_once: true
+  when: not (wsfc_report_only | bool or ansible_check_mode)
+
+- name: Note that the witness share waits for the cluster
+  ansible.builtin.debug:
+    msg: >-
+      The witness share on {{ wsfc_witness_share.host }} and the quorum are
+      planned once cluster {{ wsfc_name }} exists
+  run_once: true
+  when: wsfc_run.cno.sid | default('') | length == 0
+
+- name: Provision the witness share and set the quorum
+  when: wsfc_run.cno.sid | default('') | length > 0
+  vars:
+    # \\server\share, split on its backslashes: ['', '', server, share].
+    wsfc_witness_unc: '{{ wsfc_quorum.path.split("\\") }}'
+  block:
+    - name: Look for the witness folder
+      ansible.windows.win_stat:
+        path: "{{ wsfc_witness_share.path }}"
+      delegate_to: "{{ wsfc_witness_share.host }}"
+      run_once: true
+      check_mode: false
+      register: wsfc_witness_folder
+
+    - name: Create the witness folder
+      ansible.windows.win_file:
+        path: "{{ wsfc_witness_share.path }}"
+        state: directory
+      delegate_to: "{{ wsfc_witness_share.host }}"
+      run_once: true
+      check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+
+    # A plan that creates the folder has no permission or share to check yet.
+    - name: Give the cluster name object full control of the folder
+      ansible.windows.win_acl:
+        path: "{{ wsfc_witness_share.path }}"
+        user: "{{ wsfc_run.cno.sid }}"
+        rights: FullControl
+        type: allow
+        state: present
+        inherit: ContainerInherit, ObjectInherit
+        propagation: None
+      delegate_to: "{{ wsfc_witness_share.host }}"
+      run_once: true
+      check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+      when: wsfc_witness_folder.stat.exists or not (wsfc_report_only | bool or ansible_check_mode)
+
+    # Replaces every other share permission (win_share's rule_action set).
+    - name: Share the folder with the cluster name object only
+      ansible.windows.win_share:
+        name: "{{ wsfc_witness_unc[3] }}"
+        path: "{{ wsfc_witness_share.path }}"
+        description: "{{ wsfc_witness_share.description | default('File share witness for cluster ' ~ wsfc_name, true) }}"
+        full: "{{ wsfc_run.cno.account }}"
+        state: present
+      delegate_to: "{{ wsfc_witness_share.host }}"
+      run_once: true
+      check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
+      when: wsfc_witness_folder.stat.exists or not (wsfc_report_only | bool or ansible_check_mode)
+      register: wsfc_witness_shared
+      until: wsfc_witness_shared is not failed
+      retries: 20
+      delay: 30
+
+    # Read-only, so plans run it too: a firewall between a datacenter and the
+    # witness site shows up here rather than as a failed quorum change.
+    - name: Check every node reaches the witness host on TCP 445 (SMB)
+      ansible.windows.win_wait_for:
+        host: "{{ wsfc_witness_unc[2] }}"
+        port: 445
+        timeout: 60
+      check_mode: false
+
+    # Only what the quorum needs; the first run converged the rest. Same
+    # node names as main.yml's run.
+    - name: Set the quorum to the witness share
+      git_cgallagher.windows.wsfc_cluster:
+        name: "{{ wsfc_name }}"
+        nodes: "{{ wsfc_node_names }}"
+        administrative_access_point: "{{ wsfc_administrative_access_point }}"
+        validate: false
+        quorum: "{{ wsfc_quorum }}"
+      vars:
+        wsfc_node_names: >-
+          {{ wsfc_nodes if wsfc_nodes | length > 0 else
+             ansible_play_hosts | map('extract', hostvars, ['wsfc_computer', 'output', 0]) | list }}
+        ansible_become_password: "{{ wsfc_become_password }}"
+      become: "{{ wsfc_become_user | length > 0 }}"
+      become_method: ansible.builtin.runas
+      become_user: "{{ wsfc_become_user }}"
+      delegate_to: "{{ wsfc_manage_node if wsfc_manage_node | length > 0 else ansible_play_hosts[0] }}"
+      run_once: true
+      register: wsfc_quorum_run
+      check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"

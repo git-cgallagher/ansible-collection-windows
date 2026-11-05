@@ -14,13 +14,19 @@ it runs the collection's `wsfc_cluster` module
    different cluster;
 2. runs `Test-Cluster` whenever nodes are about to join, then `New-Cluster`
    (always `-NoStorage`) or `Add-ClusterNode` for the nodes it's missing;
-3. names cluster networks and sets their role and metric, matched by subnet;
-4. creates site fault domains and places the nodes in them, and sets the
+3. with `wsfc_cno_create_computer_objects`, lets the cluster name object
+   create computer objects in its OU (see
+   [Clustered roles' computer objects](#clustered-roles-computer-objects-the-cnos-right));
+4. names cluster networks and sets their role and metric, matched by subnet;
+5. creates site fault domains and places the nodes in them, and sets the
    preferred site and the nodes' quorum votes;
-5. sets cluster common properties (heartbeat thresholds and the like);
-6. adds named shared disks, optionally formatting RAW ones first and adding
+6. sets cluster common properties (heartbeat thresholds and the like);
+7. adds named shared disks, optionally formatting RAW ones first and adding
    them to Cluster Shared Volumes;
-7. sets the quorum witness: none, disk, file share or Azure cloud witness.
+8. sets the quorum witness: none, disk, file share or Azure cloud witness.
+   With `wsfc_witness_share`, the role provisions the file share first, on a
+   Windows host in the inventory, and runs the module once more to set it (see
+   [The witness share](#the-witness-share-wsfc_witness_share)).
 
 Safety behaviour:
 
@@ -35,9 +41,11 @@ Safety behaviour:
 - `--check` reports every action without changing anything, and so does
   `wsfc_report_only: true` for the cluster (see below).
 
-The module's result is registered as `wsfc_run` and the role prints its
+The module's result is registered as `wsfc_run` (and the quorum run after a
+provisioned witness share as `wsfc_quorum_run`), and the role prints their
 `actions`, `warnings` and `validation_report` (the `Test-Cluster` report's
-path on the managing node).
+path on the managing node). `wsfc_run.cno` is the cluster name object: its
+account, SID and the domain controller it was created on.
 
 Two more entry points act on the cluster's **groups**, through the
 `wsfc_group` module (`ansible-doc git_cgallagher.windows.wsfc_group`):
@@ -85,6 +93,8 @@ the argument spec.
 | `wsfc_validate` | `true` | Run `Test-Cluster` before creating the cluster or adding nodes |
 | `wsfc_validate_ignore` | `[]` | `Test-Cluster` categories to skip, for example `Storage` |
 | `wsfc_quorum` | `{}` | `type` (`node_majority`, `disk_witness`, `file_share_witness`, `cloud_witness`) plus `disk`, `path` (and a `credential` for a share outside the domain), or `account_name`/`access_key`/`endpoint`; empty = leave it |
+| `wsfc_witness_share` | `{}` | Provision `wsfc_quorum`'s file share witness: `host` (inventory name), `path` (folder on it) and optionally `description`; empty = the share exists |
+| `wsfc_cno_create_computer_objects` | `false` | Grant the cluster name object **Create Computer objects** on its OU; `false` = leave it |
 | `wsfc_networks` | `[]` | `subnet` (CIDR) plus `name`, `role` (`none`, `cluster`, `cluster_and_client`), `metric` |
 | `wsfc_properties` | `{}` | Cluster common properties, for example `SameSubnetThreshold` |
 | `wsfc_sites` | `[]` | Site fault domains: `name`, and optionally `nodes` (computer names) and `description` |
@@ -118,6 +128,8 @@ administrator rights on every node. With the default
 `ActiveDirectoryAndDns` access point it also needs the right to create
 computer objects in the nodes' OU, or Full Control over a **prestaged,
 disabled** computer object named after the cluster.
+`wsfc_cno_create_computer_objects` needs it to be allowed to change that OU's
+permissions too (a domain admin, or a delegated **Modify permissions**).
 
 ## What each workload needs from this role
 
@@ -147,6 +159,28 @@ wsfc_properties:
 `RegisterAllProvidersIP` and `HostRecordTTL` belong to the AG listener's
 network name, which SQL Server creates. Once it exists, set them with the
 `groups` entry point (below): they are private properties of that resource.
+
+### Clustered roles' computer objects: the CNO's right
+
+A clustered role with a network name gets a computer object of its own,
+which the cluster creates through its cluster name object (CNO): a file
+server's client access point, a SQL Server FCI's network name, an AG
+listener. In the default `Computers` container the CNO can create up to the
+domain's machine account quota (`ms-DS-MachineAccountQuota`, 10 by
+default). Many domains set it to 0, and in an OU the quota doesn't help, so
+there the role's computer object fails to come online (event 1194).
+
+`wsfc_cno_create_computer_objects: true` grants the CNO **Create Computer
+objects** on the OU or container that holds it, for that container and
+everything below it, as Microsoft's
+[guide to prestaging cluster objects](https://learn.microsoft.com/windows-server/failover-clustering/prestage-cluster-adds)
+does. It needs the `ActiveDirectoryAndDns` access point and an account that
+may change the OU's permissions (`wsfc_become_user`). Check mode reads the
+OU's permissions and reports the grant without making it; `false` leaves them
+alone, and the role never takes the right away.
+
+Where that can't be delegated, prestage each role's computer object instead,
+named after the role's network name, and give the CNO Full Control over it.
 
 ### Two datacenters: sites, the preferred site and votes
 
@@ -191,6 +225,47 @@ vSphere profile below.
 `wsfc_node_weights` takes the quorum vote from nodes that mustn't keep the
 cluster running on their own, for example disaster recovery replicas:
 `{AG31: 0}`. Unlisted nodes keep their vote.
+
+### The witness share: `wsfc_witness_share`
+
+When the third site's witness is a Windows server, the role can provision
+the share as well. The share is for the cluster name object (CNO), which
+exists only once `New-Cluster` has run, so with `wsfc_witness_share` set the
+role:
+
+1. creates or converges the cluster **without** the quorum;
+2. on the witness host (`host`, an inventory name; the role connects with
+   that host's own settings and needs local administrator rights there),
+   creates the folder `path`, gives the CNO Full Control of it, and shares it
+   with the CNO only (**every other share permission is removed**);
+3. checks that each node reaches the witness host on TCP 445;
+4. runs the cluster module again to set the quorum (`wsfc_quorum_run`).
+
+```yaml
+wsfc_quorum:
+  type: file_share_witness
+  path: \\witness.dc3.example.com\AGCLU02-Witness
+wsfc_witness_share:
+  host: witness01            # the inventory name
+  path: C:\ClusterWitness\AGCLU02
+```
+
+`wsfc_quorum.path` must be `\\server\share`: the share's name comes from it,
+and the share serves one cluster. It needs the `ActiveDirectoryAndDns` access
+point and no `credential`; a share on a NAS or outside the domain isn't
+provisioned (give `wsfc_quorum.credential` instead).
+
+The witness host looks the CNO up through its own domain controller, which
+right after `New-Cluster` may not have it yet. The share task retries for up
+to ten minutes. Between sites that replicate on a schedule that may not be
+enough: run the play again once Active Directory has replicated (or replicate
+with `repadmin /syncall`). The folder's permission names the CNO by SID, so it
+needs no lookup.
+
+Under `--check`, or with `wsfc_report_only`, a cluster that doesn't exist
+yet plans no share, because it has no CNO yet; on an existing cluster the plan
+covers the folder, its permission, the share and the quorum. A share moved to
+another path or host leaves the old one in place.
 
 ### On vSphere
 
@@ -364,8 +439,15 @@ and two domain-joined nodes. It runs this role with the
 `ActiveDirectoryAndDns` access point and a static address, `Test-Cluster`
 with storage tests, both nodes in one `New-Cluster`, a management network
 taken out of cluster use, two shared disks formatted on first use (one with
-a drive letter), a disk witness and the double hop through `runas` become,
-then an idempotent re-run.
+a drive letter), a file share witness the role provisions on the domain
+controller while it builds the cluster (`wsfc_witness_share`), and the double
+hop through `runas` become, then an idempotent re-run. The lab domain's
+machine account quota is 0 and `wsfc_cno_create_computer_objects` is on, so
+the file server's computer object can only come from the cluster name
+object's right; verify checks the right, the share's and folder's
+permissions, and that the file server's computer object carries no
+`ms-DS-CreatorSID` (which a quota would have stamped). Verify ends by moving
+the quorum to a disk witness.
 
 The same lab puts the two nodes in two sites (`DC1` and `DC2`), makes `DC1`
 the preferred site and takes `node2`'s vote, and the module's integration
@@ -373,7 +455,14 @@ target checks sites, the preferred site and votes on its one-node cluster.
 It also runs the `groups` entry point on `Cluster Group` (preferred owners
 and a description, through the idempotent re-run) and ends with the
 `failover` entry point on that group: to the other node and back, with the
-cluster still up and its disk witness online.
+cluster still up and its file share witness online.
+
+The same lab runs the `wsfc_cluster` module's domain integration target
+(`tests/integration/targets/wsfc_cluster_cno`): with the cluster name
+object's right taken away on the domain controller, check mode plans the
+grant and writes nothing, the grant adds the one rule, a repeat changes
+nothing, and the option turned off leaves the right in place. The one-node
+target checks the refusal on a cluster without a cluster name object.
 
 The `wsfc_group` module's integration target
 (`tests/integration/targets/wsfc_group`, run by this role's scenario) builds
@@ -385,8 +474,10 @@ only the three-VM lab moves a group.
 
 Still not lab-tested ([issue #19](https://github.com/git-cgallagher/ansible-collection-windows/issues/19)):
 adding a node to an existing cluster, the `Dns` access point, multi-subnet
-clusters, Cluster Shared Volumes, file share and cloud witnesses (with or
-without a `credential`), failover between sites, failback (it needs a node to
+clusters, Cluster Shared Volumes, a cloud witness, a file share witness with a
+`credential` (a NAS) or in another site (Active Directory replication delays
+the share's permission), the CNO's right on an OU rather than the default
+`Computers` container, failover between sites, failback (it needs a node to
 fail and come back), an availability group's group (refused, but only proven
 by unit tests), and a failing `Test-Cluster`. The lab ignores `Test-Cluster`'s network tests,
 because every lab VM's management NIC has the same address (QEMU user
