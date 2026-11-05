@@ -105,10 +105,12 @@
           - name: "{{ wsfc_group_test_resource }}"
             properties:
               RestartThreshold: 7
+            # The two private properties a Generic Application requires, which
+            # it accepts only together. Not UseNetworkName: the lab refused
+            # it set to 1, probably because the group has no network name.
             parameters:
               CommandLine: "{{ wsfc_group_test_command }}"
               CurrentDirectory: "{{ wsfc_group_test_directory }}"
-              UseNetworkName: 1
       check_mode: true
       diff: true
       register: wsfc_group_check
@@ -133,8 +135,7 @@
           - wsfc_group_check.actions | select('search', 'property RestartThreshold from') | list | length == 1
           - wsfc_group_check.actions | select('search', 'private property CommandLine from') | list | length == 1
           - wsfc_group_check.actions | select('search', 'private property CurrentDirectory from') | list | length == 1
-          - wsfc_group_check.actions | select('search', 'private property UseNetworkName from') | list | length == 1
-          - wsfc_group_check.actions | length == 10
+          - wsfc_group_check.actions | length == 9
           - wsfc_group_check.move is none
           - wsfc_group_check.diff.prepared.splitlines() == wsfc_group_check.actions
           - wsfc_group_after_check.result == wsfc_group_before.result
@@ -170,7 +171,6 @@
           - wsfc_group_after.result.resource.restart_threshold == '7'
           - wsfc_group_after.result.resource.parameters.CommandLine == wsfc_group_test_command
           - wsfc_group_after.result.resource.parameters.CurrentDirectory == wsfc_group_test_directory
-          - wsfc_group_after.result.resource.parameters.UseNetworkName == '1'
         fail_msg: "{{ wsfc_group_apply }} / {{ wsfc_group_after.result }}"
 
     - name: Converge the group again

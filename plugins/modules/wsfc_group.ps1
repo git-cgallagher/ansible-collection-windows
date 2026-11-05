@@ -283,7 +283,15 @@ try {
 }
 catch {
     Set-ModuleResult
-    $msg = '{0} (at line {1}: {2})' -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber, $_.InvocationInfo.Line.Trim()
+    # The cluster cmdlets wrap the reason ("Unable to save property changes
+    # for ..." says nothing more), so report the whole chain.
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    $exception = $_.Exception
+    while ($null -ne $exception) {
+        if ($exception.Message -and -not $reasons.Contains($exception.Message)) { $reasons.Add($exception.Message) }
+        $exception = $exception.InnerException
+    }
+    $msg = '{0} (at line {1}: {2})' -f ($reasons -join ' '), $_.InvocationInfo.ScriptLineNumber, $_.InvocationInfo.Line.Trim()
     $module.FailJson($msg, $_)
 }
 

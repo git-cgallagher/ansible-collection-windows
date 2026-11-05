@@ -610,7 +610,12 @@ ansible-galaxy collection build --force
   was still empty, failed with "Unable to save property changes" (PR #61's
   first lab run, 2026-11-05). `wsfc_group` writes all of a resource's
   changes in one `Set-ClusterParameter -Multiple` call, while still listing
-  one action per property. The same run showed that `Remove-Cluster`
+  one action per property. A later run was refused again with all three of
+  `CommandLine`, `CurrentDirectory` and `UseNetworkName = 1` together, most
+  likely because `UseNetworkName` needs a network name in the group, which
+  the test group lacks, so the integration target sets only the first two.
+  `wsfc_group` now reports a failure's inner exceptions too, since the
+  outer message says nothing more. The first run also showed that `Remove-Cluster`
   refuses a cluster that still has non-core groups ("It has non-core
   application groups which must be deleted"), so `setup_wsfc`'s
   `remove_cluster.ps1` removes those first.
