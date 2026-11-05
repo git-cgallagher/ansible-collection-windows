@@ -378,6 +378,9 @@
           type: disk_witness
           disk: Witness
         wsfc_witness_share: {}
+        # The group var reads converge.yml's lab_wsfc_disks fact, which this
+        # run doesn't have; the disks are in the cluster, and [] leaves them.
+        wsfc_disks: []
 
     - name: Read the cluster after the move
       ansible.windows.win_powershell:
