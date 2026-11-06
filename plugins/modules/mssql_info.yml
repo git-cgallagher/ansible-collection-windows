@@ -1,0 +1,171 @@
+DOCUMENTATION:
+  module: mssql_info
+  short_description: Report the SQL Server instances on a host
+  description:
+    - Reports every SQL Server instance the host's registry lists (or one, O(instance_name)): its version, edition,
+      features, collation, paths, TCP and encryption settings, and its services with their accounts.
+    - With O(connect), it also connects to each running instance over shared memory, as the account the module runs
+      as, and reports what SQL Server says about itself in RV(instances[].server). That account must be a login,
+      and only a C(sysadmin) sees everything; a failed connection is reported there, not raised.
+    - Also reports whether Windows has a reboot pending, which SQL Server setup refuses to run with.
+    - It only reads, so check mode runs it the same way.
+  version_added: 0.21.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    instance_name:
+      description:
+        - Report this instance only, for example V(MSSQLSERVER) or V(INST1). Leave it out for every instance.
+      type: str
+    connect:
+      description:
+        - Connect to each running instance for RV(instances[].server).
+      type: bool
+      default: true
+  seealso:
+    - module: git_cgallagher.windows.mssql_setup
+
+EXAMPLES: |
+  - name: Read the default instance
+    git_cgallagher.windows.mssql_info:
+      instance_name: MSSQLSERVER
+    register: sql
+
+  - name: Require it to run under the domain account
+    ansible.builtin.assert:
+      that: sql.instances[0].services.engine.account == 'EXAMPLE\\svc-sqldb'
+
+  - name: Read every instance from the registry and services only
+    git_cgallagher.windows.mssql_info:
+      connect: false
+
+RETURN:
+  reboot_pending:
+    description: Whether Windows has a reboot pending.
+    returned: always
+    type: bool
+    sample: false
+  reboot_pending_reasons:
+    description: Why a reboot is pending, from the registry's markers.
+    returned: always
+    type: list
+    elements: str
+    sample: ['file renames wait for a reboot (PendingFileRenameOperations)']
+  instances:
+    description: The instances, by name.
+    returned: always
+    type: list
+    elements: dict
+    contains:
+      name:
+        description: The instance name; V(MSSQLSERVER) is the default instance.
+        type: str
+        sample: MSSQLSERVER
+      id:
+        description: The instance ID, its registry key under C(Microsoft SQL Server).
+        type: str
+        sample: MSSQL16.MSSQLSERVER
+      version:
+        description: The version, V(2022) or V(2025); empty for one the modules don't install.
+        type: str
+        sample: '2022'
+      version_number:
+        description: The installed build (the registry's C(PatchLevel)).
+        type: str
+        sample: 16.0.1000.6
+      edition:
+        description: The edition, as the registry names it.
+        type: str
+        sample: Developer Edition
+      edition_id:
+        description:
+          - The edition as M(git_cgallagher.windows.mssql_setup) names it, for example V(enterprise_developer); empty
+            for one it doesn't install.
+        type: str
+        sample: enterprise_developer
+      features:
+        description: The instance features installed, of V(SQLEngine), V(Replication) and V(FullText).
+        type: list
+        elements: str
+        sample: [SQLEngine, Replication]
+      features_known:
+        description:
+          - Whether RV(instances[].features) is complete. False when the registry records no features for the
+            instance, so V(Replication) can't be told.
+        type: bool
+        sample: true
+      features_source:
+        description:
+          - Where RV(instances[].features) came from, V(ConfigurationState) or V(FeatureList) (the registry) or
+            V(services).
+        type: str
+        sample: ConfigurationState
+      collation:
+        description: The server collation setup recorded.
+        type: str
+        sample: SQL_Latin1_General_CP1_CI_AS
+      paths:
+        description: The instance's C(program), C(data_root) and C(binn) folders, from the registry.
+        type: dict
+        sample: {program: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', data_root: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', binn: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn'}
+      clustered:
+        description: Whether the instance is a failover cluster instance.
+        type: bool
+        sample: false
+      tcp:
+        description: Whether TCP/IP is C(enabled), and the C(port) and C(dynamic_ports) it listens on for all addresses.
+        type: dict
+        sample: {enabled: true, port: '1433', dynamic_ports: ''}
+      encryption:
+        description: Whether C(force_encryption) is on, and the C(certificate) thumbprint bound to the instance.
+        type: dict
+        sample: {force_encryption: false, certificate: ''}
+      services:
+        description:
+          - The instance's C(engine), C(agent) and C(fulltext) services, each with its C(name), C(state) (V(running),
+            V(stopped)), C(start_mode) (V(automatic), V(manual), V(disabled)) and C(account); null for one that
+            isn't installed.
+        type: dict
+        sample:
+          engine: {name: MSSQLSERVER, state: running, start_mode: automatic, account: EXAMPLE\svc-sqldb}
+          agent: {name: SQLSERVERAGENT, state: running, start_mode: automatic, account: EXAMPLE\gmsa-sqlagt$}
+          fulltext: null
+      server:
+        description:
+          - What the running instance says about itself, with O(connect). Null when the instance isn't running or
+            O(connect) is false.
+          - C(connected) says whether the connection worked, and C(connection_error) why not; the other keys are
+            there only when it worked. C(query_errors) lists the queries that failed, for example for an account
+            that isn't C(sysadmin).
+          - SERVERPROPERTY's C(product_version), C(product_level), C(product_update_level), C(edition),
+            C(edition_id), C(engine_edition), C(collation), C(is_clustered), C(is_hadr_enabled),
+            C(is_fulltext_installed) and C(default_paths) (C(data), C(log), C(backup)); the C(login) it connected as
+            and whether it C(is_sysadmin).
+          - C(services) (sys.dm_server_services, with C(instant_file_initialization)), C(sysadmins) (the members of
+            the role), C(tempdb) (its files, sizes and growth in MB, or C(growth_percent)) and C(configuration)
+            (every sp_configure option's C(value) and C(value_in_use)).
+        type: dict
+        sample:
+          connected: true
+          connection_error: ''
+          query_errors: []
+          product_version: 16.0.1000.6
+          product_level: RTM
+          product_update_level: ''
+          edition: Developer Edition (64-bit)
+          edition_id: enterprise_developer
+          engine_edition: 3
+          collation: SQL_Latin1_General_CP1_CI_AS
+          is_clustered: false
+          is_hadr_enabled: false
+          is_fulltext_installed: false
+          default_paths: {data: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\', log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\', backup: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup'}
+          login: EXAMPLE\svc-ansible
+          is_sysadmin: true
+          services:
+            - {name: SQL Server (MSSQLSERVER), account: EXAMPLE\svc-sqldb, status: Running, startup_type: Automatic, instant_file_initialization: true}
+          sysadmins: [EXAMPLE\GG-SQL-Admins, sa]
+          tempdb:
+            - {name: tempdev, type: ROWS, path: 'C:\SQL\tempdb.mdf', size_mb: 64, growth_mb: 64, growth_percent: null}
+          configuration:
+            max server memory (MB): {value: 2147483647, value_in_use: 2147483647}

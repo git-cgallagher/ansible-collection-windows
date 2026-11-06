@@ -1,0 +1,346 @@
+DOCUMENTATION:
+  module: mssql_setup
+  short_description: Install a standalone SQL Server instance from an ISO
+  description:
+    - Installs a standalone SQL Server 2022 or 2025 instance with C(setup.exe) from an ISO, adds features to an installed
+      instance, or uninstalls one (O(state=absent) with O(allow_remove)).
+    - The ISO comes from a local path, a UNC path or an http(s) URL, pinned by O(media.checksum). A UNC path or URL is
+      first copied into O(media_cache_dir), and the copy is kept, so a later run (another instance, an added feature)
+      reuses it when its checksum still matches. The module mounts the ISO read-only, checks it's the version and
+      edition asked for (its C(MediaInfo.xml) and C(x64\DefaultSetup.ini)), runs setup and dismounts it.
+    - Settings fixed at install (the version, the edition, the server collation) are compared with an installed
+      instance and differences are reported in RV(notices) and as warnings; the module never reinstalls or upgrades
+      an instance for them. A feature in O(features) that the instance lacks is added; an installed feature that
+      O(features) doesn't list is reported, never removed.
+    - Cumulative updates are slipstreamed from O(update_source) when it's set. Otherwise setup runs with
+      C(/UpdateEnabled=False), so it never reaches Microsoft Update.
+    - Every instance gets TCP/IP enabled (C(/TCPENABLED=1)); the Developer editions otherwise install with it off.
+      Static ports, certificates and encryption are a later module's.
+    - Every action is listed in RV(actions), and in diff mode as the diff. Check mode reports the plan and runs every
+      check that only reads, and fails where the real run would. It never stages, mounts or runs setup, so the media's
+      version and edition are checked only by a real run.
+  version_added: 0.21.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    instance_name:
+      description:
+        - The instance. V(MSSQLSERVER) is the default instance; a named instance takes 1 to 16 letters, digits, V(_)
+          and V($), starting with a letter or V(_).
+      type: str
+      default: MSSQLSERVER
+    state:
+      description:
+        - V(present) installs the instance, or adds the features it lacks.
+        - V(absent) uninstalls it, with its databases, and needs O(allow_remove). It uses the copy of C(setup.exe) the
+          installed version keeps, so it needs no media.
+      type: str
+      choices: [present, absent]
+      default: present
+    allow_remove:
+      description:
+        - Lets O(state=absent) uninstall an installed instance. Without it, the module refuses.
+      type: bool
+      default: false
+    version:
+      description:
+        - The SQL Server version the media must be. Required with O(state=present).
+      type: str
+      choices: ['2022', '2025']
+    edition:
+      description:
+        - The edition to install. Required with O(state=present).
+        - V(enterprise_developer) and V(standard_developer) are the free Developer editions (2022's Developer edition is
+          V(enterprise_developer); only 2025 has V(standard_developer)). They are licensed for development and test,
+          not production. The module passes their well-known key and checks the media is for that edition, or is
+          Evaluation media.
+        - V(evaluation) is the 180-day Evaluation, from media with no key of its own.
+        - V(enterprise) and V(standard) take O(product_key), or media whose C(x64\DefaultSetup.ini) carries the key.
+        - After setup the module checks the instance is the edition asked for.
+      type: str
+      choices: [enterprise, standard, enterprise_developer, standard_developer, evaluation]
+    product_key:
+      description:
+        - The product key for V(enterprise) or V(standard) media without a key of its own. Passed to setup as C(/PID)
+          and never returned.
+      type: str
+    features:
+      description:
+        - The instance features. V(SQLEngine) is the database engine (with SQL Server Agent) and must be listed;
+          V(Replication) and V(FullText) are optional.
+      type: list
+      elements: str
+      choices: [SQLEngine, Replication, FullText]
+      default: [SQLEngine]
+    collation:
+      description:
+        - The server collation, set at install only. Leave it out for setup's default, which depends on the host's
+          locale; then an installed instance's collation isn't compared.
+      type: str
+    media:
+      description:
+        - The ISO. Required with O(state=present), though an instance that already matches never reads it.
+      type: dict
+      suboptions:
+        path:
+          description:
+            - A local path (V(D:\\media\\SQLServer2022-x64-ENU.iso)), a UNC path
+              (V(\\\\files.example.com\\media\\SQLServer2022-x64-ENU.iso)) or an http(s) URL, naming an C(.iso) file.
+            - A UNC path is read as the account the module runs as. Over WinRM that logon has no credentials to pass
+              on (the double hop), so use C(become) with the C(runas) method.
+          type: str
+          required: true
+        checksum:
+          description:
+            - The ISO's SHA-256, as V(sha256:) and 64 hex digits. A copy that doesn't match is refused, and a cached
+              copy that doesn't match is replaced.
+          type: str
+          required: true
+    media_cache_dir:
+      description:
+        - Where a UNC path's or URL's ISO is copied to, and kept.
+      type: str
+      default: C:\ProgramData\mssql-iac\media
+    update_source:
+      description:
+        - A folder of cumulative updates for setup to slipstream (C(/UpdateEnabled=True /UpdateSource=...)).
+      type: str
+    engine_account:
+      description:
+        - The account the database engine runs as. A domain account (V(EXAMPLE\\svc-sqldb)) needs O(engine_password);
+          a gMSA (V(EXAMPLE\\gmsa-sqldb$)) takes none. Leave it out for setup's virtual account
+          (C(NT SERVICE\\MSSQLSERVER)).
+        - The P(git_cgallagher.windows.mssql_prereqs#role) role creates such accounts and their SPNs.
+      type: str
+    engine_password:
+      description:
+        - O(engine_account)'s password. It reaches setup on its command line and is never returned. It can't hold a
+          double quote.
+      type: str
+    agent_account:
+      description:
+        - The account SQL Server Agent runs as, like O(engine_account).
+      type: str
+    agent_password:
+      description:
+        - O(agent_account)'s password, like O(engine_password).
+      type: str
+    agent_startup:
+      description:
+        - How SQL Server Agent starts.
+      type: str
+      choices: [automatic, manual, disabled]
+      default: automatic
+    sysadmins:
+      description:
+        - The accounts and groups setup makes members of the C(sysadmin) role. Required with O(state=present).
+        - It must include the account the module runs as (the C(become) user, with C(become)), or a group it's in,
+          so the instance can be managed after setup; the module checks that before setup runs.
+      type: list
+      elements: str
+    instant_file_init:
+      description:
+        - Grants the engine's account the right to skip zeroing new data files (instant file initialization).
+      type: bool
+      default: true
+    paths:
+      description:
+        - Where setup puts the instance and its files, set at install only. Each path's volume must exist.
+      type: dict
+      suboptions:
+        instance_dir:
+          description: The instance's program files (C(/INSTANCEDIR)).
+          type: str
+        data_root:
+          description: The system databases' root (C(/INSTALLSQLDATADIR)).
+          type: str
+        data:
+          description: The default folder for databases' data files (C(/SQLUSERDBDIR)).
+          type: str
+        log:
+          description: The default folder for databases' log files (C(/SQLUSERDBLOGDIR)).
+          type: str
+        backup:
+          description: The default backup folder (C(/SQLBACKUPDIR)).
+          type: str
+        tempdb_data:
+          description: tempdb's data files (C(/SQLTEMPDBDIR)).
+          type: str
+        tempdb_log:
+          description: tempdb's log file (C(/SQLTEMPDBLOGDIR)).
+          type: str
+    tempdb:
+      description:
+        - tempdb's files, set at install only.
+      type: dict
+      suboptions:
+        file_count:
+          description: The number of data files.
+          type: int
+        file_size_mb:
+          description: Each data file's initial size.
+          type: int
+        file_growth_mb:
+          description: Each data file's growth.
+          type: int
+        log_size_mb:
+          description: The log file's initial size.
+          type: int
+        log_growth_mb:
+          description: The log file's growth.
+          type: int
+    pending_reboot:
+      description:
+        - What a pending reboot does before setup runs. V(fail) fails, as setup would refuse to run anyway.
+        - V(report) only returns it in RV(preflight), for a check-mode run that plans a reboot first (the
+          P(git_cgallagher.windows.mssql#role) role's).
+      type: str
+      choices: [fail, report]
+      default: fail
+  notes:
+    - The passwords and the product key reach setup on its command line, which other administrators of the host can
+      read while setup runs; setup itself doesn't write them to its C(ConfigurationFile.ini). A gMSA needs no password.
+    - Setup can run for half an hour or more. Over WinRM, use C(become) with the C(runas) method, which also gives
+      setup a logon with credentials.
+    - Exit code 3010 is success with a reboot required (RV(reboot_required)). A failed setup returns its C(Summary.txt)
+      reasons in the error message.
+  seealso:
+    - module: git_cgallagher.windows.mssql_info
+    - name: Install SQL Server from the command prompt
+      description: Setup's parameters.
+      link: https://learn.microsoft.com/en-us/sql/database-engine/install-windows/install-sql-server-from-the-command-prompt
+
+EXAMPLES: |
+  - name: Install SQL Server 2022 Developer from a share, running as gMSAs
+    git_cgallagher.windows.mssql_setup:
+      version: '2022'
+      edition: enterprise_developer
+      media:
+        path: \\files.example.com\media\SQLServer2022-x64-ENU-Dev.iso
+        checksum: sha256:80d2cd75dd2b28098c0182f50ad86bd44f9b3a9f357c30ff617480a1497daffd
+      features: [SQLEngine, Replication, FullText]
+      engine_account: EXAMPLE\gmsa-sqldb$
+      agent_account: EXAMPLE\gmsa-sqlagt$
+      sysadmins: [EXAMPLE\GG-SQL-Admins]
+      collation: SQL_Latin1_General_CP1_CI_AS
+      paths:
+        data: D:\MSSQL\Data
+        log: L:\MSSQL\Log
+        backup: B:\MSSQL\Backup
+        tempdb_data: T:\MSSQL\TempDB
+      tempdb:
+        file_count: 8
+        file_size_mb: 1024
+    become: true
+    become_method: ansible.builtin.runas
+    become_user: EXAMPLE\svc-ansible
+    vars:
+      ansible_become_password: "{{ vault_svc_ansible_password }}"
+
+  - name: Install a named Standard instance with a domain account, slipstreaming a cumulative update
+    git_cgallagher.windows.mssql_setup:
+      instance_name: INST1
+      version: '2025'
+      edition: standard
+      product_key: "{{ vault_sql_product_key }}"
+      media:
+        path: D:\media\SQLServer2025-x64-ENU.iso
+        checksum: "sha256:{{ sql2025_iso_sha256 }}"
+      update_source: D:\media\CU
+      engine_account: EXAMPLE\svc-sqlinst1
+      engine_password: "{{ vault_svc_sqlinst1 }}"
+      sysadmins: [EXAMPLE\GG-SQL-Admins]
+
+  - name: Uninstall a named instance and its databases
+    git_cgallagher.windows.mssql_setup:
+      instance_name: INST1
+      state: absent
+      allow_remove: true
+
+RETURN:
+  instance:
+    description:
+      - The instance after the run (before it, in check mode), as the registry and its services describe it. Null
+        when it isn't installed.
+      - The same keys as each instance M(git_cgallagher.windows.mssql_info) returns, except C(server).
+    returned: always
+    type: dict
+    sample:
+      name: MSSQLSERVER
+      id: MSSQL16.MSSQLSERVER
+      version: '2022'
+      version_number: 16.0.1000.6
+      edition: Developer Edition
+      edition_id: enterprise_developer
+      features: [SQLEngine, Replication]
+      features_known: true
+      features_source: ConfigurationState
+      collation: SQL_Latin1_General_CP1_CI_AS
+      paths: {program: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', data_root: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', binn: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn'}
+      clustered: false
+      tcp: {enabled: true, port: '1433', dynamic_ports: ''}
+      encryption: {force_encryption: false, certificate: ''}
+      services:
+        engine: {name: MSSQLSERVER, state: running, start_mode: automatic, account: EXAMPLE\svc-sqldb}
+        agent: {name: SQLSERVERAGENT, state: running, start_mode: automatic, account: EXAMPLE\gmsa-sqlagt$}
+        fulltext: null
+  media:
+    description:
+      - The ISO, when the run needed it (an install or added features). C(kind) is V(local), V(unc) or V(url);
+        C(local_path) is where it was read; C(staged) whether this run copied it there; C(build), C(version) and
+        C(edition) what the mounted media says it is (empty in check mode, which doesn't mount it).
+      - Null when nothing needed the media.
+    returned: always
+    type: dict
+    sample:
+      path: https://download.example.com/SQLServer2022-x64-ENU-Dev.iso
+      kind: url
+      local_path: C:\ProgramData\mssql-iac\media\SQLServer2022-x64-ENU-Dev.iso
+      staged: true
+      sha256: 80d2cd75dd2b28098c0182f50ad86bd44f9b3a9f357c30ff617480a1497daffd
+      build: 16.0.1000.6
+      version: '2022'
+      edition: enterprise_developer
+  setup:
+    description:
+      - Setup's run, when it ran. C(command) is its command line with the passwords and product key as C(********);
+        C(summary_path) its C(Summary.txt); C(log_dir) this run's log folder. Null when setup didn't run.
+    returned: always
+    type: dict
+    sample:
+      command: '"E:\setup.exe" /Q /ACTION="Install" /IACCEPTSQLSERVERLICENSETERMS /FEATURES="SQLENGINE" /INSTANCENAME="MSSQLSERVER" /UpdateEnabled="False" /PID="********"'
+      exit_code: 0
+      summary_path: C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\Summary.txt
+      log_dir: C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\20261106_101500
+  preflight:
+    description:
+      - What the checks before setup read, when setup had work to do. C(reboot_pending) and its
+        C(reboot_pending_reasons); for a new instance, C(connection_account) (the account the module ran as) and
+        C(sysadmin_match) (the O(sysadmins) entries that are that account or its groups). Empty otherwise.
+    returned: always
+    type: dict
+    sample: {reboot_pending: false, reboot_pending_reasons: [], connection_account: EXAMPLE\svc-ansible, sysadmin_match: [EXAMPLE\GG-SQL-Admins]}
+  reboot_required:
+    description: Whether setup finished with exit code 3010, success with a reboot required.
+    returned: always
+    type: bool
+    sample: false
+  notices:
+    description:
+      - What differs from the options but isn't changed, also returned as warnings. Settings fixed at install (the
+        version, the edition, the collation), installed features O(features) doesn't list, and features the module
+        can't tell are installed.
+    returned: always
+    type: list
+    elements: str
+    sample: ["Instance MSSQLSERVER has feature FullText, which features doesn't list: features are never removed"]
+  actions:
+    description:
+      - Every action the module took, in order, or planned in check mode. Empty when nothing needed changing.
+      - In diff mode the same list is the diff.
+    returned: always
+    type: list
+    elements: str
+    sample:
+      - stage media https://download.example.com/SQLServer2022-x64-ENU-Dev.iso to C:\ProgramData\mssql-iac\media\SQLServer2022-x64-ENU-Dev.iso
+      - install SQL Server 2022 (enterprise_developer) instance MSSQLSERVER with features SQLEngine, Replication
