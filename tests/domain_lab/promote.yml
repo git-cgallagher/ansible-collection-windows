@@ -1,5 +1,5 @@
 ---
-# Shared by the GPO roles' prepare.yml (ansible.builtin.import_playbook).
+# Shared by the GPO roles' prepare.yml and gpo_cross_domain's (import_playbook).
 #
 # git_cgallagher.molecule's ad_forest role does the promotion. The box's local
 # accounts become domain accounts when it's promoted to the first DC of a new
@@ -12,6 +12,9 @@
     ad_forest_domain: "{{ lab_domain }}"
     ad_forest_netbios: "{{ lab_netbios }}"
     ad_forest_dsrm_password: "{{ lab_dsrm_password }}"
+    # A scenario that names its DCs (gpo_cross_domain's src and dst) sets
+    # lab_hostname per host; the others keep the box's name.
+    ad_forest_hostname: "{{ lab_hostname | default('') }}"
     # GPMC + AD PowerShell up front so the post-reboot readiness check can use them.
     ad_forest_features: [AD-Domain-Services, GPMC, RSAT-AD-PowerShell]
     # "Available" means ADWS answers (the AD module), SYSVOL is initialised

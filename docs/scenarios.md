@@ -150,9 +150,10 @@ $table.Save('C:\work\prod.migtable')
 `GG-IacLab-Workstation-Admins` → `GG-IacLab-Helpdesk` makes `gpo_import` (with
 `gpo_import_migration_table`, `gpo_import_force` and a `gpo_import_gpos`
 filter) write the helpdesk group's SID into `[Group Membership]`; importing
-again without the table restores the original. Importing into a genuinely
-separate forest needs a second domain controller and isn't covered by the
-lab yet (issue #16).
+again without the table restores the original. Between two forests, see
+[gpo-cross-domain.md](gpo-cross-domain.md): the `gpo_cross_domain` lab moves
+one GPO per kind of setting and shows which need the table, and which (Group
+Policy Preferences, hard-coded names) it never fixes.
 
 ## Not covered (yet)
 
