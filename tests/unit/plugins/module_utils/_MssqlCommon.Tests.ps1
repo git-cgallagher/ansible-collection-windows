@@ -26,7 +26,7 @@ BeforeAll {
     # An installed instance as ConvertTo-MssqlInstanceFact returns it.
     function script:New-Installed {
         param([string]$Version = '2022', [string]$EditionId = 'enterprise_developer', [string[]]$Features = @('SQLEngine'),
-            [bool]$FeaturesKnown = $true, [string]$Collation = 'SQL_Latin1_General_CP1_CI_AS')
+            [string[]]$Unknown = @(), [string]$Collation = 'SQL_Latin1_General_CP1_CI_AS')
         @{
             id = 'MSSQL16.MSSQLSERVER'
             version = $Version
@@ -34,7 +34,8 @@ BeforeAll {
             edition = 'Developer Edition'
             edition_id = $EditionId
             features = $Features
-            features_known = $FeaturesKnown
+            features_known = $Unknown.Count -eq 0
+            features_unknown = $Unknown
             collation = $Collation
         }
     }
@@ -198,26 +199,30 @@ Describe 'Features' {
         ConvertTo-MssqlFeatureName 'SQL' | Should -Be ''
     }
 
-    It 'reads an instance''s features from ConfigurationState first' {
+    It 'reads Replication from ConfigurationState, and FullText from its service' {
         $state = @{ SQL_Engine_Core_Inst = 1; SQL_Replication_Core_Inst = 1; SQL_FullText_Adv = 0 }
-        $installed = Get-MssqlInstalledFeature -ConfigurationState $state -FeatureList 'SQL_FullText_Adv=3' -HasFullTextService $true
-        $installed.Features | Should -Be @('SQLEngine', 'Replication')
+        $installed = Get-MssqlInstalledFeature -ConfigurationState $state -FeatureList 'SQL_Replication_Core_Inst=0' -HasFullTextService $true
+        $installed.Features | Should -Be @('SQLEngine', 'Replication', 'FullText')
         $installed.Known | Should -BeTrue
+        $installed.Unknown.Count | Should -Be 0
         $installed.Source | Should -Be 'ConfigurationState'
+        (Get-MssqlInstalledFeature -ConfigurationState @{ SQL_Engine_Core_Inst = 1 }).Features | Should -Be @('SQLEngine')
     }
 
-    It 'falls back to Setup\FeatureList' {
-        $list = 'SQL_Engine_Core_Inst=3 SQL_FullText_Adv=3 SQL_Replication_Core_Inst=0'
-        $installed = Get-MssqlInstalledFeature -ConfigurationState @{ Other = 1 } -FeatureList $list
-        $installed.Features | Should -Be @('SQLEngine', 'FullText')
+    It 'falls back to Setup\FeatureList for Replication' {
+        $list = 'SQL_Engine_Core_Inst=3 SQL_FullText_Adv=3 SQL_Replication_Core_Inst=3'
+        $installed = Get-MssqlInstalledFeature -FeatureList $list
+        $installed.Features | Should -Be @('SQLEngine', 'Replication')
         $installed.Source | Should -Be 'FeatureList'
+        (Get-MssqlInstalledFeature -FeatureList 'SQL_Engine_Core_Inst=3 SQL_Replication_Core_Inst=0').Features | Should -Be @('SQLEngine')
     }
 
-    It 'falls back to the services, and says it can''t tell Replication' {
+    It 'says it can''t tell Replication when the registry records neither' {
         $installed = Get-MssqlInstalledFeature -HasFullTextService $true
         $installed.Features | Should -Be @('SQLEngine', 'FullText')
+        $installed.Unknown | Should -Be @('Replication')
         $installed.Known | Should -BeFalse
-        (Get-MssqlInstalledFeature).Features | Should -Be @('SQLEngine')
+        $installed.Source | Should -Be 'services'
     }
 }
 
@@ -257,11 +262,15 @@ Describe 'Get-MssqlInstancePlan' {
         ($plan.Notices -join "`n") | Should -Match "lacks FullText, which 2022 media can't add"
     }
 
-    It 'adds nothing when it can''t tell which features are there' {
-        $installed = New-Installed -Features @('SQLEngine') -FeaturesKnown $false
+    It 'adds nothing it can''t tell is missing, and still adds what it can' {
+        $installed = New-Installed -Features @('SQLEngine') -Unknown @('Replication')
         $plan = Get-MssqlInstancePlan -InstanceName 'X' -Desired (New-Desired -Features @('SQLEngine', 'Replication')) -Installed $installed
         $plan.Action | Should -Be 'none'
-        $plan.Notices[0] | Should -Match "Can't tell"
+        $plan.Notices[0] | Should -Match "Can't tell whether instance X has Replication"
+        $plan = Get-MssqlInstancePlan -InstanceName 'X' -Desired (New-Desired -Features @('SQLEngine', 'Replication', 'FullText')) -Installed $installed
+        $plan.Action | Should -Be 'add_features'
+        $plan.AddFeatures | Should -Be @('FullText')
+        $plan.Notices | Should -HaveCount 1
     }
 }
 
@@ -445,6 +454,7 @@ Describe 'ConvertTo-MssqlInstanceFact' {
         $fact.edition | Should -Be ''
         $fact.features | Should -Be @('SQLEngine')
         $fact.features_known | Should -BeFalse
+        $fact.features_unknown | Should -Be @('Replication')
         $fact.tcp.enabled | Should -BeFalse
     }
 }

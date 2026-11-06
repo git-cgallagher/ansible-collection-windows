@@ -279,42 +279,43 @@ Function ConvertTo-MssqlFeatureName {
 Function Get-MssqlInstalledFeature {
     <#
     .SYNOPSIS
-    Which of the modules' features an instance has, from what the registry
-    records under its instance ID: the ConfigurationState values (1 is
-    installed); else the tokens of Setup\FeatureList (a number above 0);
-    else what its services tell, where Known comes back false because
-    Replication has no service of its own. Source names the one used.
+    Which of the modules' features an instance has. SQLEngine always (every
+    instance the registry lists has it); FullText when its launcher service
+    exists; Replication from what the registry records under the instance
+    ID: its ConfigurationState value SQL_Replication_Core_Inst (1 is
+    installed), else that token in Setup\FeatureList (a number above 0). Where
+    the registry has neither, Replication goes in Unknown and Known is false.
+    Source names where Replication's state came from.
     #>
     [CmdletBinding()]
     param ([hashtable]$ConfigurationState, [string]$FeatureList, [bool]$HasFullTextService)
 
-    $engine = $script:MssqlFeatures['SQLEngine'].State
-    $features = [System.Collections.Generic.List[string]]::new()
-    $source = 'services'
+    $replication = $script:MssqlFeatures['Replication'].State
     $tokens = @{}
     foreach ($token in @([string]$FeatureList -split '\s+')) {
         if ($token -match '^([^=]+)=(\d+)$') { $tokens[$Matches[1]] = [int]$Matches[2] }
     }
-    if ($null -ne $ConfigurationState -and $ConfigurationState.ContainsKey($engine)) {
+    $hasReplication = $false
+    $source = 'services'
+    if ($null -ne $ConfigurationState) {
         $source = 'ConfigurationState'
-        foreach ($name in $script:MssqlFeatures.Keys) {
-            $value = $ConfigurationState[$script:MssqlFeatures[$name].State]
-            if ($null -ne $value -and [string]$value -eq '1') { $features.Add($name) }
-        }
+        $hasReplication = [string]$ConfigurationState[$replication] -eq '1'
     }
-    elseif ($tokens.ContainsKey($engine)) {
+    elseif ($tokens.ContainsKey($replication) -or $tokens.ContainsKey($script:MssqlFeatures['SQLEngine'].State)) {
         $source = 'FeatureList'
-        foreach ($name in $script:MssqlFeatures.Keys) {
-            $state = $script:MssqlFeatures[$name].State
-            if ($tokens.ContainsKey($state) -and $tokens[$state] -gt 0) { $features.Add($name) }
-        }
+        $hasReplication = $tokens.ContainsKey($replication) -and $tokens[$replication] -gt 0
     }
-    else {
-        # Every instance the registry lists has the engine.
-        $features.Add('SQLEngine')
-        if ($HasFullTextService) { $features.Add('FullText') }
+    $features = [System.Collections.Generic.List[string]]::new()
+    $unknown = [System.Collections.Generic.List[string]]::new()
+    $features.Add('SQLEngine')
+    if ($source -eq 'services') {
+        $unknown.Add('Replication')
     }
-    @{ Features = $features.ToArray(); Known = $source -ne 'services'; Source = $source }
+    elseif ($hasReplication) {
+        $features.Add('Replication')
+    }
+    if ($HasFullTextService) { $features.Add('FullText') }
+    @{ Features = $features.ToArray(); Unknown = $unknown.ToArray(); Known = $unknown.Count -eq 0; Source = $source }
 }
 
 Function Get-MssqlInstancePlan {
@@ -356,15 +357,17 @@ Function Get-MssqlInstancePlan {
     }
 
     $installedFeatures = @($Installed.features)
-    $missing = @($Desired.Features | Where-Object { $installedFeatures -notcontains $_ })
+    $unknownFeatures = @($Installed.features_unknown)
+    $missing = @($Desired.Features | Where-Object { $installedFeatures -notcontains $_ -and $unknownFeatures -notcontains $_ })
+    $untold = @($Desired.Features | Where-Object { $unknownFeatures -contains $_ })
     $extra = @($installedFeatures | Where-Object { @($Desired.Features) -notcontains $_ })
+    if ($untold.Count -gt 0) {
+        $message = ("Can't tell whether instance {0} has {1} (the registry records nothing for it), " +
+            "so setup doesn't run for it") -f $InstanceName, ($untold -join ', ')
+        $notices.Add($message)
+    }
     if ($missing.Count -gt 0) {
-        if (-not $Installed.features_known) {
-            $message = ("Can't tell whether instance {0} has {1} (the registry has no feature list for it), " +
-                "so setup doesn't run for them") -f $InstanceName, ($missing -join ', ')
-            $notices.Add($message)
-        }
-        elseif (-not $sameVersion) {
+        if (-not $sameVersion) {
             $notices.Add("Instance $InstanceName lacks $($missing -join ', '), which $($Desired.Version) media can't add to it")
         }
         else {
@@ -718,6 +721,7 @@ Function ConvertTo-MssqlInstanceFact {
         edition_id = ConvertTo-MssqlEditionId ([string]$setup['Edition'])
         features = $installed.Features
         features_known = $installed.Known
+        features_unknown = $installed.Unknown
         features_source = $installed.Source
         collation = [string]$setup['Collation']
         paths = @{
@@ -836,6 +840,7 @@ Function Invoke-MssqlQuery {
     [CmdletBinding()]
     param ([string]$ConnectionString, [string]$Query, [hashtable]$Parameters = @{}, [int]$Timeout = 30)
 
+    Add-Type -AssemblyName System.Data
     $connection = New-Object -TypeName System.Data.SqlClient.SqlConnection -ArgumentList $ConnectionString
     try {
         $connection.Open()

@@ -19,9 +19,12 @@ setup_mssql_become_user: "{{ ansible_user }}"
 setup_mssql_become_password: "{{ ansible_password }}"
 setup_mssql_sysadmins: ["{{ setup_mssql_become_user }}"]
 
-# The account mssql_setup's own instance runs as; '' = setup's virtual account.
-setup_mssql_engine_account: ''
-setup_mssql_engine_password: ''
+# The account SQL Server Agent of mssql_setup's own instance runs as, which
+# with a password checks it's kept out of the result and setup's files; ''
+# = setup's virtual account. Its engine always runs as setup's virtual
+# account, whose instant file initialization the target turns off and checks.
+setup_mssql_agent_account: ''
+setup_mssql_agent_password: ''
 
 # The targets' own directories, apart from the role's.
 setup_mssql_dir: 'C:\ProgramData\mssql-iac-test'

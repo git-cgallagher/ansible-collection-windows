@@ -87,8 +87,9 @@ provisioner:
         setup_mssql_become_user: "{{ lab_admin_user }}"
         setup_mssql_become_password: "{{ lab_admin_password }}"
         setup_mssql_sysadmins: "{{ mssql_sysadmins }}"
-        setup_mssql_engine_account: "{{ mssql_engine_account }}"
-        setup_mssql_engine_password: "{{ mssql_engine_password }}"
+        # ITEST's Agent runs as the role's engine account, with its password.
+        setup_mssql_agent_account: "{{ mssql_engine_account }}"
+        setup_mssql_agent_password: "{{ mssql_engine_password }}"
     host_vars:
       dc01: {lab_address: 10.42.0.10, lab_hostname: DC01}
       sql01: {lab_address: 10.42.0.20, lab_hostname: SQL01}

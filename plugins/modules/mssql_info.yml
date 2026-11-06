@@ -90,14 +90,22 @@ RETURN:
         sample: [SQLEngine, Replication]
       features_known:
         description:
-          - Whether RV(instances[].features) is complete. False when the registry records no features for the
-            instance, so V(Replication) can't be told.
+          - Whether RV(instances[].features) is complete. False when the registry records nothing about
+            V(Replication) for the instance (RV(instances[].features_unknown)).
         type: bool
         sample: true
+      features_unknown:
+        description:
+          - The features that can't be told installed or not, V(Replication) when the registry records nothing
+            about it. M(git_cgallagher.windows.mssql_setup) never runs setup for these.
+        type: list
+        elements: str
+        sample: []
       features_source:
         description:
-          - Where RV(instances[].features) came from, V(ConfigurationState) or V(FeatureList) (the registry) or
-            V(services).
+          - Where V(Replication)'s state came from, the registry's V(ConfigurationState) or V(FeatureList), or
+            V(services) when neither is there. V(SQLEngine) comes with every instance, and V(FullText) from its
+            launcher service.
         type: str
         sample: ConfigurationState
       collation:

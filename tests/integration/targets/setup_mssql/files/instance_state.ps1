@@ -10,6 +10,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Ansible.Changed = $false
+Add-Type -AssemblyName System.Data
 
 $root = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
 

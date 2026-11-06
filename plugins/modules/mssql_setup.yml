@@ -274,6 +274,7 @@ RETURN:
       edition_id: enterprise_developer
       features: [SQLEngine, Replication]
       features_known: true
+      features_unknown: []
       features_source: ConfigurationState
       collation: SQL_Latin1_General_CP1_CI_AS
       paths:

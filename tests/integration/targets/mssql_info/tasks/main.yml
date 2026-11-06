@@ -12,8 +12,8 @@
   vars:
     ansible_become_password: "{{ setup_mssql_become_password }}"
     info_nologin_user: mssql-itest-nologin
-    info_keys: [name, id, version, version_number, edition, edition_id, features, features_known, features_source, collation,
-                paths, clustered, tcp, encryption, services, server]
+    info_keys: [name, id, version, version_number, edition, edition_id, features, features_known, features_unknown, features_source,
+                collation, paths, clustered, tcp, encryption, services, server]
     info_server_keys: [connected, connection_error, query_errors, product_version, product_level, product_update_level, edition,
                        edition_id, engine_edition, collation, is_clustered, is_hadr_enabled, is_fulltext_installed,
                        default_paths, login, is_sysadmin, services, sysadmins, tempdb, configuration]

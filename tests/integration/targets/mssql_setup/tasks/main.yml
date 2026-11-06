@@ -30,8 +30,8 @@
         path: "{{ itest_unc }}"
         checksum: "{{ setup_mssql_media_checksum }}"
       media_cache_dir: "{{ setup_mssql_cache_dir }}"
-      engine_account: "{{ setup_mssql_engine_account | default(omit, true) }}"
-      engine_password: "{{ setup_mssql_engine_password | default(omit, true) }}"
+      agent_account: "{{ setup_mssql_agent_account | default(omit, true) }}"
+      agent_password: "{{ setup_mssql_agent_password | default(omit, true) }}"
       agent_startup: manual
       instant_file_init: false
       sysadmins: "{{ setup_mssql_sysadmins }}"
@@ -282,7 +282,7 @@
         fail_msg: "mssql_setup returned {{ itest_install | to_json }}; ITEST reads {{ itest_installed.output[0] | to_json }}"
 
     - name: Check a password never reached the result or setup's configuration file
-      when: setup_mssql_engine_password | length > 0
+      when: setup_mssql_agent_password | length > 0
       block:
         - name: Search setup's ConfigurationFile.ini for the password
           ansible.windows.win_powershell:
@@ -297,18 +297,18 @@
               }
             parameters:
               LogDir: "{{ itest_install.setup.log_dir }}"
-              Secret: "{{ setup_mssql_engine_password }}"
+              Secret: "{{ setup_mssql_agent_password }}"
           no_log: true
           register: itest_config_file
 
         - name: Check the password is in neither
           ansible.builtin.assert:
             that:
-              - itest_install.setup.command is search('/SQLSVCPASSWORD="[*]{8}"')
-              - setup_mssql_engine_password not in itest_install.setup.command
+              - itest_install.setup.command is search('/AGTSVCPASSWORD="[*]{8}"')
+              - setup_mssql_agent_password not in itest_install.setup.command
               - itest_config_file.output[0].exists
               - not itest_config_file.output[0].found
-            fail_msg: setup.command or ConfigurationFile.ini holds the engine password (or the file is missing)
+            fail_msg: setup.command or ConfigurationFile.ini holds the Agent's password (or the file is missing)
             quiet: true
 
     - name: Install ITEST again
