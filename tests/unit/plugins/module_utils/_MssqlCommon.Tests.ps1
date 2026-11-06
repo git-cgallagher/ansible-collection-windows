@@ -406,6 +406,49 @@ Rules with failures or warnings:
             'Database Engine Services: Wait on the Database Engine recovery handle failed.'
             'RebootRequiredCheck: A computer restart is required.'
         )
+        $summary.Exceptions.Count | Should -Be 0
+    }
+
+    It 'reads the exception chain, outermost first, by short type name' {
+        $text = @'
+Overall summary:
+  Final result:                  Failed: see details below
+  Exit code (Decimal):           -2068774911
+  Exit message:                  There was an error generating the XML document.
+
+Exception summary:
+The following is an exception stack listing the exceptions in outermost to innermost order
+Inner exceptions are being indented
+
+Exception type: Microsoft.SqlServer.Chainer.Infrastructure.ChainerInfrastructureException
+    Message:
+        There was an error generating the XML document.
+    HResult : 0x84b10001
+        FacilityCode : 1201 (4b1)
+        ErrorCode : 1 (0001)
+    Data:
+      DisableWatson = true
+    Stack:
+        at Microsoft.SqlServer.Chainer.Infrastructure.DataStoreService.FlushData()
+    Inner exception type: System.InvalidOperationException
+        Message:
+                There was an error generating the XML document.
+        HResult : 0x80131509
+        Stack:
+                at System.Xml.Serialization.XmlSerializer.Serialize(XmlWriter xmlWriter, Object o)
+        Inner exception type: System.Security.Cryptography.CryptographicException
+            Message:
+                    Access is denied.
+            HResult : 0x80070005
+'@
+        $summary = Get-MssqlSetupSummary -Text $text
+        $summary.ExitMessage | Should -Be 'There was an error generating the XML document.'
+        $summary.Exceptions | Should -Be @(
+            'ChainerInfrastructureException: There was an error generating the XML document.'
+            'InvalidOperationException: There was an error generating the XML document.'
+            'CryptographicException: Access is denied.'
+        )
+        $summary.Failures.Count | Should -Be 0
     }
 }
 

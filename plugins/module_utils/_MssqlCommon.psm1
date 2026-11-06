@@ -621,18 +621,39 @@ Function Get-MssqlRebootPendingReason {
 Function Get-MssqlSetupSummary {
     <#
     .SYNOPSIS
-    Reads setup's Summary.txt: its final result and exit message, and every
-    feature or rule that failed, with the reason setup gives. Setup's own exit
-    code says little more than "failed", so the module reports these.
+    Reads setup's Summary.txt: its final result and exit message, every
+    feature or rule that failed with the reason setup gives, and the chain of
+    exceptions in its exception summary (outermost first, each as its short
+    type name and message), whose innermost usually names the cause. Setup's
+    own exit code says little more than "failed", so the module reports
+    these.
     #>
     [CmdletBinding()]
     param ([string]$Text)
 
-    $summary = @{ FinalResult = ''; ExitMessage = ''; Failures = @() }
+    $summary = @{ FinalResult = ''; ExitMessage = ''; Failures = @(); Exceptions = @() }
     $failures = [System.Collections.Generic.List[string]]::new()
+    $exceptions = [System.Collections.Generic.List[string]]::new()
     $current = ''
     $failed = $false
+    $exceptionType = ''
+    $wantMessage = $false
     foreach ($line in @($Text -split "`r?`n")) {
+        # An exception's message is on the line after its "Message:".
+        if ($wantMessage -and $line.Trim()) {
+            $wantMessage = $false
+            $entry = '{0}: {1}' -f $exceptionType, $line.Trim()
+            if (-not $exceptions.Contains($entry)) { $exceptions.Add($entry) }
+            continue
+        }
+        if ($line -match '^\s*(Inner )?exception type:\s*(.+?)\s*$') {
+            $exceptionType = ($Matches[2] -split '\.')[-1]
+            continue
+        }
+        if ($line -match '^\s*Message:\s*$') {
+            $wantMessage = $exceptionType -ne ''
+            continue
+        }
         if ($line -notmatch '^\s*([^:]+?):\s+(.*?)\s*$') { continue }
         $key = $Matches[1].Trim()
         $value = $Matches[2]
@@ -653,6 +674,7 @@ Function Get-MssqlSetupSummary {
         }
     }
     $summary.Failures = $failures.ToArray()
+    $summary.Exceptions = $exceptions.ToArray()
     $summary
 }
 

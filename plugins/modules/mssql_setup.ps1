@@ -338,7 +338,10 @@ function Invoke-Setup {
     if ($exitCode -eq 3010) { $script:rebootRequired = $true }
     if ($exitCode -ne 0 -and $exitCode -ne 3010) {
         $summary = Get-MssqlSetupSummary -Text (Read-TextFile $script:setup.summary_path)
-        $details = @(@($summary.ExitMessage) + @($summary.Failures) | Where-Object { $_ } | Select-Object -Unique)
+        # The innermost exception usually names the cause, so it comes first.
+        $chain = @($summary.Exceptions)
+        [array]::Reverse($chain)
+        $details = @(@($summary.ExitMessage) + @($summary.Failures) + @($chain) | Where-Object { $_ } | Select-Object -Unique)
         if ($details.Count -eq 0) {
             $output = @(($stdout.Result + "`n" + $stderr.Result) -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -Last 15
             $details = @($output)
