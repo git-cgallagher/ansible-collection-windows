@@ -104,7 +104,8 @@ if ($Query -and $null -ne $id -and $null -ne $services.engine -and $services.eng
     $server = 'lpc:' + $env:COMPUTERNAME
     if ($named) { $server += '\' + $InstanceName }
     $connection = "Data Source=$server;Integrated Security=SSPI;Connect Timeout=15"
-    $properties = (Invoke-Sql $connection @'
+    # One row comes back from the function as itself, not an array: @() first.
+    $properties = @(Invoke-Sql $connection @'
 SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition,
     CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS product_version,
     CAST(SERVERPROPERTY('Collation') AS nvarchar(128)) AS collation,
