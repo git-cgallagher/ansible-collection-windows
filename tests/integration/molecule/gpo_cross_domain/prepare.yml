@@ -1,0 +1,115 @@
+---
+# Two forests, then the content: srcdc becomes the first DC of
+# src.example.test and dstdc of dst.example.test (the shared promotion, each
+# with its own host_vars), then the fixture authors the matrix on src and the
+# same-named groups on dst, checks every row shows in src's own GPOs, and
+# builds the migration table on src.
+- name: Promote both DCs
+  ansible.builtin.import_playbook: ../../../domain_lab/promote.yml
+
+- name: Seed both domains
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Author the content matrix on src and the groups on dst
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', 'files/xdomain_fixture.ps1') }}"
+        parameters:
+          Action: "{{ 'Source' if inventory_hostname in groups['lab_src'] else 'Target' }}"
+          Domain: "{{ lab_domain }}"
+          GroupsJson: "{{ lab_xd_groups | to_json }}"
+          WmiFilter: "{{ lab_xd_wmi_filter }}"
+      register: lab_xd_seed
+
+    - name: Show what was seeded
+      ansible.builtin.debug:
+        var: lab_xd_seed.result
+
+- name: Check the source GPOs and build the migration table
+  hosts: lab_src
+  gather_facts: false
+  vars:
+    lab_xd_src: "{{ hostvars['srcdc'].lab_xd_seed.result.domain }}"
+    lab_xd_dst: "{{ hostvars['dstdc'].lab_xd_seed.result.domain }}"
+    lab_xd_src_rows: "{{ (lab_xd_src_obs.result | from_json).rows }}"
+  tasks:
+    - name: Read every matrix GPO on src
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', 'files/observe_xdomain.ps1') }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          RowsJson: "{{ lab_xd_rows | to_json }}"
+          SourceJson: "{{ lab_xd_src | to_json }}"
+          TargetJson: "{{ lab_xd_dst | to_json }}"
+      register: lab_xd_src_obs
+
+    # A row the source doesn't hold would read as "not carried" on dst.
+    # (Whether a report shows a row by name is pinned in verify, src and dst.)
+    - name: Require every row in its source GPO
+      ansible.builtin.assert:
+        that:
+          - lab_xd_bad | length == 0
+        fail_msg: "{{ lab_xd_bad | to_json }}"
+      vars:
+        lab_xd_bad: "{{ lab_xd_src_rows | dict2items | selectattr('value.lands', 'equalto', false) | list }}"
+
+    - name: Require the WMI filter and the security filtering on src
+      ansible.builtin.assert:
+        that:
+          - lab_xd_src_rows['XD - WMI Filtered'].wmi_filter == lab_xd_wmi_filter
+          - lab_xd_src_rows['XD - Security Filtered'].apply == [lab_xd_groups.servers]
+          - lab_xd_groups.admins in lab_xd_src_rows['XD - Security Filtered'].edit
+        fail_msg: "{{ lab_xd_src_rows['XD - WMI Filtered'] | to_json }} {{ lab_xd_src_rows['XD - Security Filtered'] | to_json }}"
+
+    - name: Build the src -> dst migration table from the matrix GPOs (GPMC)
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', 'files/new_xdomain_migtable.ps1') }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          GpoNames: "{{ lab_xd_rows | map(attribute='name') | list }}"
+          SourceJson: "{{ lab_xd_src | to_json }}"
+          TargetJson: "{{ lab_xd_dst | to_json }}"
+          Path: "{{ lab_xd_migtable_src }}"
+      register: lab_xd_migtable
+
+    - name: Show the migration table's entries
+      ansible.builtin.debug:
+        var: lab_xd_migtable.result.entries
+
+    # What GPMC finds to translate (run 42293538842): the src groups named in
+    # security settings, the built-in Administrators, and the UNC paths of the
+    # startup script and the folder redirection. Not the GPP drive map's path,
+    # GPP's principals, the hard-coded server, or the filtering group.
+    - name: Require the entries GPMC found
+      ansible.builtin.assert:
+        that:
+          - lab_xd_migtable.result.entries | map(attribute='source') | sort == lab_xd_want | sort
+          - lab_xd_migtable.result.entries | selectattr('refused') | list == []
+        fail_msg: "{{ lab_xd_migtable.result.entries | to_json }}"
+      vars:
+        lab_xd_want:
+          - "{{ lab_xd_groups.admins }}@{{ lab_domain }}"
+          - "{{ lab_xd_groups.staff }}@{{ lab_domain }}"
+          - Administrators
+          - '\\SRCDC01\XdScripts'
+          - '\\SRCDC01\XdRedirect\%USERNAME%\My Documents'
+
+    - name: Bring the migration table to the controller
+      ansible.builtin.fetch:
+        src: "{{ lab_xd_migtable_src }}"
+        dest: "{{ lab_xd_controller_dir }}/src-to-dst.migtable"
+        flat: true
+
+- name: Put the migration table on dst
+  hosts: lab_dst
+  gather_facts: false
+  tasks:
+    - name: Create the import folder's parent
+      ansible.windows.win_file:
+        path: "{{ lab_xd_migtable | win_dirname }}"
+        state: directory
+
+    - name: Copy the migration table next to the import folder
+      ansible.windows.win_copy:
+        src: "{{ lab_xd_controller_dir }}/src-to-dst.migtable"
+        dest: "{{ lab_xd_migtable }}"

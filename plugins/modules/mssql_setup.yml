@@ -19,7 +19,7 @@ DOCUMENTATION:
     - Every action is listed in RV(actions), and in diff mode as the diff. Check mode reports the plan and runs every
       check that only reads, and fails where the real run would. It never stages, mounts or runs setup, so the media's
       version and edition are checked only by a real run.
-  version_added: 0.21.0
+  version_added: 0.22.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:

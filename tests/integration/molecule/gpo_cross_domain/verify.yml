@@ -1,0 +1,179 @@
+---
+# What the move carried, row by row. Each GPO is read on src, on dst as the
+# converge left it (imported through the migration table), and on dst after
+# gpo_import imports the same backup again without the table (the import key
+# includes the table, so no force is needed). files/observe_xdomain.ps1 then
+# classifies each row from those three readings, and the matrix it observed
+# is pinned below (lab_xd_expected): a change in what a move carries fails
+# here. Last, the import goes back through the table, once with a change and
+# once without.
+- name: Read the matrix on src
+  hosts: lab_src
+  gather_facts: false
+  tasks:
+    - name: Read the domain's names and SID
+      ansible.windows.win_powershell: &lab_xd_identity
+        script: |
+          $Ansible.Changed = $false
+          $d = Get-ADDomain
+          [ordered]@{ dns = $d.DNSRoot; netbios = $d.NetBIOSName; sid = $d.DomainSID.Value; host = $env:COMPUTERNAME }
+      register: lab_xd_identity
+
+- name: Classify each row
+  hosts: lab_dst
+  gather_facts: false
+  vars:
+    lab_xd_src: "{{ hostvars['srcdc'].lab_xd_identity.output[0] }}"
+    lab_xd_dst: "{{ lab_xd_identity.output[0] }}"
+    lab_xd_names: "{{ lab_xd_rows | map(attribute='name') | list }}"
+    lab_xd_observe: "{{ lookup('ansible.builtin.file', 'files/observe_xdomain.ps1') }}"
+    lab_xd_src_r: "{{ lab_xd_obs_src.result | from_json }}"
+    lab_xd_table_r: "{{ lab_xd_obs_table.result | from_json }}"
+    lab_xd_plain_r: "{{ lab_xd_obs_plain.result | from_json }}"
+    lab_xd_observe_params:
+      Domain: "{{ lab_domain }}"
+      RowsJson: "{{ lab_xd_rows | to_json }}"
+      SourceJson: "{{ lab_xd_src | to_json }}"
+      TargetJson: "{{ lab_xd_dst | to_json }}"
+    # The matrix the lab observed (run 42293538842, 2026-11-06), which
+    # docs/gpo-cross-domain.md explains row by row.
+    lab_xd_expected:
+      XD - Admin Templates: pass
+      XD - Security Settings: pass
+      XD - User Rights: needs-migration-table
+      XD - Restricted Groups: needs-migration-table
+      XD - File ACL: needs-migration-table
+      XD - Registry ACL: needs-migration-table
+      XD - Startup Scripts: needs-migration-table
+      XD - Folder Redirection: needs-migration-table
+      XD - GPP Registry: pass
+      XD - GPP Drive Map: not-migrated
+      XD - GPP Local Group: not-migrated
+      XD - GPP Targeting: not-migrated
+      XD - Custom ADMX: pass
+      XD - Firewall Rule: pass
+      XD - Hardcoded Server: not-migrated
+      XD - WMI Filtered: not-carried
+      XD - Security Filtered: not-carried
+  tasks:
+    - name: Read the domain's names and SID
+      ansible.windows.win_powershell: *lab_xd_identity
+      register: lab_xd_identity
+
+    - name: Read every matrix GPO on src
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_observe }}"
+        parameters:
+          Domain: "{{ hostvars['srcdc'].lab_domain }}"
+          RowsJson: "{{ lab_xd_rows | to_json }}"
+          SourceJson: "{{ lab_xd_src | to_json }}"
+          TargetJson: "{{ lab_xd_dst | to_json }}"
+      delegate_to: srcdc
+      register: lab_xd_obs_src
+
+    - name: Read every matrix GPO on dst, as imported through the migration table
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_observe }}"
+        parameters: "{{ lab_xd_observe_params }}"
+      register: lab_xd_obs_table
+
+    - name: Import the same backup without the migration table
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_names }}"
+      register: lab_xd_plain
+
+    - name: Require a re-import of every GPO, as the table left the import key
+      ansible.builtin.assert:
+        that:
+          - lab_xd_plain.changed
+          - lab_xd_plain.imported | length == lab_xd_names | length
+        fail_msg: "{{ lab_xd_plain.imported | to_json }}"
+
+    - name: Read every matrix GPO on dst without the migration table, and classify
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_observe }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          RowsJson: "{{ lab_xd_rows | to_json }}"
+          SourceJson: "{{ lab_xd_src | to_json }}"
+          TargetJson: "{{ lab_xd_dst | to_json }}"
+          SourceObsJson: "{{ lab_xd_obs_src.result }}"
+          WithTableJson: "{{ lab_xd_obs_table.result }}"
+      register: lab_xd_obs_plain
+
+    - name: Keep the three readings on the controller
+      ansible.builtin.copy:
+        content: "{{ {'source': lab_xd_src_r, 'with_table': lab_xd_table_r, 'without_table': lab_xd_plain_r} | to_nice_json }}"
+        dest: "{{ lab_xd_controller_dir }}/observed.json"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Show the observed matrix
+      ansible.builtin.debug:
+        var: lab_xd_plain_r.matrix
+
+    - name: Show what each row left of src, with and without the table
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }}: with table {{ lab_xd_table_r.rows[item].src_refs | to_json }}
+          dst {{ lab_xd_table_r.rows[item].dst_refs | to_json }};
+          without {{ lab_xd_plain_r.rows[item].src_refs | to_json }};
+          missing {{ lab_xd_plain_r.rows[item].missing | to_json }};
+          renders {{ lab_xd_plain_r.rows[item].renders | to_json }} (src {{ lab_xd_src_r.rows[item].renders | to_json }});
+          wmi {{ lab_xd_plain_r.rows[item].wmi_filter | to_json }};
+          apply {{ lab_xd_plain_r.rows[item].apply | to_json }};
+          edit {{ lab_xd_plain_r.rows[item].edit | to_json }};
+          files {{ lab_xd_table_r.rows[item].files | to_json }}
+      loop: "{{ lab_xd_names }}"
+
+    - name: Require the matrix the lab observed
+      ansible.builtin.assert:
+        that:
+          - lab_xd_plain_r.matrix == lab_xd_expected
+        fail_msg: "Observed {{ lab_xd_plain_r.matrix | to_json }}, pinned {{ lab_xd_expected | to_json }}"
+
+    # The custom ADMX setting lands either way; only src's report can name it,
+    # dst's shows it under Extra Registry Settings (no ADMX there).
+    - name: Require the custom ADMX setting named on src only
+      ansible.builtin.assert:
+        that:
+          - lab_xd_src_r.rows['XD - Custom ADMX'].renders == true
+          - lab_xd_table_r.rows['XD - Custom ADMX'].renders == false
+          - lab_xd_plain_r.rows['XD - Custom ADMX'].renders == false
+        fail_msg: "{{ lab_xd_src_r.rows['XD - Custom ADMX'].renders }} / {{ lab_xd_table_r.rows['XD - Custom ADMX'].renders }}"
+
+    # Security filtering and delegation aren't part of a backup's content:
+    # the imported GPOs carry dst's defaults.
+    - name: Require dst's default permissions on the filtered GPO
+      ansible.builtin.assert:
+        that:
+          - lab_xd_src_r.rows['XD - Security Filtered'].apply == [lab_xd_groups.servers]
+          - lab_xd_plain_r.rows['XD - Security Filtered'].apply == ['Authenticated Users']
+          - lab_xd_groups.admins not in lab_xd_plain_r.rows['XD - Security Filtered'].edit
+        fail_msg: "{{ lab_xd_plain_r.rows['XD - Security Filtered'] | to_json }}"
+
+    - name: Import through the migration table again
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_names }}"
+        migration_table_path: "{{ lab_xd_migtable }}"
+      register: lab_xd_back
+
+    - name: Import through the migration table once more
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_names }}"
+        migration_table_path: "{{ lab_xd_migtable }}"
+      register: lab_xd_back_again
+
+    - name: Require one re-import, then none
+      ansible.builtin.assert:
+        that:
+          - lab_xd_back.imported | length == lab_xd_names | length
+          - not lab_xd_back_again.changed
+          - lab_xd_back_again.imported | length == 0
+        fail_msg: "{{ lab_xd_back.imported | length }} then {{ lab_xd_back_again.imported | to_json }}"

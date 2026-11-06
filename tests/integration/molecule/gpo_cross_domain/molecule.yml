@@ -1,0 +1,77 @@
+---
+# gpo_export -> gpo_import between two forests: what a GPO's backup carries
+# into a domain it wasn't made in (see README.md). Run it from
+# tests/integration with `molecule test -s gpo_cross_domain`.
+#
+#   srcdc  the first DC of src.example.test, where the content matrix is
+#          authored and exported
+#   dstdc  the first DC of dst.example.test, where it is imported
+#
+# The two forests share nothing: no trust, no DNS forwarding and no network
+# between the VMs (each has only its own QEMU user NIC), so dst can't resolve
+# a single src name or SID, as in a real move between unrelated domains. The
+# backup travels through the controller (lab_dir).
+#
+# The driver, box and provisioner come from the repository's Molecule base
+# config, .config/molecule/config.yml, which Molecule merges under this file;
+# this file replaces its one-VM platform list.
+scenario:
+  name: gpo_cross_domain
+driver:
+  options:
+    platform_defaults:
+      # Two DCs on GitHub's 16 GB runner (wsfc_fileserver runs three VMs at
+      # 2560 MB).
+      memory_mb: 3072
+platforms:
+  - name: srcdc
+    groups: [lab_src]
+    winrm_port: 15985
+  - name: dstdc
+    groups: [lab_dst]
+    winrm_port: 15986
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # The content matrix: one GPO per row, authored on srcdc by
+        # files/xdomain_fixture.ps1 (-Action Source). kind: setting (does the
+        # setting land, and does anything of src's survive in it), wmi or
+        # filtering (is the GPO's WMI filter or security filtering carried).
+        # markers: strings that must all appear in the GPO's report or SYSVOL
+        # files (paths and contents) for the setting to have landed.
+        # report_markers: strings the GPO's report must show by name.
+        lab_xd_rows:
+          - {name: XD - Admin Templates, kind: setting, markers: [fDenyTSConnections]}
+          - {name: XD - Security Settings, kind: setting, markers: [MinimumPasswordLength, AuditLogonEvents, LimitBlankPasswordUse]}
+          - {name: XD - User Rights, kind: setting, markers: [SeRemoteInteractiveLogonRight]}
+          - {name: XD - Restricted Groups, kind: setting, markers: [S-1-5-32-544__Members]}
+          - {name: XD - File ACL, kind: setting, markers: [XdLabFiles]}
+          - {name: XD - Registry ACL, kind: setting, markers: [XdLabKey]}
+          - {name: XD - Startup Scripts, kind: setting, markers: [startup-local.cmd, startup-unc.cmd, 'Startup\startup-local.cmd']}
+          - {name: XD - Folder Redirection, kind: setting, markers: [XdRedirect]}
+          - {name: XD - GPP Registry, kind: setting, markers: [XdGppRegistry]}
+          - {name: XD - GPP Drive Map, kind: setting, markers: [XdDrive]}
+          - {name: XD - GPP Local Group, kind: setting, markers: [Groups.xml, Administrators (built-in)]}
+          - {name: XD - GPP Targeting, kind: setting, markers: [XdTargeted, FilterGroup]}
+          - {name: XD - Custom ADMX, kind: setting, markers: [XdCustomSetting], report_markers: [XD custom ADMX setting]}
+          - {name: XD - Firewall Rule, kind: setting, markers: [XdFirewallRule]}
+          - {name: XD - Hardcoded Server, kind: setting, markers: [XdAppServer]}
+          - {name: XD - WMI Filtered, kind: wmi, markers: [XdWmiFiltered]}
+          - {name: XD - Security Filtered, kind: filtering, markers: [XdFiltered]}
+        # Same-named groups in both domains: the migration table maps each src
+        # group to its dst namesake.
+        lab_xd_groups:
+          admins: GG-XD-Admins        # User Rights, Restricted Groups, file ACL, GPP local group, delegation
+          staff: GG-XD-Staff          # registry ACL, GPP item-level targeting
+          servers: GG-XD-Servers      # security filtering
+        lab_xd_wmi_filter: XD Server OS
+        # Where the backup lives on each side and on the controller.
+        lab_xd_export: 'C:\XdExport'
+        lab_xd_import: 'C:\XdImport\export'
+        lab_xd_migtable: 'C:\XdImport\src-to-dst.migtable'
+        lab_xd_migtable_src: 'C:\XdMigtable\src-to-dst.migtable'
+        lab_xd_controller_dir: "{{ lab_dir }}/gpo-xdomain"
+    host_vars:
+      srcdc: {lab_domain: src.example.test, lab_netbios: SRC, lab_hostname: SRCDC01}
+      dstdc: {lab_domain: dst.example.test, lab_netbios: DST, lab_hostname: DSTDC01}

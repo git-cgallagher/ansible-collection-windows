@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.21.0 — 2026-11-06
+## 0.22.0 — 2026-11-06
 
 A standalone SQL Server instance from an ISO: phase 3a of issue #48, the
 first SQL Server role that installs SQL Server itself.
@@ -47,6 +47,40 @@ first SQL Server role that installs SQL Server itself.
   SQL Server host in `domain-lab`, which installs Microsoft's free SQL Server
   2022 Developer edition (downloaded by the host itself, pinned by its
   SHA-256, never uploaded or published), checks it, and runs both targets.
+
+## 0.21.0 — 2026-11-06
+
+What `gpo_export` and `gpo_import` carry between two unrelated domains: the
+cross-domain part of issue #16. No module changes.
+
+- Docs: `docs/gpo-cross-domain.md` ("Moving GPOs between domains") has the
+  observed matrix and what you supply in the target domain. The README
+  summarizes it, and `docs/design.md` and `docs/scenarios.md` point to it.
+  - Settings that carry as they are: Administrative Templates, security
+    settings without principals, firewall rules, GPP registry items, and
+    custom-ADMX policies (shown as extra registry settings without the ADMX).
+  - Settings that need a migration table: user rights, Restricted Groups,
+    file and registry ACLs, and UNC paths in startup scripts and folder
+    redirection.
+  - Never translated, even with a table: GPP drive maps, Local Users and
+    Groups, item-level targeting, and server names hard-coded in policy
+    values.
+  - Not carried at all: WMI filters, security filtering and delegation.
+- Tests: a new domain-lab job, `molecule (gpo_cross_domain)`
+  (`tests/integration/molecule/gpo_cross_domain`), boots two domain
+  controllers of separate forests, `src.example.test` and `dst.example.test`,
+  with no trust, DNS forwarding or network between them.
+  - It authors 17 GPOs on src, one per kind of setting, and exports them
+    with `gpo_export`. The backup travels through the controller, and
+    `gpo_import` imports it on dst through a GPMC-built migration table and
+    again without one.
+  - Each GPO is read from GPMC's report and its SYSVOL files on both sides.
+    Each row is classified from what was observed, and the result is pinned
+    along with the migration table's entries, so a change in what a move
+    carries fails the job.
+  - Molecule's idempotence step repeats the whole move and expects no change.
+- `tests/domain_lab/promote.yml` renames the DC when a scenario sets
+  `lab_hostname`.
 
 ## 0.20.0 — 2026-11-05
 

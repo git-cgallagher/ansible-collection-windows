@@ -153,6 +153,25 @@ block-inheritance, and `gpo_import` never deletes, renames or unlinks a GPO.
     migration_table_path: lab-to-prod.migtable
 ```
 
+#### Moving GPOs between domains
+
+The backup carries a GPO's settings into an unrelated domain. A lab with
+two forests moved one GPO per kind of setting
+([docs/gpo-cross-domain.md](docs/gpo-cross-domain.md)):
+
+- **As they are:** Administrative Templates, security settings without
+  principals, firewall rules, GPP registry items, and custom-ADMX policies.
+  The ADMX itself doesn't travel, so dst shows those as extra registry
+  settings.
+- **With a migration table:** user rights, Restricted Groups, file and
+  registry ACLs, and UNC paths in scripts and folder redirection.
+- **Never translated, even with a migration table:** GPP drive maps, Local
+  Users and Groups, item-level targeting, and server names hard-coded in
+  policy values.
+
+You supply the links, inheritance, security filtering, delegation, WMI
+filters and ADMX files in the target domain.
+
 ### Requirements
 
 - A Windows management host (or DC) in each domain, reachable over

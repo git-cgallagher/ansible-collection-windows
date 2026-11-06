@@ -9,7 +9,7 @@ DOCUMENTATION:
       and only a C(sysadmin) sees everything; a failed connection is reported there, not raised.
     - Also reports whether Windows has a reboot pending, which SQL Server setup refuses to run with.
     - It only reads, so check mode runs it the same way.
-  version_added: 0.21.0
+  version_added: 0.22.0
   author:
     - Chris Gallagher (@git-cgallagher)
   options:
