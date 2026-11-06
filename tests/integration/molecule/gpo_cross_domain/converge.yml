@@ -27,15 +27,35 @@
         hidden: true
       register: lab_xd_files
 
+    # Paths relative to the export, with forward slashes. The backslash comes
+    # in as a variable: a "\\" literal in the template reaches Ansible 2.19's
+    # Jinja as two backslashes, and matches nothing.
+    - name: Work out the files' paths relative to the export
+      ansible.builtin.set_fact:
+        lab_xd_relative: >-
+          {{ lab_xd_files.files | map(attribute='path')
+             | map('regex_replace', '^.{' ~ (lab_xd_export | length + 1) ~ '}', '')
+             | map('replace', lab_xd_backslash, '/') | list }}
+      vars:
+        lab_xd_backslash: '\'
+
+    # fetch's flat dest doesn't create missing parent folders.
+    - name: Create the backup's folders on the controller
+      ansible.builtin.file:
+        path: "{{ lab_xd_controller_dir }}/export/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ lab_xd_relative | map('dirname') | unique | list }}"
+      delegate_to: localhost
+
     - name: Fetch the backup to the controller, file by file
       ansible.builtin.fetch:
-        src: "{{ item.path }}"
-        # Single-quoted: Jinja must see the backslash string literal "\\".
-        dest: '{{ lab_xd_controller_dir }}/export/{{ item.path[lab_xd_export | length + 1 :] | replace("\\", "/") }}'
+        src: "{{ item.0.path }}"
+        dest: "{{ lab_xd_controller_dir }}/export/{{ item.1 }}"
         flat: true
-      loop: "{{ lab_xd_files.files }}"
+      loop: "{{ lab_xd_files.files | zip(lab_xd_relative) | list }}"
       loop_control:
-        label: "{{ item.path[lab_xd_export | length + 1 :] }}"
+        label: "{{ item.1 }}"
 
 - name: Import the matrix on dst through the migration table
   hosts: lab_dst
