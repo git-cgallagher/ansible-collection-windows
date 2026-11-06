@@ -102,7 +102,8 @@ function Get-RowObservation {
     $report = Get-GPOReport -Guid $gpo.Id -ReportType Xml -Domain $Domain -Server $pdc
     $corpus = [ordered]@{ report = [string]$report }
     $folder = Join-Path $env:SystemRoot ('SYSVOL\domain\Policies\{' + $gpo.Id.ToString().ToUpperInvariant() + '}')
-    foreach ($file in @(Get-ChildItem -LiteralPath $folder -Recurse -File | Sort-Object -Property FullName)) {
+    # -Force: GPMC keeps some of a GPO's files hidden (scripts.ini, fdeploy.ini).
+    foreach ($file in @(Get-ChildItem -LiteralPath $folder -Recurse -File -Force | Sort-Object -Property FullName)) {
         $relative = $file.FullName.Substring($folder.Length + 1)
         $obs.files += $relative
         $text = $relative

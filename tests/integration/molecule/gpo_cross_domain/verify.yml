@@ -35,9 +35,26 @@
       RowsJson: "{{ lab_xd_rows | to_json }}"
       SourceJson: "{{ lab_xd_src | to_json }}"
       TargetJson: "{{ lab_xd_dst | to_json }}"
-    # The matrix the lab observed (README.md and docs/gpo-cross-domain.md
-    # show it). Empty: print the observation and pin nothing.
-    lab_xd_expected: {}
+    # The matrix the lab observed (run 42293538842, 2026-11-06), which
+    # docs/gpo-cross-domain.md explains row by row.
+    lab_xd_expected:
+      XD - Admin Templates: pass
+      XD - Security Settings: pass
+      XD - User Rights: needs-migration-table
+      XD - Restricted Groups: needs-migration-table
+      XD - File ACL: needs-migration-table
+      XD - Registry ACL: needs-migration-table
+      XD - Startup Scripts: needs-migration-table
+      XD - Folder Redirection: needs-migration-table
+      XD - GPP Registry: pass
+      XD - GPP Drive Map: not-migrated
+      XD - GPP Local Group: not-migrated
+      XD - GPP Targeting: not-migrated
+      XD - Custom ADMX: pass
+      XD - Firewall Rule: pass
+      XD - Hardcoded Server: not-migrated
+      XD - WMI Filtered: not-carried
+      XD - Security Filtered: not-carried
   tasks:
     - name: Read the domain's names and SID
       ansible.windows.win_powershell: *lab_xd_identity
@@ -107,7 +124,8 @@
           renders {{ lab_xd_plain_r.rows[item].renders | to_json }} (src {{ lab_xd_src_r.rows[item].renders | to_json }});
           wmi {{ lab_xd_plain_r.rows[item].wmi_filter | to_json }};
           apply {{ lab_xd_plain_r.rows[item].apply | to_json }};
-          edit {{ lab_xd_plain_r.rows[item].edit | to_json }}
+          edit {{ lab_xd_plain_r.rows[item].edit | to_json }};
+          files {{ lab_xd_table_r.rows[item].files | to_json }}
       loop: "{{ lab_xd_names }}"
 
     - name: Require the matrix the lab observed
@@ -115,7 +133,26 @@
         that:
           - lab_xd_plain_r.matrix == lab_xd_expected
         fail_msg: "Observed {{ lab_xd_plain_r.matrix | to_json }}, pinned {{ lab_xd_expected | to_json }}"
-      when: lab_xd_expected | length > 0
+
+    # The custom ADMX setting lands either way; only src's report can name it,
+    # dst's shows it under Extra Registry Settings (no ADMX there).
+    - name: Require the custom ADMX setting named on src only
+      ansible.builtin.assert:
+        that:
+          - lab_xd_src_r.rows['XD - Custom ADMX'].renders == true
+          - lab_xd_table_r.rows['XD - Custom ADMX'].renders == false
+          - lab_xd_plain_r.rows['XD - Custom ADMX'].renders == false
+        fail_msg: "{{ lab_xd_src_r.rows['XD - Custom ADMX'].renders }} / {{ lab_xd_table_r.rows['XD - Custom ADMX'].renders }}"
+
+    # Security filtering and delegation aren't part of a backup's content:
+    # the imported GPOs carry dst's defaults.
+    - name: Require dst's default permissions on the filtered GPO
+      ansible.builtin.assert:
+        that:
+          - lab_xd_src_r.rows['XD - Security Filtered'].apply == [lab_xd_groups.servers]
+          - lab_xd_plain_r.rows['XD - Security Filtered'].apply == ['Authenticated Users']
+          - lab_xd_groups.admins not in lab_xd_plain_r.rows['XD - Security Filtered'].edit
+        fail_msg: "{{ lab_xd_plain_r.rows['XD - Security Filtered'] | to_json }}"
 
     - name: Import through the migration table again
       git_cgallagher.windows.gpo_import:

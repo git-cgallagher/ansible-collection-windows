@@ -122,6 +122,10 @@ A backup from domain A imports into domain B (lab → prod promotion, or one
 baseline stamped into many domains). Domain-specific data inside settings is
 the hazard:
 
+[gpo-cross-domain.md](gpo-cross-domain.md) has what a move between two
+forests actually carried, row by row, as the `gpo_cross_domain` lab observed
+it.
+
 | Content | Behaviour |
 |---|---|
 | Registry values, audit CSV, security-policy *numbers* | import as-is |

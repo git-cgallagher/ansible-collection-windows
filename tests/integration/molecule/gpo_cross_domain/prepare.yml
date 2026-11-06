@@ -76,6 +76,24 @@
       ansible.builtin.debug:
         var: lab_xd_migtable.result.entries
 
+    # What GPMC finds to translate (run 42293538842): the src groups named in
+    # security settings, the built-in Administrators, and the UNC paths of the
+    # startup script and the folder redirection. Not the GPP drive map's path,
+    # GPP's principals, the hard-coded server, or the filtering group.
+    - name: Require the entries GPMC found
+      ansible.builtin.assert:
+        that:
+          - lab_xd_migtable.result.entries | map(attribute='source') | sort == lab_xd_want | sort
+          - lab_xd_migtable.result.entries | selectattr('refused') | list == []
+        fail_msg: "{{ lab_xd_migtable.result.entries | to_json }}"
+      vars:
+        lab_xd_want:
+          - "{{ lab_xd_groups.admins }}@{{ lab_domain }}"
+          - "{{ lab_xd_groups.staff }}@{{ lab_domain }}"
+          - Administrators
+          - '\\SRCDC01\XdScripts'
+          - '\\SRCDC01\XdRedirect\%USERNAME%\My Documents'
+
     - name: Bring the migration table to the controller
       ansible.builtin.fetch:
         src: "{{ lab_xd_migtable_src }}"

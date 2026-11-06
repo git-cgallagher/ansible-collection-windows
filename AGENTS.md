@@ -286,10 +286,31 @@ locked at a parent level, content directories on UNC paths, and a host with
 IIS but without its management tools (the lab installs them for the
 targets' independent reads).
 
+Moving GPOs between forests is lab-tested by `molecule (gpo_cross_domain)`
+(0.21.0, issue #16's cross-domain part):
+`tests/integration/molecule/gpo_cross_domain` boots two DCs of separate
+forests (`src.example.test`/SRCDC01, `dst.example.test`/DSTDC01) with no
+trust, DNS forwarding or network between them. prepare authors 17 GPOs on
+src, one per kind of setting (Admin Templates, security settings with and
+without principals, scripts, folder redirection, four GPP kinds, a custom
+ADMX, a firewall rule, a hard-coded server, a WMI filter, security
+filtering), checks each in src's own report and SYSVOL, and builds a GPMC
+migration table, pinning the entries GPMC found. converge runs `gpo_export` on
+src, fetches the backup file by file, copies it to dst and runs `gpo_import`
+through the table; the idempotence step repeats all of it. verify reads every
+GPO (`files/observe_xdomain.ps1`: `Get-GPOReport` XML plus every SYSVOL file,
+hidden ones included), imports again without the table, classifies each row
+(pass, needs-migration-table, not-migrated, not-carried) and asserts the
+pinned matrix (`lab_xd_expected`), which `docs/gpo-cross-domain.md` explains.
+It first passed on 2026-11-06 (PR #70, run 42293538842). It doesn't cover
+the sync layer's link rebasing or domain-relative trustees across domains.
+
 Not covered by the lab yet (issue #16 unless noted):
 
-- importing into a *different* domain: link targets rebased onto another
-  root DN, domain-relative trustee names, a migration table between domains
+- the sync layer (`gpo_backup`/`gpo_import` roles) into a *different*
+  domain: link targets rebased onto another root DN, domain-relative trustee
+  names (the primitives' move is covered above)
+- AD-stored extensions (legacy IPsec, wireless) in a backup
 - `--check` runs of a whole play (the `gpo_import` role's module runs in check mode
   in the lab, through `gpo_import_report_only` and `apply: {check_mode:
   true}` on the role's include; `gpo_backup`'s check mode is covered by its
@@ -313,7 +334,8 @@ Not covered by the lab yet (issue #16 unless noted):
 required check that never starts blocks merges forever) and depends on a
 third-party box download. Promote its jobs, `molecule (gpo_backup)`,
 `molecule (gpo_import)`, `molecule (wsfc)`, `molecule (iis)`,
-`molecule (wsfc_fileserver)` and `molecule (mssql_prereqs)`, after four
+`molecule (wsfc_fileserver)`, `molecule (mssql_prereqs)` and
+`molecule (gpo_cross_domain)`, after four
 consecutive green weekly runs each, and replace the path filter with a job that always reports and skips the lab
 when nothing relevant changed.
 
@@ -625,6 +647,8 @@ cd roles/gpo_backup && molecule list && molecule syntax
 
 # the IIS modules' integration targets, the same way but from tests/integration
 cd tests/integration && molecule test -s iis
+# gpo_export -> gpo_import between two forests (two VMs, ~16 GB RAM)
+cd tests/integration && molecule test -s gpo_cross_domain
 # or against a Windows host of your own that may get IIS, listed under
 # [windows] in tests/integration/inventory.winrm (gitignored: it holds
 # credentials), from an ansible_collections/git_cgallagher/windows checkout
@@ -645,6 +669,21 @@ ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **Windows PowerShell 5.1's `ConvertFrom-Json` writes a JSON array as one
+  object.** `@($json | ConvertFrom-Json)` is then a one-element array holding
+  the whole list, and `$row.name` member-enumerates every name into an array.
+  Used as a dictionary key, that made `win_powershell` fail serializing the
+  result ("Keys must be strings"), even after the result itself became a
+  string (probably because the error record carried the dictionary). pwsh 7 unrolls the
+  array, so local checks miss it. Unroll with
+  `$json | ConvertFrom-Json | ForEach-Object { $_ }` (gpo_cross_domain's
+  first two lab runs, 2026-11-06).
+- **A `"\\"` literal inside a single-quoted YAML template reaches Ansible
+  2.19's Jinja as two backslashes**, so `replace("\\", "/")` matches nothing
+  in a Windows path. Pass the backslash in as a variable (`sep: '\'`) or
+  slice by length. `fetch` with `flat: true` doesn't create the dest's parent
+  folders either: create them first (gpo_cross_domain's converge).
 
 - **The `gpo_import` target shares its name with the `gpo_import` role.**
   `roles/gpo_import/molecule/default/verify.yml` includes it by path
