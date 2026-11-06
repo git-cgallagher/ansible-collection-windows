@@ -43,8 +43,23 @@ foreach ($entry in @($table.GetEntries())) {
         $destination = $destination -replace [regex]::Escape($swap[0]), $swap[1]
     }
     $mapped = $destination -ne $source
-    if ($mapped) { [void]$table.UpdateDestination($source, $destination) }
-    $entries += [ordered]@{ type = [string]$entry.EntryType; source = $source; destination = $(if ($mapped) { $destination } else { $null }) }
+    $refused = $null
+    if ($mapped) {
+        # GPMC refusing a destination is a finding, not a failure.
+        try {
+            [void]$table.UpdateDestination($source, $destination)
+        }
+        catch {
+            $refused = $_.Exception.Message
+            $mapped = $false
+        }
+    }
+    $entries += [ordered]@{
+        type = [string]$entry.EntryType
+        source = $source
+        destination = $(if ($mapped) { $destination } else { $null })
+        refused = $refused
+    }
 }
 $folder = Split-Path -Parent $Path
 if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }

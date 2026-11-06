@@ -9,7 +9,8 @@
 #   the row's report_markers   does the report show it by name
 #   src's names and SID        its NetBIOS "SRC\" prefix, DNS name, DC's
 #                              host name and domain SID prefix
-#   dst's names and SID        the same for dst (a migration table's work)
+#   dst's names and SID        the same for dst, in the files only (a
+#                              migration table's work)
 # and reads the GPO's WMI filter and the trustees that may apply or edit it.
 #
 # The result is JSON text. With -SourceObsJson (this script's output on srcdc) and -WithTableJson
@@ -34,7 +35,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module GroupPolicy
 
-$rows = @($RowsJson | ConvertFrom-Json)
+# Windows PowerShell 5.1's ConvertFrom-Json writes a JSON array as one object;
+# ForEach-Object unrolls it into the rows.
+$rows = @($RowsJson | ConvertFrom-Json | ForEach-Object { $_ })
 $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
 
 function Get-DomainTerm {
@@ -119,13 +122,19 @@ function Get-RowObservation {
         $obs.renders = $unnamed.Count -eq 0
     }
     $obs.src_refs = Find-Term -Corpus $corpus -Terms $terms.src
-    $obs.dst_refs = Find-Term -Corpus $corpus -Terms $terms.dst
+    # dst's own report names dst (its domain, its trustees), so dst references
+    # count only in the GPO's files: what the migration table wrote.
+    $files = [ordered]@{}
+    foreach ($part in $corpus.Keys) { if ($part -ne 'report') { $files[$part] = $corpus[$part] } }
+    $obs.dst_refs = Find-Term -Corpus $files -Terms $terms.dst
 
     if ($gpo.WmiFilter) { $obs.wmi_filter = $gpo.WmiFilter.Name }
     foreach ($perm in @(Get-GPPermission -Guid $gpo.Id -All -Domain $Domain -Server $pdc)) {
+        # Domain-relative, so src's and dst's trustees compare by name.
         $level = [string]$perm.Permission
-        if ($level -eq 'GpoApply') { $obs.apply += [string]$perm.Trustee.Name }
-        if ($level -like 'GpoEdit*') { $obs.edit += [string]$perm.Trustee.Name }
+        $trustee = ([string]$perm.Trustee.Name).Split('\')[-1]
+        if ($level -eq 'GpoApply') { $obs.apply += $trustee }
+        if ($level -like 'GpoEdit*') { $obs.edit += $trustee }
     }
     $obs.apply = @($obs.apply | Sort-Object)
     $obs.edit = @($obs.edit | Sort-Object)
@@ -150,7 +159,7 @@ function Get-RowClass {
 }
 
 $observed = [ordered]@{}
-foreach ($row in $rows) { $observed[$row.name] = Get-RowObservation -Row $row }
+foreach ($row in $rows) { $observed[[string]$row.name] = Get-RowObservation -Row $row }
 
 $result = [ordered]@{ domain = $Domain; rows = $observed }
 if ($SourceObsJson -and $WithTableJson) {
@@ -160,12 +169,13 @@ if ($SourceObsJson -and $WithTableJson) {
     $withTable = ($WithTableJson | ConvertFrom-Json).rows
     $matrix = [ordered]@{}
     foreach ($row in $rows) {
-        $matrix[$row.name] = Get-RowClass -Row $row -Source $source.($row.name) -WithTable $withTable.($row.name) -Without $without.($row.name)
+        $name = [string]$row.name
+        $matrix[$name] = Get-RowClass -Row $row -Source $source.$name -WithTable $withTable.$name -Without $without.$name
     }
     $result.matrix = $matrix
 }
 
-# As JSON text: Ansible's serializer rejects some of the dictionaries the
-# readings build (non-string keys), ConvertTo-Json doesn't. Callers from_json it.
+# As JSON text, which callers from_json: the readings are nested deeper than
+# Ansible's own serialization keeps.
 $Ansible.Changed = $false
 $Ansible.Result = $result | ConvertTo-Json -Depth 10 -Compress

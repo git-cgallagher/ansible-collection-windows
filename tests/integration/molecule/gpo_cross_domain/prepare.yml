@@ -44,18 +44,14 @@
       register: lab_xd_src_obs
 
     # A row the source doesn't hold would read as "not carried" on dst.
-    - name: Require every row in its source GPO, by name in the report where asked
+    # (Whether a report shows a row by name is pinned in verify, src and dst.)
+    - name: Require every row in its source GPO
       ansible.builtin.assert:
         that:
           - lab_xd_bad | length == 0
         fail_msg: "{{ lab_xd_bad | to_json }}"
       vars:
-        lab_xd_bad: >-
-          {{ lab_xd_src_rows | dict2items
-             | selectattr('value.lands', 'equalto', false)
-             | list
-             + (lab_xd_src_rows | dict2items
-             | selectattr('value.renders', 'equalto', false) | list) }}
+        lab_xd_bad: "{{ lab_xd_src_rows | dict2items | selectattr('value.lands', 'equalto', false) | list }}"
 
     - name: Require the WMI filter and the security filtering on src
       ansible.builtin.assert:

@@ -104,7 +104,7 @@
           dst {{ lab_xd_table_r.rows[item].dst_refs | to_json }};
           without {{ lab_xd_plain_r.rows[item].src_refs | to_json }};
           missing {{ lab_xd_plain_r.rows[item].missing | to_json }};
-          renders {{ lab_xd_plain_r.rows[item].renders | to_json }};
+          renders {{ lab_xd_plain_r.rows[item].renders | to_json }} (src {{ lab_xd_src_r.rows[item].renders | to_json }});
           wmi {{ lab_xd_plain_r.rows[item].wmi_filter | to_json }};
           apply {{ lab_xd_plain_r.rows[item].apply | to_json }};
           edit {{ lab_xd_plain_r.rows[item].edit | to_json }}
