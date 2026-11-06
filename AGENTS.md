@@ -1029,6 +1029,12 @@ ansible-galaxy collection build --force
   Since the driver's v0.2.1 the action also limits its own `apt-get` calls
   (3 minutes for update, 8 for install) and fails with a message to re-run,
   so the step limit is a backstop.
+- **Molecule expands environment variables in `molecule.yml`, so a literal `$`
+  is written `$$`.** `retrieve_password: [SQL01$]` and a gMSA's
+  `...\gmsa-sqlagt-lab$` stopped the first `molecule (mssql)` run before it
+  booted anything: "Invalid placeholder in string" (PR #69, 2026-11-06).
+  Playbooks and group_vars files aren't expanded, only the scenario's
+  `molecule.yml` and the base config.
 - **Molecule's base config is implicit.** `.config/molecule/config.yml` at
   the repository root is merged under every scenario's `molecule.yml`
   because `--base-config` defaults to it (Molecule logs "Found config

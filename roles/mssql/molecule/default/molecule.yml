@@ -5,6 +5,9 @@
 #          mssql_prereqs creates
 #   sql01  the SQL Server host, joined to the domain
 #
+# Molecule expands environment variables in this file, so a literal dollar
+# sign (a gMSA's or computer account's name ends in one) is written twice.
+#
 # The ISO is the free SQL Server 2022 Developer edition, which sql01
 # downloads from Microsoft itself (QEMU's user networking reaches the
 # internet), pinned by its SHA-256. The driver, box and provisioner come
@@ -64,7 +67,7 @@ provisioner:
             dns_hostname: "{{ lab_mssql.agent_gmsa }}.{{ lab_domain }}"
             # The computer account itself, so sql01 needs no reboot to pick up
             # a group membership.
-            retrieve_password: [SQL01$]
+            retrieve_password: [SQL01$$]
         mssql_prereqs_groups:
           - name: "{{ lab_mssql.admins_group }}"
             members: [vagrant]
@@ -78,7 +81,7 @@ provisioner:
         mssql_features: [SQLEngine, Replication]
         mssql_engine_account: "{{ lab_netbios }}\\{{ lab_mssql.engine_account }}"
         mssql_engine_password: "{{ lab_mssql.password }}"
-        mssql_agent_account: "{{ lab_netbios }}\\{{ lab_mssql.agent_gmsa }}$"
+        mssql_agent_account: "{{ lab_netbios }}\\{{ lab_mssql.agent_gmsa }}$$"
         mssql_sysadmins: ["{{ lab_netbios }}\\{{ lab_mssql.admins_group }}"]
         mssql_tempdb: {file_count: 2, file_size_mb: 64, file_growth_mb: 64, log_size_mb: 64, log_growth_mb: 64}
         mssql_become_user: "{{ lab_admin_user }}"
