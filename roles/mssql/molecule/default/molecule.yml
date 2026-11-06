@@ -1,0 +1,94 @@
+---
+# mssql's scenario: two VMs on one lab network (see README.md).
+#
+#   dc01   the domain controller, which holds the SQL Server accounts that
+#          mssql_prereqs creates
+#   sql01  the SQL Server host, joined to the domain
+#
+# The ISO is the free SQL Server 2022 Developer edition, which sql01
+# downloads from Microsoft itself (QEMU's user networking reaches the
+# internet), pinned by its SHA-256. The driver, box and provisioner come
+# from the repository's Molecule base config, .config/molecule/config.yml,
+# which Molecule merges under this file; this file replaces its one-VM
+# platform list.
+scenario:
+  name: default
+platforms:
+  - name: dc01
+    groups: [lab_dc]
+    winrm_port: 15985
+    memory_mb: 3072
+    lab_networks:
+      - {name: lab, ipv4_address: 10.42.0.10}
+  # Room for two instances at once (the mssql_setup target's ITEST runs
+  # beside the role's) and setup itself.
+  - name: sql01
+    groups: [lab_sql]
+    winrm_port: 15986
+    memory_mb: 5120
+    lab_networks:
+      - {name: lab, ipv4_address: 10.42.0.20}
+provisioner:
+  env:
+    # verify.yml runs the mssql_info and mssql_setup integration targets
+    # (tests/integration/targets) as roles.
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/integration/targets
+  inventory:
+    group_vars:
+      all:
+        lab_dc_address: 10.42.0.10
+        # The domain account setup and the checks run as (runas become): the
+        # box's vagrant account became a domain admin when dc01 was promoted.
+        lab_admin_user: "vagrant@{{ lab_domain }}"
+        lab_admin_password: vagrant
+        lab_mssql:
+          # Throwaway lab password (the VMs are reachable only on the
+          # runner's loopback); it meets the default domain password policy.
+          password: Example-not-secret-7
+          engine_account: svc-sqldb-lab
+          agent_gmsa: gmsa-sqlagt-lab
+          admins_group: GG-SQL-Admins-Lab
+          media:
+            path: https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLServer2022-x64-ENU-Dev.iso
+            checksum: sha256:80d2cd75dd2b28098c0182f50ad86bd44f9b3a9f357c30ff617480a1497daffd
+      # mssql_prereqs' variables, for prepare.yml on dc01.
+      lab_dc:
+        mssql_prereqs_accounts:
+          - name: "{{ lab_mssql.engine_account }}"
+            password: "{{ lab_mssql.password }}"
+            description: Lab SQL Server engine
+            spn_sets:
+              - hosts: ["sql01.{{ lab_domain }}"]
+          - name: "{{ lab_mssql.agent_gmsa }}"
+            type: gmsa
+            dns_hostname: "{{ lab_mssql.agent_gmsa }}.{{ lab_domain }}"
+            # The computer account itself, so sql01 needs no reboot to pick up
+            # a group membership.
+            retrieve_password: [SQL01$]
+        mssql_prereqs_groups:
+          - name: "{{ lab_mssql.admins_group }}"
+            members: [vagrant]
+        mssql_prereqs_kds_root_key: check
+      # The role's variables, used by converge.yml and verify.yml, and the
+      # integration targets' (setup_mssql's defaults).
+      lab_sql:
+        mssql_version: '2022'
+        mssql_edition: enterprise_developer
+        mssql_media: "{{ lab_mssql.media }}"
+        mssql_features: [SQLEngine, Replication]
+        mssql_engine_account: "{{ lab_netbios }}\\{{ lab_mssql.engine_account }}"
+        mssql_engine_password: "{{ lab_mssql.password }}"
+        mssql_agent_account: "{{ lab_netbios }}\\{{ lab_mssql.agent_gmsa }}$"
+        mssql_sysadmins: ["{{ lab_netbios }}\\{{ lab_mssql.admins_group }}"]
+        mssql_tempdb: {file_count: 2, file_size_mb: 64, file_growth_mb: 64, log_size_mb: 64, log_growth_mb: 64}
+        mssql_become_user: "{{ lab_admin_user }}"
+        mssql_become_password: "{{ lab_admin_password }}"
+        mssql_allow_reboot: true
+        setup_mssql_become_user: "{{ lab_admin_user }}"
+        setup_mssql_become_password: "{{ lab_admin_password }}"
+        setup_mssql_sysadmins: "{{ mssql_sysadmins }}"
+        setup_mssql_engine_account: "{{ mssql_engine_account }}"
+        setup_mssql_engine_password: "{{ mssql_engine_password }}"
+    host_vars:
+      dc01: {lab_address: 10.42.0.10, lab_hostname: DC01}
+      sql01: {lab_address: 10.42.0.20, lab_hostname: SQL01}

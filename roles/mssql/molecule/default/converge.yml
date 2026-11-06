@@ -1,0 +1,9 @@
+---
+- name: Converge
+  hosts: lab_sql
+  gather_facts: false
+  tasks:
+    # The role's variables come from molecule.yml's group_vars (lab_sql).
+    - name: Install SQL Server 2022 Developer
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql

@@ -1,0 +1,113 @@
+---
+# Installs a standalone SQL Server instance on each host in the play, in
+# parallel, then reads it back. plan.yml checks the variables first without
+# touching a host; the mssql_setup module plans and runs setup (checking the
+# host and the media first); mssql_info reads the instance and publishes it as
+# mssql_instance.
+- name: Check the variables
+  ansible.builtin.import_tasks: plan.yml
+
+# Only to learn whether setup has work while a reboot is pending, so the role
+# can reboot first: the module's check mode reads and changes nothing.
+- name: Plan setup, to reboot first when it has work and a reboot is pending
+  git_cgallagher.windows.mssql_setup:
+    <<: &mssql_setup_args
+      instance_name: "{{ mssql_instance_name }}"
+      version: "{{ mssql_version }}"
+      edition: "{{ mssql_edition }}"
+      product_key: "{{ mssql_product_key | default(omit, true) }}"
+      features: "{{ mssql_features }}"
+      collation: "{{ mssql_collation | default(omit, true) }}"
+      media: "{{ mssql_media }}"
+      media_cache_dir: "{{ mssql_media_cache_dir }}"
+      update_source: "{{ mssql_update_source | default(omit, true) }}"
+      engine_account: "{{ mssql_engine_account | default(omit, true) }}"
+      engine_password: "{{ mssql_engine_password | default(omit, true) }}"
+      agent_account: "{{ mssql_agent_account | default(omit, true) }}"
+      agent_password: "{{ mssql_agent_password | default(omit, true) }}"
+      agent_startup: "{{ mssql_agent_startup }}"
+      sysadmins: "{{ mssql_sysadmins }}"
+      instant_file_init: "{{ mssql_instant_file_init | bool }}"
+      paths: "{{ mssql_paths | default(omit, true) }}"
+      tempdb: "{{ mssql_tempdb | default(omit, true) }}"
+    pending_reboot: report
+  check_mode: true
+  register: mssql__plan
+  when: mssql_allow_reboot | bool
+  vars: &mssql_become_vars
+    ansible_become_password: "{{ mssql_become_password }}"
+  become: "{{ mssql_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ mssql_become_user }}"
+
+- name: Reboot before setup, which won't run while a reboot is pending
+  ansible.windows.win_reboot:
+    reboot_timeout: 1800
+  when:
+    - mssql_allow_reboot | bool
+    - not (mssql_report_only | bool or ansible_check_mode)
+    - mssql__plan is changed
+    - mssql__plan.preflight.reboot_pending | default(false)
+
+# mssql_report_only plans setup (the module's check mode). The "or
+# ansible_check_mode" keeps --check honest: a bare mssql_report_only would
+# template to check_mode false and the task would write during a check run.
+# Planning a reboot it may make, the module only reports a pending one.
+- name: Install SQL Server, or add the features it lacks
+  git_cgallagher.windows.mssql_setup:
+    <<: *mssql_setup_args
+    pending_reboot: "{{ 'report' if mssql_allow_reboot | bool and (mssql_report_only | bool or ansible_check_mode) else 'fail' }}"
+  check_mode: "{{ mssql_report_only | bool or ansible_check_mode }}"
+  register: mssql__setup
+  vars: *mssql_become_vars
+  become: "{{ mssql_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ mssql_become_user }}"
+
+- name: Reboot after setup, which asked for it (exit code 3010)
+  ansible.windows.win_reboot:
+    reboot_timeout: 1800
+  when:
+    - mssql__setup.reboot_required | default(false)
+    - mssql_allow_reboot | bool
+
+- name: Fail when setup needs a reboot the role may not make
+  ansible.builtin.fail:
+    msg: >-
+      SQL Server setup finished on {{ inventory_hostname }} and needs a reboot (exit code 3010). Reboot the host, or set
+      mssql_allow_reboot to let the role do it.
+  when:
+    - mssql__setup.reboot_required | default(false)
+    - not mssql_allow_reboot | bool
+
+- name: Read the instance
+  git_cgallagher.windows.mssql_info:
+    instance_name: "{{ mssql_instance_name }}"
+  register: mssql__info
+  vars: *mssql_become_vars
+  become: "{{ mssql_become_user | length > 0 }}"
+  become_method: ansible.builtin.runas
+  become_user: "{{ mssql_become_user }}"
+
+- name: Publish the instance as mssql_instance
+  ansible.builtin.set_fact:
+    mssql_instance: "{{ mssql__info.instances | first | default(none) }}"
+
+# What every later step (and the next phases' modules) needs: a running
+# instance the role's account can manage. A check-mode run that would install
+# the instance has nothing to read yet.
+- name: Require the instance running, with the role's account a sysadmin
+  ansible.builtin.assert:
+    that:
+      - mssql_instance is not none
+      - mssql_instance.server is not none
+      - mssql_instance.server.connected
+      - mssql_instance.server.is_sysadmin
+    fail_msg: >-
+      Instance {{ mssql_instance_name }} on {{ inventory_hostname }}:
+      {{ 'not installed' if mssql_instance is none else
+         'not running' if mssql_instance.server is none else
+         ('no connection: ' ~ mssql_instance.server.connection_error) if not mssql_instance.server.connected else
+         (mssql_instance.server.login ~ ' is not a sysadmin') }}
+    quiet: true
+  when: not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))

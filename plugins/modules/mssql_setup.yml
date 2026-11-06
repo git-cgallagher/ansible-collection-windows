@@ -276,7 +276,10 @@ RETURN:
       features_known: true
       features_source: ConfigurationState
       collation: SQL_Latin1_General_CP1_CI_AS
-      paths: {program: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', data_root: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', binn: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn'}
+      paths:
+        program: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL'
+        data_root: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL'
+        binn: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn'
       clustered: false
       tcp: {enabled: true, port: '1433', dynamic_ports: ''}
       encryption: {force_encryption: false, certificate: ''}
@@ -308,7 +311,7 @@ RETURN:
     returned: always
     type: dict
     sample:
-      command: '"E:\setup.exe" /Q /ACTION="Install" /IACCEPTSQLSERVERLICENSETERMS /FEATURES="SQLENGINE" /INSTANCENAME="MSSQLSERVER" /UpdateEnabled="False" /PID="********"'
+      command: '"E:\setup.exe" /Q /ACTION="Install" /IACCEPTSQLSERVERLICENSETERMS /FEATURES="SQLENGINE" /PID="********" ...'
       exit_code: 0
       summary_path: C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\Summary.txt
       log_dir: C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\20261106_101500

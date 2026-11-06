@@ -11,7 +11,7 @@
   tasks:
     - name: Check one role
       ansible.builtin.include_tasks: check_role.yml
-      loop: [gpo_backup, gpo_import, wsfc, wsfc_fileserver, mssql_prereqs]
+      loop: [gpo_backup, gpo_import, wsfc, wsfc_fileserver, mssql_prereqs, mssql]
       loop_control:
         loop_var: spec_role
 
@@ -822,6 +822,149 @@
         - case: a name listed twice
           accounts: [{name: svc-g, password: x}, {name: SVC-G, password: y}]
           expect: "Names listed more than once: \\['svc-g'\\]"
+      loop_control:
+        loop_var: plan_case
+        label: "{{ plan_case.case }}"
+
+- name: Exercise mssql's argument spec
+  hosts: localhost
+  gather_facts: false
+  vars:
+    spec_roles_dir: "{{ playbook_dir }}/../../roles"
+    spec_mssql: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/mssql/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+    spec_mssql_media:
+      path: https://download.example.com/SQLServer2022-x64-ENU-Dev.iso
+      checksum: sha256:80d2cd75dd2b28098c0182f50ad86bd44f9b3a9f357c30ff617480a1497daffd
+  tasks:
+    - name: Accept a minimal mssql call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_mssql }}"
+        provided_arguments:
+          mssql_version: '2022'
+          mssql_edition: enterprise_developer
+          mssql_media: "{{ spec_mssql_media }}"
+          mssql_sysadmins: [EXAMPLE\GG-SQL-Admins]
+
+    - name: Accept a full mssql call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_mssql }}"
+        provided_arguments:
+          mssql_version: '2025'
+          mssql_edition: standard
+          mssql_product_key: AAAAA-BBBBB-CCCCC-DDDDD-EEEEE
+          mssql_instance_name: INST1
+          mssql_features: [SQLEngine, Replication, FullText]
+          mssql_collation: Latin1_General_CI_AS
+          mssql_media: {path: '\\files.example.com\media\SQLServer2025-x64-ENU.iso', checksum: "sha256:{{ '0' * 64 }}"}
+          mssql_media_cache_dir: D:\cache
+          mssql_update_source: D:\media\CU
+          mssql_engine_account: EXAMPLE\svc-sqldb
+          mssql_engine_password: example-not-secret
+          mssql_agent_account: EXAMPLE\gmsa-sqlagt$
+          mssql_agent_password: ''
+          mssql_agent_startup: manual
+          mssql_sysadmins: [EXAMPLE\GG-SQL-Admins, EXAMPLE\svc-ansible]
+          mssql_instant_file_init: false
+          mssql_paths:
+            instance_dir: 'D:\MSSQL'
+            data_root: 'D:\MSSQL'
+            data: 'D:\Data'
+            log: 'L:\Log'
+            backup: 'B:\Backup'
+            tempdb_data: 'T:\TempDB'
+            tempdb_log: 'T:\TempDB'
+          mssql_tempdb: {file_count: 8, file_size_mb: 1024, file_growth_mb: 512, log_size_mb: 1024, log_growth_mb: 512}
+          mssql_become_user: EXAMPLE\svc-ansible
+          mssql_become_password: example-not-secret
+          mssql_allow_reboot: true
+          mssql_report_only: true
+
+    - name: Reject what the argument spec rules out
+      ansible.builtin.include_tasks: mssql_spec_reject.yml
+      loop:
+        - case: an edition of express
+          edition: express
+          expect: mssql_edition
+        - case: a version of 2019
+          version: '2019'
+          expect: mssql_version
+        - case: the SQL parent feature
+          features: [SQL]
+          expect: mssql_features
+        - case: media without a checksum
+          media: {path: 'D:\media\SQLServer2022.iso'}
+          expect: checksum
+        - case: an Agent startup of delayed
+          agent_startup: delayed
+          expect: mssql_agent_startup
+      loop_control:
+        loop_var: spec_case
+        label: "{{ spec_case.case }}"
+
+- name: Exercise mssql's plan
+  hosts: localhost
+  gather_facts: false
+  vars:
+    spec_mssql_media:
+      path: https://download.example.com/SQLServer2022-x64-ENU-Dev.iso
+      checksum: sha256:80d2cd75dd2b28098c0182f50ad86bd44f9b3a9f357c30ff617480a1497daffd
+  tasks:
+    - name: Plan a domain engine account and a gMSA for the Agent
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql
+        tasks_from: plan
+      vars:
+        mssql_version: '2022'
+        mssql_edition: enterprise_developer
+        mssql_media: "{{ spec_mssql_media }}"
+        mssql_sysadmins: [EXAMPLE\GG-SQL-Admins]
+        mssql_engine_account: EXAMPLE\svc-sqldb
+        mssql_engine_password: example-not-secret
+        mssql_agent_account: EXAMPLE\gmsa-sqlagt$
+
+    - name: Plan a paid edition with its key, and built-in accounts
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql
+        tasks_from: plan
+      vars:
+        mssql_version: '2025'
+        mssql_edition: standard
+        mssql_product_key: AAAAA-BBBBB-CCCCC-DDDDD-EEEEE
+        mssql_media: "{{ spec_mssql_media }}"
+        mssql_sysadmins: [EXAMPLE\GG-SQL-Admins]
+        mssql_engine_account: NT SERVICE\MSSQLSERVER
+        mssql_agent_account: NT AUTHORITY\NETWORK SERVICE
+
+    - name: Refuse each kind of input the plan can't apply
+      ansible.builtin.include_tasks: mssql_reject.yml
+      loop:
+        - case: Standard Developer on 2022
+          vars: {edition: standard_developer}
+          expect: no Standard Developer edition
+        - case: a product key for a Developer edition
+          vars: {product_key: AAAAA-BBBBB-CCCCC-DDDDD-EEEEE}
+          expect: mssql_product_key is only for enterprise or standard
+        - case: features without SQLEngine
+          vars: {features: [FullText]}
+          expect: must include SQLEngine
+        - case: no sysadmins
+          vars: {sysadmins: []}
+          expect: mssql_sysadmins must name at least one
+        - case: media that isn't an ISO
+          vars: {media: {path: 'D:\media\setup.exe', checksum: "sha256:{{ '0' * 64 }}"}}
+          expect: mssql_media needs a path naming an .iso file
+        - case: a checksum that isn't sha256
+          vars: {media: {path: 'D:\media\sql.iso', checksum: 'md5:0123456789abcdef0123456789abcdef'}}
+          expect: mssql_media needs a path naming an .iso file
+        - case: a domain account without its password
+          vars: {engine_account: EXAMPLE\svc-sqldb}
+          expect: mssql_engine_account and mssql_engine_password don't fit
+        - case: a password for a gMSA
+          vars: {agent_account: EXAMPLE\gmsa-sqlagt$, agent_password: example-not-secret}
+          expect: mssql_agent_account and mssql_agent_password don't fit
+        - case: a password without an account
+          vars: {engine_password: example-not-secret}
+          expect: mssql_engine_account and mssql_engine_password don't fit
       loop_control:
         loop_var: plan_case
         label: "{{ plan_case.case }}"

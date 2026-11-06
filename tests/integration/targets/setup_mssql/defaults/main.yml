@@ -1,0 +1,34 @@
+---
+# What the mssql targets need, which the mssql role's Molecule scenario
+# (roles/mssql/molecule/default) provides: a default instance installed by
+# the role, and the ISO the role cached. On a host of your own, set these.
+
+# The installed instance mssql_info reads (mssql_setup's own is ITEST).
+setup_mssql_instance: MSSQLSERVER
+
+# The ISO, where the role cached it, and what it is.
+setup_mssql_media_dir: 'C:\ProgramData\mssql-iac\media'
+setup_mssql_media_file: SQLServer2022-x64-ENU-Dev.iso
+setup_mssql_media_checksum: sha256:80d2cd75dd2b28098c0182f50ad86bd44f9b3a9f357c30ff617480a1497daffd
+setup_mssql_version: '2022'
+setup_mssql_edition: enterprise_developer
+
+# The account the modules run as (runas become), which must be a sysadmin of
+# the instance and in setup_mssql_sysadmins.
+setup_mssql_become_user: "{{ ansible_user }}"
+setup_mssql_become_password: "{{ ansible_password }}"
+setup_mssql_sysadmins: ["{{ setup_mssql_become_user }}"]
+
+# The account mssql_setup's own instance runs as; '' = setup's virtual account.
+setup_mssql_engine_account: ''
+setup_mssql_engine_password: ''
+
+# The targets' own directories, apart from the role's.
+setup_mssql_dir: 'C:\ProgramData\mssql-iac-test'
+setup_mssql_cache_dir: 'C:\ProgramData\mssql-iac-test\media'
+setup_mssql_backup_dir: 'C:\ProgramData\mssql-iac-test\backup'
+
+# The targets' view of an instance (files/): the registry, the services and
+# SqlClient, never the modules under test. The targets are this role's
+# siblings, so the calling target's role_path finds it.
+setup_mssql_state_script: "{{ lookup('ansible.builtin.file', role_path ~ '/../setup_mssql/files/instance_state.ps1') }}"

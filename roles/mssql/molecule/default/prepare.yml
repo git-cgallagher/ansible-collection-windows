@@ -1,0 +1,83 @@
+---
+# Builds what a SQL Server host stands on: a domain, sql01 joined to it, and
+# the accounts SQL Server runs as, which mssql_prereqs creates on dc01 (a
+# domain user with its SPNs for the engine, a gMSA that sql01 may use for
+# SQL Server Agent, and the administrators' group). converge.yml then
+# installs SQL Server with the role.
+- name: Prepare every VM
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the connection
+      ansible.builtin.wait_for_connection:
+        timeout: 1200
+
+    - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+          try {
+              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          }
+          catch {
+              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
+          }
+
+- name: Promote dc01 to the first DC of a new forest
+  hosts: lab_dc
+  gather_facts: false
+  tasks:
+    # Renames it, points DNS at itself, promotes, reboots, and makes the
+    # connection account (now a domain account) a Domain Admin.
+    - name: Promote
+      ansible.builtin.include_role:
+        name: git_cgallagher.molecule.ad_forest
+      vars:
+        ad_forest_domain: "{{ lab_domain }}"
+        ad_forest_netbios: "{{ lab_netbios }}"
+        ad_forest_dsrm_password: "{{ lab_dsrm_password }}"
+        ad_forest_hostname: "{{ lab_hostname }}"
+        ad_forest_admin_groups: [Domain Admins]
+
+    # gMSAs need the forest's KDS root key, usable 10 hours after its
+    # effective time; the lab's is backdated so the gMSA works at once.
+    - name: Create a KDS root key usable now (lab only)
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          if (@(Get-KdsRootKey | Where-Object { $null -ne $_ }).Count -eq 0) {
+              $null = Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+              $Ansible.Changed = $true
+          }
+
+- name: Join sql01 to the domain
+  hosts: lab_sql
+  gather_facts: false
+  tasks:
+    # The management NIC's DHCP DNS (QEMU's) can't resolve the lab domain.
+    - name: Use dc01 for DNS on every adapter
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers: ["{{ lab_dc_address }}"]
+
+    - name: Rename sql01 and join the domain
+      microsoft.ad.membership:
+        dns_domain_name: "{{ lab_domain }}"
+        hostname: "{{ lab_hostname }}"
+        domain_admin_user: "{{ lab_admin_user }}"
+        domain_admin_password: "{{ lab_admin_password }}"
+        state: domain
+        reboot: true
+
+# After the join: the gMSA's password-retrieval list names sql01's computer
+# account, which has to exist.
+- name: Create the SQL Server accounts, SPNs and administrators' group
+  hosts: lab_dc
+  gather_facts: false
+  tasks:
+    - name: Run mssql_prereqs
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql_prereqs

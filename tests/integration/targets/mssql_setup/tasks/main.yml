@@ -1,0 +1,464 @@
+---
+# Integration tests for git_cgallagher.windows.mssql_setup, on the host the
+# mssql role installed SQL Server on (setup_mssql, meta/main.yml, checks the
+# role's instance and cached ISO are there). First the refusals, which
+# change nothing; then a named instance of the target's own (ITEST) through
+# its whole life: installed from the cached ISO over a UNC path (a share of
+# the role's cache on this host, staged into the target's own cache), given a
+# feature, and uninstalled. Each change runs in check mode first (predicts
+# it, writes nothing), then for real, then again (no change). Every check
+# reads the host through setup_mssql's instance_state.ps1, never through the
+# modules. Everything the target creates it removes (block/always).
+- name: Test mssql_setup, then clean up
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ setup_mssql_become_user }}"
+  vars:
+    ansible_become_password: "{{ setup_mssql_become_password }}"
+    itest_instance: ITEST
+    itest_share: mssql-itest
+    itest_unc: "\\\\{{ setup_mssql_computer }}\\{{ itest_share }}\\{{ setup_mssql_media_file }}"
+    itest_local_iso: "{{ setup_mssql_media_dir }}\\{{ setup_mssql_media_file }}"
+    itest_staged_iso: "{{ setup_mssql_cache_dir }}\\{{ setup_mssql_media_file }}"
+    itest_images: ["{{ itest_local_iso }}", "{{ itest_staged_iso }}"]
+    # ITEST's settings: options the role's instance leaves at their defaults.
+    itest_options: &itest_options
+      instance_name: ITEST
+      version: "{{ setup_mssql_version }}"
+      edition: "{{ setup_mssql_edition }}"
+      media:
+        path: "{{ itest_unc }}"
+        checksum: "{{ setup_mssql_media_checksum }}"
+      media_cache_dir: "{{ setup_mssql_cache_dir }}"
+      engine_account: "{{ setup_mssql_engine_account | default(omit, true) }}"
+      engine_password: "{{ setup_mssql_engine_password | default(omit, true) }}"
+      agent_startup: manual
+      instant_file_init: false
+      sysadmins: "{{ setup_mssql_sysadmins }}"
+      paths:
+        backup: "{{ setup_mssql_backup_dir }}"
+      tempdb:
+        file_count: 1
+  block:
+    - name: Share the role's cached ISO on this host, for a UNC path
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name, [string]$Path)
+          $Ansible.Changed = $false
+          if (-not (Get-SmbShare -Name $Name -ErrorAction SilentlyContinue)) {
+              $null = New-SmbShare -Name $Name -Path $Path -ReadAccess Everyone
+              $Ansible.Changed = $true
+          }
+        parameters:
+          Name: "{{ itest_share }}"
+          Path: "{{ setup_mssql_media_dir }}"
+
+    - name: Reboot first when a reboot is pending, which setup refuses
+      ansible.builtin.include_tasks: "{{ role_path }}/../setup_mssql/tasks/reboot.yml"
+
+    - name: Read ITEST before the tests
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: false}
+        depth: 5
+      register: itest_before
+
+    - name: Require ITEST absent (a previous run's always block removes it)
+      ansible.builtin.assert:
+        that: not itest_before.output[0].installed
+        fail_msg: ITEST is installed already; uninstall it (mssql_setup state=absent allow_remove=true) and run again
+
+    - name: Refuse what setup can't do
+      ansible.builtin.include_tasks: refuse.yml
+      loop:
+        - case: a checksum that isn't sha256
+          checksum: md5:0123456789abcdef0123456789abcdef
+          expect: media.checksum must be sha256
+        - case: Standard Developer on 2022
+          edition: standard_developer
+          expect: no Standard Developer edition
+        - case: a product key for a Developer edition
+          product_key: AAAAA-BBBBB-CCCCC-DDDDD-EEEEE
+          expect: takes no product key
+        - case: features without SQLEngine
+          features: [FullText]
+          expect: must include SQLEngine
+        - case: a password for a gMSA
+          engine_account: EXAMPLE\gmsa-itest$
+          engine_password: Example-not-secret-9
+          expect: takes no password
+        - case: a domain account without its password
+          engine_account: EXAMPLE\svc-itest
+          expect: needs engine_password
+        - case: an instance name setup doesn't take
+          instance_name: 1BAD
+          expect: isn't a name setup takes
+        - case: media that isn't an ISO
+          media_path: \\server\share\setup.exe
+          expect: must name an .iso file
+        - case: sysadmins without the account it runs as
+          sysadmins: [BUILTIN\Guests]
+          expect: None of sysadmins
+        - case: a path on a volume the host doesn't have
+          paths: {data: 'Q:\MSSQL\Data'}
+          expect: on a volume this host doesn't have
+        - case: a share's ISO that doesn't match its checksum
+          checksum: sha256:0000000000000000000000000000000000000000000000000000000000000000
+          expect: has SHA-256 [0-9a-f]{64}, not 0{64}
+        - case: a local ISO that doesn't exist
+          media_path: C:\ProgramData\mssql-iac-test\missing.iso
+          expect: doesn't exist
+        - case: uninstalling without allow_remove
+          instance_name: "{{ setup_mssql_instance }}"
+          state: absent
+          expect: set allow_remove
+        # These two need the ISO mounted: real runs, from the local copy so
+        # nothing is staged.
+        - case: media of another version
+          version: '2025'
+          media_path: "{{ itest_local_iso }}"
+          check_mode: false
+          expect: not 2025
+        - case: Evaluation from Developer media
+          edition: evaluation
+          media_path: "{{ itest_local_iso }}"
+          check_mode: false
+          expect: not Evaluation
+      loop_control:
+        loop_var: itest_case
+        label: "{{ itest_case.case }}"
+
+    - name: Read the host after the refusals
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: false, ImagePaths: "{{ itest_images }}"}
+        depth: 5
+      register: itest_refused
+
+    - name: Look for a staged copy
+      ansible.windows.win_stat:
+        path: "{{ itest_staged_iso }}"
+        get_checksum: false
+      register: itest_staged_refused
+
+    - name: Check the refusals installed, staged and left mounted nothing
+      ansible.builtin.assert:
+        that:
+          - not itest_refused.output[0].installed
+          - itest_refused.output[0].attached_images | length == 0
+          - not itest_staged_refused.stat.exists
+        fail_msg: "{{ itest_refused.output[0] | to_json }}"
+
+    # --- a pending reboot ------------------------------------------------------------
+    # A file rename waiting for the next boot is one of the markers setup
+    # checks. This one deletes a file of the target's own; it's removed again
+    # before anything reboots.
+    - name: Mark a reboot pending, with a file rename of the target's own
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Dir)
+          $ErrorActionPreference = 'Stop'
+          $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+          if (@((Get-ItemProperty -LiteralPath $key).PendingFileRenameOperations | Where-Object { $_ }).Count -gt 0) {
+              throw 'File renames are pending already; the reboot above should have cleared them'
+          }
+          $null = New-Item -ItemType Directory -Path $Dir -Force
+          $file = Join-Path $Dir 'reboot-marker.txt'
+          Set-Content -LiteralPath $file -Value 'mssql_setup target'
+          $null = New-ItemProperty -LiteralPath $key -Name PendingFileRenameOperations -PropertyType MultiString -Value @("\??\$file", '') -Force
+        parameters:
+          Dir: "{{ setup_mssql_dir }}"
+
+    - name: Install ITEST while a reboot is pending (check mode)
+      git_cgallagher.windows.mssql_setup: *itest_options
+      check_mode: true
+      register: itest_pending_fail
+      ignore_errors: true
+
+    - name: Plan it again, only reporting the pending reboot
+      git_cgallagher.windows.mssql_setup:
+        <<: *itest_options
+        pending_reboot: report
+      check_mode: true
+      register: itest_pending_report
+
+    - name: Clear the file rename
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+          Remove-ItemProperty -LiteralPath $key -Name PendingFileRenameOperations -ErrorAction SilentlyContinue
+
+    - name: Check a pending reboot fails the run, or is only reported
+      ansible.builtin.assert:
+        that:
+          - itest_pending_fail is failed
+          - itest_pending_fail.msg is search('A reboot is pending .*PendingFileRenameOperations')
+          - itest_pending_report is changed
+          - itest_pending_report.preflight.reboot_pending
+          - itest_pending_report.preflight.reboot_pending_reasons | select('search', 'PendingFileRenameOperations') | list | length == 1
+        fail_msg: "fail: {{ itest_pending_fail.msg | default('') }}; report: {{ itest_pending_report.preflight | default({}) | to_json }}"
+
+    # --- install ---------------------------------------------------------------------
+    - name: Install ITEST (check mode)
+      git_cgallagher.windows.mssql_setup: *itest_options
+      check_mode: true
+      register: itest_install_check
+
+    - name: Look for a staged copy after check mode
+      ansible.windows.win_stat:
+        path: "{{ itest_staged_iso }}"
+        get_checksum: false
+      register: itest_staged_check
+
+    - name: Read ITEST after check mode
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: false}
+        depth: 5
+      register: itest_after_check
+
+    - name: Check check mode planned the stage and the install, and did neither
+      ansible.builtin.assert:
+        that:
+          - itest_install_check is changed
+          - itest_install_check.actions | length == 2
+          - itest_install_check.actions[0] is search('^stage media ')
+          - itest_install_check.actions[1] is search('^install SQL Server 2022 \(enterprise_developer\) instance ITEST')
+          - itest_install_check.media.kind == 'unc'
+          - not itest_install_check.media.staged
+          - not itest_install_check.preflight.reboot_pending
+          - itest_install_check.preflight.sysadmin_match | length > 0
+          - itest_install_check.setup is none
+          - itest_install_check.instance is none
+          - not itest_staged_check.stat.exists
+          - not itest_after_check.output[0].installed
+        fail_msg: "{{ itest_install_check | to_json }}"
+
+    - name: Install ITEST
+      git_cgallagher.windows.mssql_setup: *itest_options
+      register: itest_install
+
+    - name: Read ITEST after the install
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: true, ImagePaths: "{{ itest_images }}"}
+        depth: 5
+      register: itest_installed
+
+    - name: Look at the staged copy
+      ansible.windows.win_stat:
+        path: "{{ itest_staged_iso }}"
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: itest_staged
+
+    - name: Check the install, its result, and the instance it made
+      ansible.builtin.assert:
+        that:
+          - itest_install is changed
+          - itest_install.actions == itest_install_check.actions
+          - "['instance', 'media', 'setup', 'preflight', 'reboot_required', 'notices', 'actions'] | difference(itest_install.keys()) | length == 0"
+          - itest_install.media.staged
+          - itest_install.media.version == '2022'
+          - itest_install.media.build is search('^16[.]')
+          - itest_install.media.edition == 'enterprise_developer'
+          - itest_install.media.local_path == itest_staged_iso
+          - itest_install.setup.exit_code in [0, 3010]
+          - itest_install.setup.summary_path is search('Summary[.]txt$')
+          - itest_install.instance.name == 'ITEST'
+          - itest_install.instance.features == ['SQLEngine']
+          - itest_install.instance.edition_id == 'enterprise_developer'
+          - itest_installed.output[0].installed
+          - itest_installed.output[0].services.engine.state == 'Running'
+          - itest_installed.output[0].services.agent.start_mode == 'Manual'
+          - itest_installed.output[0].server.is_sysadmin
+          - itest_installed.output[0].server.backup_path is search('mssql-iac-test')
+          - itest_installed.output[0].server.tempdb_data_files == 1
+          - itest_installed.output[0].server.services | select('search', '[(]ITEST[)][|].*[|]N$') | list | length == 1
+          - itest_installed.output[0].attached_images | length == 0
+          - itest_staged.stat.exists
+          - ('sha256:' ~ itest_staged.stat.checksum) == setup_mssql_media_checksum
+        fail_msg: "mssql_setup returned {{ itest_install | to_json }}; ITEST reads {{ itest_installed.output[0] | to_json }}"
+
+    - name: Check a password never reached the result or setup's configuration file
+      when: setup_mssql_engine_password | length > 0
+      block:
+        - name: Search setup's ConfigurationFile.ini for the password
+          ansible.windows.win_powershell:
+            script: |
+              param([string]$LogDir, [string]$Secret)
+              $Ansible.Changed = $false
+              $file = Join-Path $LogDir 'ConfigurationFile.ini'
+              @{
+                  exists = Test-Path -LiteralPath $file
+                  found = (Test-Path -LiteralPath $file) -and (Get-Content -LiteralPath $file -Raw).Contains($Secret)
+                  accounts = @(Select-String -LiteralPath $file -Pattern 'SVCACCOUNT' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line })
+              }
+            parameters:
+              LogDir: "{{ itest_install.setup.log_dir }}"
+              Secret: "{{ setup_mssql_engine_password }}"
+          no_log: true
+          register: itest_config_file
+
+        - name: Check the password is in neither
+          ansible.builtin.assert:
+            that:
+              - itest_install.setup.command is search('/SQLSVCPASSWORD="[*]{8}"')
+              - setup_mssql_engine_password not in itest_install.setup.command
+              - itest_config_file.output[0].exists
+              - not itest_config_file.output[0].found
+            fail_msg: setup.command or ConfigurationFile.ini holds the engine password (or the file is missing)
+            quiet: true
+
+    - name: Install ITEST again
+      git_cgallagher.windows.mssql_setup: *itest_options
+      register: itest_install_again
+
+    - name: Check the repeat changed nothing and read no media
+      ansible.builtin.assert:
+        that:
+          - itest_install_again is not changed
+          - itest_install_again.actions | length == 0
+          - itest_install_again.media is none
+          - itest_install_again.setup is none
+          - itest_install_again.notices | length == 0
+        fail_msg: "{{ itest_install_again | to_json }}"
+
+    # --- add a feature -----------------------------------------------------------------
+    - name: Reboot first when a reboot is pending, which setup refuses
+      ansible.builtin.include_tasks: "{{ role_path }}/../setup_mssql/tasks/reboot.yml"
+
+    - name: Add FullText (check mode)
+      git_cgallagher.windows.mssql_setup:
+        <<: *itest_options
+        features: [SQLEngine, FullText]
+      check_mode: true
+      register: itest_add_check
+
+    - name: Add FullText
+      git_cgallagher.windows.mssql_setup:
+        <<: *itest_options
+        features: [SQLEngine, FullText]
+      register: itest_add
+
+    - name: Add FullText again
+      git_cgallagher.windows.mssql_setup:
+        <<: *itest_options
+        features: [SQLEngine, FullText]
+      register: itest_add_again
+
+    - name: Read ITEST after adding FullText
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: false, ImagePaths: "{{ itest_images }}"}
+        depth: 5
+      register: itest_added
+
+    - name: Check FullText was planned, added once from the cached copy, and is there
+      ansible.builtin.assert:
+        that:
+          - itest_add_check is changed
+          - itest_add_check.actions == ['add features FullText to instance ITEST']
+          - itest_add is changed
+          - itest_add.actions == itest_add_check.actions
+          - not itest_add.media.staged
+          - "'FullText' in itest_add.instance.features"
+          - itest_add_again is not changed
+          - itest_added.output[0].services.fulltext is not none
+          - itest_added.output[0].attached_images | length == 0
+        fail_msg: "check {{ itest_add_check.actions }}; add {{ itest_add | to_json }}; again {{ itest_add_again.actions }}"
+
+    - name: Ask for less than ITEST has, and another collation
+      git_cgallagher.windows.mssql_setup:
+        <<: *itest_options
+        features: [SQLEngine]
+        collation: Latin1_General_CI_AS
+      register: itest_notices
+
+    - name: Check both are reported, and nothing is changed
+      ansible.builtin.assert:
+        that:
+          - itest_notices is not changed
+          - itest_notices.notices | length == 2
+          - itest_notices.notices | select('search', 'FullText.*never removed') | list | length == 1
+          - itest_notices.notices | select('search', 'set at install only') | list | length == 1
+        fail_msg: "{{ itest_notices.notices }}"
+
+    # --- uninstall --------------------------------------------------------------------
+    - name: Reboot first when a reboot is pending, which setup refuses
+      ansible.builtin.include_tasks: "{{ role_path }}/../setup_mssql/tasks/reboot.yml"
+
+    - name: Uninstall ITEST (check mode)
+      git_cgallagher.windows.mssql_setup:
+        instance_name: ITEST
+        state: absent
+        allow_remove: true
+      check_mode: true
+      register: itest_remove_check
+
+    - name: Read ITEST after the check-mode uninstall
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: false}
+        depth: 5
+      register: itest_remove_checked
+
+    - name: Uninstall ITEST
+      git_cgallagher.windows.mssql_setup:
+        instance_name: ITEST
+        state: absent
+        allow_remove: true
+      register: itest_remove
+
+    - name: Uninstall ITEST again
+      git_cgallagher.windows.mssql_setup:
+        instance_name: ITEST
+        state: absent
+        allow_remove: true
+      register: itest_remove_again
+
+    - name: Read ITEST after the uninstall
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: ITEST, Query: false}
+        depth: 5
+      register: itest_removed
+
+    - name: Check the uninstall was planned, done once, and ITEST is gone
+      ansible.builtin.assert:
+        that:
+          - itest_remove_check is changed
+          - itest_remove_check.actions == ['uninstall instance ITEST (features SQLEngine, FullText)']
+          - itest_remove_checked.output[0].installed
+          - itest_remove is changed
+          - itest_remove.setup.exit_code in [0, 3010]
+          - itest_remove.instance is none
+          - itest_remove_again is not changed
+          - not itest_removed.output[0].installed
+          - itest_removed.output[0].services.engine is none
+        fail_msg: "check {{ itest_remove_check.actions }}; remove {{ itest_remove | to_json }}; ITEST reads {{ itest_removed.output[0] | to_json }}"
+  always:
+    - name: Uninstall ITEST if a failure left it
+      git_cgallagher.windows.mssql_setup:
+        instance_name: ITEST
+        state: absent
+        allow_remove: true
+      failed_when: false
+
+    - name: Remove the share and the target's directories
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name, [string]$Dir)
+          $Ansible.Changed = $false
+          if (Get-SmbShare -Name $Name -ErrorAction SilentlyContinue) {
+              Remove-SmbShare -Name $Name -Force
+              $Ansible.Changed = $true
+          }
+          if (Test-Path -LiteralPath $Dir) {
+              Remove-Item -LiteralPath $Dir -Recurse -Force
+              $Ansible.Changed = $true
+          }
+        parameters:
+          Name: "{{ itest_share }}"
+          Dir: "{{ setup_mssql_dir }}"

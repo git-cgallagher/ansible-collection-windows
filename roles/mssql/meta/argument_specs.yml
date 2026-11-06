@@ -1,0 +1,202 @@
+---
+argument_specs:
+  main:
+    short_description: Install a standalone SQL Server instance from an ISO
+    description:
+      - Installs a standalone SQL Server 2022 or 2025 instance, Enterprise, Standard, a Developer edition or
+        Evaluation, from an ISO on each host in the play, in parallel, and reads it back. An installed instance gets the
+        features O(mssql_features) lists and it lacks; settings fixed at install (version, edition, collation) that
+        differ are reported as warnings, never changed by reinstalling. O(mssql_paths) and O(mssql_tempdb) apply at
+        install only and aren't compared afterwards.
+      - The ISO comes from a local path, a UNC path or an http(s) URL, pinned by its SHA-256. A UNC path or URL is copied
+        into O(mssql_media_cache_dir) first and kept there.
+      - Setup and the role's reads run as O(mssql_become_user) (C(runas) become) when it's set, which a UNC path and
+        setup itself over WinRM need. That account (or one of its groups) must be in O(mssql_sysadmins).
+      - A pending reboot stops setup. With O(mssql_allow_reboot) the role reboots first when setup has work, and again
+        when setup asks for it (exit code 3010); without it, the role fails and says why.
+      - Afterwards the role connects to the instance and fails unless its account is C(sysadmin) there. It publishes
+        what M(git_cgallagher.windows.mssql_info) reports about the instance as the C(mssql_instance) fact.
+      - The service accounts and their SPNs come from the P(git_cgallagher.windows.mssql_prereqs#role) role. Static
+        ports, certificates, encryption and C(sp_configure) are not this version's.
+      - Supports check mode; check mode and O(mssql_report_only) report what setup would do without changing anything.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      mssql_version:
+        type: str
+        required: true
+        choices: ['2022', '2025']
+        description:
+          - The SQL Server version. The media must be this version.
+      mssql_edition:
+        type: str
+        required: true
+        choices: [enterprise, standard, enterprise_developer, standard_developer, evaluation]
+        description:
+          - The edition. V(enterprise_developer) and V(standard_developer) are the free Developer editions, for
+            development and test (2022's Developer edition is V(enterprise_developer); only 2025 has
+            V(standard_developer)). V(evaluation) is the 180-day Evaluation.
+          - V(enterprise) and V(standard) take O(mssql_product_key), or media that carries its own key.
+      mssql_product_key:
+        type: str
+        default: ''
+        description:
+          - The product key for V(enterprise) or V(standard) media without a key of its own. Keep it in a vault.
+      mssql_instance_name:
+        type: str
+        default: MSSQLSERVER
+        description:
+          - The instance. V(MSSQLSERVER) is the default instance; a named instance takes 1 to 16 letters, digits, V(_)
+            and V($), starting with a letter or V(_).
+      mssql_features:
+        type: list
+        elements: str
+        choices: [SQLEngine, Replication, FullText]
+        default: [SQLEngine]
+        description:
+          - The instance features. V(SQLEngine) (the database engine, with SQL Server Agent) is required. A listed
+            feature the instance lacks is added; an installed feature that isn't listed is reported, never removed.
+      mssql_collation:
+        type: str
+        default: SQL_Latin1_General_CP1_CI_AS
+        description:
+          - The server collation, set at install only. An installed instance with another collation is reported.
+      mssql_media:
+        type: dict
+        required: true
+        description:
+          - The ISO. An instance that already matches never reads it.
+        options:
+          path:
+            type: str
+            required: true
+            description:
+              - A local path, a UNC path or an http(s) URL naming an C(.iso) file, such as the free Developer ISO
+                Microsoft publishes on C(download.microsoft.com).
+          checksum:
+            type: str
+            required: true
+            description:
+              - The ISO's SHA-256, as V(sha256:) and 64 hex digits.
+      mssql_media_cache_dir:
+        type: str
+        default: 'C:\ProgramData\mssql-iac\media'
+        description:
+          - Where a UNC path's or URL's ISO is copied to, and kept for the next run.
+      mssql_update_source:
+        type: str
+        default: ''
+        description:
+          - A folder of cumulative updates for setup to slipstream. Empty means none, and setup doesn't reach Microsoft
+            Update either.
+      mssql_engine_account:
+        type: str
+        default: ''
+        description:
+          - The account the database engine runs as. A domain account (V(EXAMPLE\\svc-sqldb)) needs
+            O(mssql_engine_password); a gMSA (V(EXAMPLE\\gmsa-sqldb$)) takes none. Empty means setup's virtual
+            account, C(NT SERVICE\\MSSQLSERVER).
+      mssql_engine_password:
+        type: str
+        default: ''
+        description:
+          - O(mssql_engine_account)'s password. Keep it in a vault. It can't hold a double quote.
+      mssql_agent_account:
+        type: str
+        default: ''
+        description:
+          - The account SQL Server Agent runs as, like O(mssql_engine_account).
+      mssql_agent_password:
+        type: str
+        default: ''
+        description:
+          - O(mssql_agent_account)'s password, like O(mssql_engine_password).
+      mssql_agent_startup:
+        type: str
+        choices: [automatic, manual, disabled]
+        default: automatic
+        description:
+          - How SQL Server Agent starts.
+      mssql_sysadmins:
+        type: list
+        elements: str
+        required: true
+        description:
+          - The accounts and groups setup adds to the C(sysadmin) role. It must include the account the role runs as
+            (O(mssql_become_user) when it's set), or a group it's in.
+      mssql_instant_file_init:
+        type: bool
+        default: true
+        description:
+          - Grants the engine's account the right to skip zeroing new data files (instant file initialization).
+      mssql_paths:
+        type: dict
+        default: {}
+        description:
+          - Where setup puts the instance and its files, at install only. Each path's volume must exist.
+        options:
+          instance_dir:
+            type: str
+            description: The instance's program files.
+          data_root:
+            type: str
+            description: The system databases' root folder.
+          data:
+            type: str
+            description: The default folder for databases' data files.
+          log:
+            type: str
+            description: The default folder for databases' log files.
+          backup:
+            type: str
+            description: The default backup folder.
+          tempdb_data:
+            type: str
+            description: tempdb's data files.
+          tempdb_log:
+            type: str
+            description: tempdb's log file.
+      mssql_tempdb:
+        type: dict
+        default: {}
+        description:
+          - tempdb's files, at install only.
+        options:
+          file_count:
+            type: int
+            description: The number of data files.
+          file_size_mb:
+            type: int
+            description: Each data file's initial size.
+          file_growth_mb:
+            type: int
+            description: Each data file's growth.
+          log_size_mb:
+            type: int
+            description: The log file's initial size.
+          log_growth_mb:
+            type: int
+            description: The log file's growth.
+      mssql_become_user:
+        type: str
+        default: ''
+        description:
+          - The account setup and the role's reads run as, through C(runas) become, for example
+            V(EXAMPLE\\svc-ansible). Over WinRM, setup needs it, and so does a UNC path (the double hop). Empty means
+            the connection account.
+      mssql_become_password:
+        type: str
+        default: ''
+        description:
+          - O(mssql_become_user)'s password. Keep it in a vault.
+      mssql_allow_reboot:
+        type: bool
+        default: false
+        description:
+          - Lets the role reboot the host when a reboot is pending before setup, or setup asks for one. Without it, the
+            role fails then.
+      mssql_report_only:
+        type: bool
+        default: false
+        description:
+          - Report what setup would do, and change nothing (the module's check mode).

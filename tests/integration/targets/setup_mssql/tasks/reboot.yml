@@ -1,0 +1,18 @@
+---
+# Included by the mssql targets before a step that runs setup, which won't
+# run while Windows has a reboot pending (and setup itself often leaves one,
+# through file renames).
+- name: Read whether a reboot is pending
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters:
+      InstanceName: "{{ setup_mssql_instance }}"
+      Query: false
+    depth: 5
+  register: setup_mssql_reboot_state
+
+- name: Reboot, because a reboot is pending
+  ansible.windows.win_reboot:
+    reboot_timeout: 1800
+  become: false
+  when: setup_mssql_reboot_state.output[0].reboot_pending

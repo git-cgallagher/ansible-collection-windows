@@ -2,8 +2,8 @@ DOCUMENTATION:
   module: mssql_info
   short_description: Report the SQL Server instances on a host
   description:
-    - Reports every SQL Server instance the host's registry lists (or one, O(instance_name)): its version, edition,
-      features, collation, paths, TCP and encryption settings, and its services with their accounts.
+    - Reports every SQL Server instance the host's registry lists, or only O(instance_name), with its version,
+      edition, features, collation, paths, TCP and encryption settings, and its services with their accounts.
     - With O(connect), it also connects to each running instance over shared memory, as the account the module runs
       as, and reports what SQL Server says about itself in RV(instances[].server). That account must be a login,
       and only a C(sysadmin) sees everything; a failed connection is reported there, not raised.
@@ -107,7 +107,10 @@ RETURN:
       paths:
         description: The instance's C(program), C(data_root) and C(binn) folders, from the registry.
         type: dict
-        sample: {program: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', data_root: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL', binn: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn'}
+        sample:
+          program: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL'
+          data_root: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL'
+          binn: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn'
       clustered:
         description: Whether the instance is a failover cluster instance.
         type: bool
@@ -159,7 +162,10 @@ RETURN:
           is_clustered: false
           is_hadr_enabled: false
           is_fulltext_installed: false
-          default_paths: {data: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\', log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\', backup: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup'}
+          default_paths:
+            data: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\'
+            log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\'
+            backup: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup'
           login: EXAMPLE\svc-ansible
           is_sysadmin: true
           services:

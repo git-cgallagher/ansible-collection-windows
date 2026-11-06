@@ -1,0 +1,25 @@
+---
+# Included by validate.yml once per case (spec_case: case, overrides,
+# expect): mssql's argument spec must reject the input before the role's
+# first task.
+- name: "Reject {{ spec_case.case }}"
+  block:
+    - name: Include mssql with the input
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql
+      vars:
+        mssql_version: "{{ spec_case.version | default('2022') }}"
+        mssql_edition: "{{ spec_case.edition | default('enterprise_developer') }}"
+        mssql_media: "{{ spec_case.media | default(spec_mssql_media) }}"
+        mssql_sysadmins: "{{ spec_case.sysadmins | default(['EXAMPLE\\GG-SQL-Admins']) }}"
+        mssql_features: "{{ spec_case.features | default(['SQLEngine']) }}"
+        mssql_agent_startup: "{{ spec_case.agent_startup | default('automatic') }}"
+
+    - name: Fail because validation accepted it
+      ansible.builtin.fail:
+        msg: "mssql accepted {{ spec_case.case }}"
+  rescue:
+    - name: Check the argument spec rejected it
+      ansible.builtin.assert:
+        that: ansible_failed_result.argument_errors | default([]) | join(' ') is search(spec_case.expect)
+        fail_msg: "{{ spec_case.case }}: {{ ansible_failed_result | to_json }}"
