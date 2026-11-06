@@ -81,3 +81,101 @@
     - name: Run mssql_prereqs
       ansible.builtin.include_role:
         name: git_cgallagher.windows.mssql_prereqs
+
+# SQL Server setup encrypts the service passwords with DPAPI as the account
+# it runs as (the become user, a domain account). That account's first DPAPI
+# master key on sql01 is backed up to a writable domain controller, and
+# without the backup it isn't created (Microsoft KB 3205778): setup then fails
+# with "There was an error generating the XML document", inside it "The
+# computer must be trusted for delegation" (0x80090345), as the lab's second
+# and third runs did (PR #69). Every lab VM's management NIC is 10.0.2.15, so
+# a dc01 address of 10.0.2.15 in DNS would send sql01 to itself. This play
+# shows how sql01 finds dc01, pins dc01's names to its lab address, and
+# checks DPAPI works for the setup account before the role runs.
+- name: Make sure the setup account can use DPAPI on sql01
+  hosts: lab_sql
+  gather_facts: false
+  vars:
+    lab_dc_names: ["dc01.{{ lab_domain }}", dc01, "{{ lab_domain }}"]
+    lab_dpapi_probe: |
+      param([string]$Domain, [string]$DcName)
+      $Ansible.Changed = $false
+      $dpapi = 'ok'
+      try {
+          Add-Type -AssemblyName System.Security
+          $null = [System.Security.Cryptography.ProtectedData]::Protect([byte[]](1, 2, 3), $null,
+              [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+      }
+      catch {
+          $e = $_.Exception
+          while ($null -ne $e.InnerException) { $e = $e.InnerException }
+          $dpapi = '{0} (0x{1:X8})' -f $e.Message, $e.HResult
+      }
+      $dns = @{}
+      foreach ($name in "$DcName.$Domain", $Domain) {
+          $dns[$name] = @(Resolve-DnsName -Name $name -Type A -DnsOnly -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Type -eq 'A' } | ForEach-Object { $_.IPAddress }) -join ', '
+      }
+      [ordered]@{
+          account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          dns = $dns
+          resolver = @([System.Net.Dns]::GetHostAddresses("$DcName.$Domain") | ForEach-Object { "$_" }) -join ', '
+          dsgetdc = @((nltest "/dsgetdc:$Domain" /writable 2>&1) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' | '
+          tickets = @((klist 2>&1) | Where-Object { "$_" -match 'Server:' } | ForEach-Object { "$_".Trim() }) -join ' | '
+          dpapi = $dpapi
+      }
+  tasks:
+    - name: Read how sql01 finds dc01, and try DPAPI as the setup account
+      ansible.windows.win_powershell:
+        script: "{{ lab_dpapi_probe }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          DcName: dc01
+        depth: 5
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+      register: lab_dpapi_before
+
+    - name: Show what sql01 found
+      ansible.builtin.debug:
+        var: lab_dpapi_before.output[0]
+
+    - name: Pin dc01's names to its lab address
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Address, [string[]]$Names)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $hostsFile = "$env:SystemRoot\System32\drivers\etc\hosts"
+          $entry = '{0} {1}' -f $Address, ($Names -join ' ')
+          if (@(Get-Content -LiteralPath $hostsFile) -notcontains $entry) {
+              Add-Content -LiteralPath $hostsFile -Value $entry
+              $Ansible.Changed = $true
+          }
+          Clear-DnsClientCache
+          $null = nltest "/dsgetdc:$($Names[-1])" /writable /force
+        parameters:
+          Address: "{{ lab_dc_address }}"
+          Names: "{{ lab_dc_names }}"
+
+    - name: Try DPAPI again as the setup account
+      ansible.windows.win_powershell:
+        script: "{{ lab_dpapi_probe }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          DcName: dc01
+        depth: 5
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+      register: lab_dpapi_after
+
+    - name: Require DPAPI to work for the setup account
+      ansible.builtin.assert:
+        that: lab_dpapi_after.output[0].dpapi == 'ok'
+        fail_msg: "Before the pin: {{ lab_dpapi_before.output[0] | to_json }}; after it: {{ lab_dpapi_after.output[0] | to_json }}"

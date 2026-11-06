@@ -678,6 +678,25 @@ Function Get-MssqlSetupSummary {
     $summary
 }
 
+Function Get-MssqlSetupHint {
+    <#
+    .SYNOPSIS
+    Returns what a known setup failure means, from the details the module
+    reports (Get-MssqlSetupSummary's), or '' for one it doesn't know.
+    #>
+    [CmdletBinding()]
+    param ([string[]]$Details, [string]$Account)
+
+    $text = $Details -join ' '
+    if ($text -match 'trusted for delegation|0x80090345') {
+        return ("Setup encrypts the service passwords with DPAPI as {0}, the account it runs as. The first time a domain " +
+            "account uses DPAPI on a host, Windows backs its new master key up to a writable domain controller, and " +
+            'without one the key isn''t created (Microsoft KB 3205778): check this host reaches a writable domain ' +
+            'controller of the account''s domain by its DNS name.') -f $Account
+    }
+    ''
+}
+
 Function ConvertTo-MssqlStartMode {
     <#
     .SYNOPSIS
@@ -915,6 +934,7 @@ $exportFunctions = @(
     'Get-MssqlSetupArgument'
     'Get-MssqlSetupArgumentProblem'
     'Get-MssqlSetupBootstrap'
+    'Get-MssqlSetupHint'
     'Get-MssqlSetupSummary'
     'Get-MssqlVersionInfo'
     'Invoke-MssqlQuery'

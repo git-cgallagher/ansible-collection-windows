@@ -346,6 +346,8 @@ function Invoke-Setup {
             $output = @(($stdout.Result + "`n" + $stderr.Result) -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -Last 15
             $details = @($output)
         }
+        $hint = Get-MssqlSetupHint -Details $details -Account ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+        if ($hint) { $details = @($details) + @($hint) }
         throw (Hide-Secret ('SQL Server setup failed with exit code {0} ({1}): {2} See {3}' -f
                 $exitCode, $summary.FinalResult, ($details -join ' '), $script:setup.summary_path))
     }

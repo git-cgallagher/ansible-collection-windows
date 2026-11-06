@@ -452,6 +452,19 @@ Exception type: Microsoft.SqlServer.Chainer.Infrastructure.ChainerInfrastructure
     }
 }
 
+Describe 'Get-MssqlSetupHint' {
+    It 'explains DPAPI''s failure to back up a domain account''s master key' {
+        $details = @('CryptographicException: The requested operation cannot be completed. The computer must be trusted for delegation.')
+        $hint = Get-MssqlSetupHint -Details $details -Account 'EXAMPLE\svc-ansible'
+        $hint | Should -Match 'DPAPI as EXAMPLE\\svc-ansible'
+        $hint | Should -Match 'KB 3205778'
+    }
+
+    It 'says nothing about a failure it doesn''t know' {
+        Get-MssqlSetupHint -Details @('Wait on the Database Engine recovery handle failed.') -Account 'X' | Should -Be ''
+    }
+}
+
 Describe 'ConvertTo-MssqlInstanceFact' {
     It 'turns the registry and services into the modules'' facts' {
         $registry = @{
