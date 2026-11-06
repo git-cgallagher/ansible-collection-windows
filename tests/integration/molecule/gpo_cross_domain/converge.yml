@@ -1,0 +1,59 @@
+---
+# The move: gpo_export backs the matrix GPOs up on src, the backup travels
+# file by file through the controller to dst, and gpo_import imports it there
+# through the migration table prepare.yml built. Every leg is idempotent
+# (gpo_export's record, fetch's and win_copy's checksums, gpo_import's record
+# and the GPOs' versions), so Molecule's idempotence step, which runs this
+# again, proves a repeat changes nothing anywhere.
+- name: Export the matrix on src and bring it to the controller
+  hosts: lab_src
+  gather_facts: false
+  tasks:
+    - name: Back up every matrix GPO
+      git_cgallagher.windows.gpo_export:
+        domain: "{{ lab_domain }}"
+        gpo_names: "{{ lab_xd_rows | map(attribute='name') | list }}"
+        path: "{{ lab_xd_export }}"
+      register: lab_xd_export_run
+
+    - name: Show the export
+      ansible.builtin.debug:
+        msg: "{{ lab_xd_export_run.exported }}"
+
+    - name: List the backup's files
+      ansible.windows.win_find:
+        paths: "{{ lab_xd_export }}"
+        recurse: true
+        hidden: true
+      register: lab_xd_files
+
+    - name: Fetch the backup to the controller, file by file
+      ansible.builtin.fetch:
+        src: "{{ item.path }}"
+        # Single-quoted: Jinja must see the backslash string literal "\\".
+        dest: '{{ lab_xd_controller_dir }}/export/{{ item.path[lab_xd_export | length + 1 :] | replace("\\", "/") }}'
+        flat: true
+      loop: "{{ lab_xd_files.files }}"
+      loop_control:
+        label: "{{ item.path[lab_xd_export | length + 1 :] }}"
+
+- name: Import the matrix on dst through the migration table
+  hosts: lab_dst
+  gather_facts: false
+  tasks:
+    - name: Copy the backup to dst
+      ansible.windows.win_copy:
+        src: "{{ lab_xd_controller_dir }}/export/"
+        dest: "{{ lab_xd_import }}\\"
+
+    - name: Import every matrix GPO through the migration table
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_rows | map(attribute='name') | list }}"
+        migration_table_path: "{{ lab_xd_migtable }}"
+      register: lab_xd_import_run
+
+    - name: Show the import
+      ansible.builtin.debug:
+        msg: "{{ lab_xd_import_run.imported }}"

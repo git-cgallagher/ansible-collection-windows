@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.21.0 — 2026-11-06
+
+What `gpo_export` and `gpo_import` carry between two unrelated domains: the
+cross-domain part of issue #16. No module changes.
+
+- Tests: a new domain-lab job, `molecule (gpo_cross_domain)`
+  (`tests/integration/molecule/gpo_cross_domain`), boots two domain
+  controllers of separate forests, `src.example.test` and `dst.example.test`,
+  with no trust, DNS forwarding or network between them. It authors a
+  content matrix on src, one GPO per kind of setting, exports it with
+  `gpo_export`, carries the backup through the controller, and imports it on
+  dst with `gpo_import`, through a migration table GPMC built on src and
+  without one. Each row is read from GPMC's report and the GPO's SYSVOL files
+  on both sides, classified from what was observed, and pinned, so a change
+  in what a move carries fails the job.
+- `tests/domain_lab/promote.yml` renames the DC when a scenario sets
+  `lab_hostname`.
+
 ## 0.20.0 — 2026-11-05
 
 The file share witness and the cluster name object's right to create

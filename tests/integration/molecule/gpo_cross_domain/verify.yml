@@ -1,0 +1,139 @@
+---
+# What the move carried, row by row. Each GPO is read on src, on dst as the
+# converge left it (imported through the migration table), and on dst after
+# gpo_import imports the same backup again without the table (the import key
+# includes the table, so no force is needed). files/observe_xdomain.ps1 then
+# classifies each row from those three readings, and the matrix it observed
+# is pinned below (lab_xd_expected): a change in what a move carries fails
+# here. Last, the import goes back through the table, once with a change and
+# once without.
+- name: Read the matrix on src
+  hosts: lab_src
+  gather_facts: false
+  tasks:
+    - name: Read the domain's names and SID
+      ansible.windows.win_powershell: &lab_xd_identity
+        script: |
+          $Ansible.Changed = $false
+          $d = Get-ADDomain
+          [ordered]@{ dns = $d.DNSRoot; netbios = $d.NetBIOSName; sid = $d.DomainSID.Value; host = $env:COMPUTERNAME }
+      register: lab_xd_identity
+
+- name: Classify each row
+  hosts: lab_dst
+  gather_facts: false
+  vars:
+    lab_xd_src: "{{ hostvars['srcdc'].lab_xd_identity.output[0] }}"
+    lab_xd_dst: "{{ lab_xd_identity.output[0] }}"
+    lab_xd_names: "{{ lab_xd_rows | map(attribute='name') | list }}"
+    lab_xd_observe: "{{ lookup('ansible.builtin.file', 'files/observe_xdomain.ps1') }}"
+    lab_xd_observe_params:
+      Domain: "{{ lab_domain }}"
+      RowsJson: "{{ lab_xd_rows | to_json }}"
+      SourceJson: "{{ lab_xd_src | to_json }}"
+      TargetJson: "{{ lab_xd_dst | to_json }}"
+    # The matrix the lab observed (README.md and docs/gpo-cross-domain.md
+    # show it). Empty: print the observation and pin nothing.
+    lab_xd_expected: {}
+  tasks:
+    - name: Read the domain's names and SID
+      ansible.windows.win_powershell: *lab_xd_identity
+      register: lab_xd_identity
+
+    - name: Read every matrix GPO on src
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_observe }}"
+        parameters:
+          Domain: "{{ hostvars['srcdc'].lab_domain }}"
+          RowsJson: "{{ lab_xd_rows | to_json }}"
+          SourceJson: "{{ lab_xd_src | to_json }}"
+          TargetJson: "{{ lab_xd_dst | to_json }}"
+      delegate_to: srcdc
+      register: lab_xd_obs_src
+
+    - name: Read every matrix GPO on dst, as imported through the migration table
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_observe }}"
+        parameters: "{{ lab_xd_observe_params }}"
+      register: lab_xd_obs_table
+
+    - name: Import the same backup without the migration table
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_names }}"
+      register: lab_xd_plain
+
+    - name: Require a re-import of every GPO, as the table left the import key
+      ansible.builtin.assert:
+        that:
+          - lab_xd_plain.changed
+          - lab_xd_plain.imported | length == lab_xd_names | length
+        fail_msg: "{{ lab_xd_plain.imported | to_json }}"
+
+    - name: Read every matrix GPO on dst without the migration table, and classify
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_observe }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          RowsJson: "{{ lab_xd_rows | to_json }}"
+          SourceJson: "{{ lab_xd_src | to_json }}"
+          TargetJson: "{{ lab_xd_dst | to_json }}"
+          SourceObsJson: "{{ lab_xd_obs_src.result | to_json }}"
+          WithTableJson: "{{ lab_xd_obs_table.result | to_json }}"
+      register: lab_xd_obs_plain
+
+    - name: Keep the three readings on the controller
+      ansible.builtin.copy:
+        content: "{{ {'source': lab_xd_obs_src.result, 'with_table': lab_xd_obs_table.result, 'without_table': lab_xd_obs_plain.result} | to_nice_json }}"
+        dest: "{{ lab_xd_controller_dir }}/observed.json"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Show the observed matrix
+      ansible.builtin.debug:
+        var: lab_xd_obs_plain.result.matrix
+
+    - name: Show what each row left of src, with and without the table
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }}: with table {{ lab_xd_obs_table.result.rows[item].src_refs | to_json }}
+          dst {{ lab_xd_obs_table.result.rows[item].dst_refs | to_json }};
+          without {{ lab_xd_obs_plain.result.rows[item].src_refs | to_json }};
+          missing {{ lab_xd_obs_plain.result.rows[item].missing | to_json }};
+          renders {{ lab_xd_obs_plain.result.rows[item].renders | to_json }};
+          wmi {{ lab_xd_obs_plain.result.rows[item].wmi_filter | to_json }};
+          apply {{ lab_xd_obs_plain.result.rows[item].apply | to_json }};
+          edit {{ lab_xd_obs_plain.result.rows[item].edit | to_json }}
+      loop: "{{ lab_xd_names }}"
+
+    - name: Require the matrix the lab observed
+      ansible.builtin.assert:
+        that:
+          - lab_xd_obs_plain.result.matrix == lab_xd_expected
+        fail_msg: "Observed {{ lab_xd_obs_plain.result.matrix | to_json }}, pinned {{ lab_xd_expected | to_json }}"
+      when: lab_xd_expected | length > 0
+
+    - name: Import through the migration table again
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_names }}"
+        migration_table_path: "{{ lab_xd_migtable }}"
+      register: lab_xd_back
+
+    - name: Import through the migration table once more
+      git_cgallagher.windows.gpo_import:
+        domain: "{{ lab_domain }}"
+        path: "{{ lab_xd_import }}"
+        gpo_names: "{{ lab_xd_names }}"
+        migration_table_path: "{{ lab_xd_migtable }}"
+      register: lab_xd_back_again
+
+    - name: Require one re-import, then none
+      ansible.builtin.assert:
+        that:
+          - lab_xd_back.imported | length == lab_xd_names | length
+          - not lab_xd_back_again.changed
+          - lab_xd_back_again.imported | length == 0
+        fail_msg: "{{ lab_xd_back.imported | length }} then {{ lab_xd_back_again.imported | to_json }}"
