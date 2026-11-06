@@ -638,8 +638,8 @@ ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook test
 # the role's directory (full setup in tests/domain_lab/README.md). The
 # driver and its collection come from one tag of ansible-collection-molecule:
 pip install ansible-core molecule \
-  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.5.0"
-ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.5.0
+  "molecule-git-cgallagher[windows] @ git+https://github.com/git-cgallagher/ansible-collection-molecule@v0.5.1"
+ansible-galaxy collection install git+https://github.com/git-cgallagher/ansible-collection-molecule.git,v0.5.1
 cd roles/gpo_import && molecule test
 # on a Mac, from a role's directory: config and syntax (`molecule create`
 # runs up to the /dev/kvm check)
@@ -1011,9 +1011,13 @@ ansible-galaxy collection build --force
   KVM/QEMU install step got after a stuck apt hung a run for two hours
   (2026-11-01) sits on the `setup-molecule` step in `domain-lab.yml`, as 15
   minutes because that step also installs pip packages and collections.
-  Since the driver's v0.2.1 the action also limits its own `apt-get` calls
-  (3 minutes for update, 8 for install) and fails with a message to re-run,
-  so the step limit is a backstop.
+  The action also limits its own `apt-get` calls, so the step limit is a
+  backstop: since the driver's v0.5.1, 10 minutes of apt at most in all. It
+  takes QEMU's `.deb`s from this repo's actions cache when it can (a hit
+  downloads nothing; a push to `main` fills it for every pull request), and
+  an update or a download too slow for its limit gets one more try without
+  the first Ubuntu mirror: on 2026-11-05 westus2's Azure mirror sent them at
+  40 kB/s, and 5 `domain-lab` jobs hit v0.5.0's 8-minute install limit.
 - **Molecule's base config is implicit.** `.config/molecule/config.yml` at
   the repository root is merged under every scenario's `molecule.yml`
   because `--base-config` defaults to it (Molecule logs "Found config
