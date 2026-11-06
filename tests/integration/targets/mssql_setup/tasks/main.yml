@@ -275,7 +275,7 @@
           - itest_installed.output[0].server.is_sysadmin
           - itest_installed.output[0].server.backup_path is search('mssql-iac-test')
           - itest_installed.output[0].server.tempdb_data_files == 1
-          - itest_installed.output[0].server.services | select('search', '[(]ITEST[)][|].*[|]N$') | list | length == 1
+          - itest_installed.output[0].server.services | select('search', '^SQL Server [(]ITEST[)][|].*[|]N$') | list | length == 1
           - itest_installed.output[0].attached_images | length == 0
           - itest_staged.stat.exists
           - ('sha256:' ~ itest_staged.stat.checksum) == setup_mssql_media_checksum

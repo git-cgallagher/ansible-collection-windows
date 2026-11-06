@@ -1033,6 +1033,21 @@ ansible-galaxy collection build --force
   an update or a download too slow for its limit gets one more try without
   the first Ubuntu mirror: on 2026-11-05 westus2's Azure mirror sent them at
   40 kB/s, and 5 `domain-lab` jobs hit v0.5.0's 8-minute install limit.
+- **A domain account's first DPAPI use on a lab member needs dc01 by its lab
+  address.** SQL Server setup encrypts the service passwords with DPAPI as the
+  account it runs as, and Windows creates a domain account's first master key
+  on a host only once it has backed it up to a writable DC (KB 3205778).
+  dc01's DNS answers `dc01.gpolab.test` with 10.42.0.10 *and* its management
+  10.0.2.15 (the driver keeps only the DNS client's registration off the
+  management NIC), and on a member 10.0.2.15 is the member itself, so the
+  backup failed about every other run: setup's "There was an error generating
+  the XML document", inside it CryptographicException "The computer must be
+  trusted for delegation" (0x80090345; PR #69's second and third runs). The
+  domain join doesn't notice (the DC locator uses the address that answered
+  its LDAP ping). `roles/mssql/molecule/default/prepare.yml` pins dc01's names
+  to 10.42.0.10 in sql01's hosts file and checks DPAPI as the setup account;
+  the lasting fix is for the driver's `ad_forest` to keep the management
+  address out of the DC's DNS.
 - **Molecule expands environment variables in `molecule.yml`, so a literal `$`
   is written `$$`.** `retrieve_password: [SQL01$]` and a gMSA's
   `...\gmsa-sqlagt-lab$` stopped the first `molecule (mssql)` run before it

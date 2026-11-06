@@ -88,10 +88,12 @@
 # without the backup it isn't created (Microsoft KB 3205778): setup then fails
 # with "There was an error generating the XML document", inside it "The
 # computer must be trusted for delegation" (0x80090345), as the lab's second
-# and third runs did (PR #69). Every lab VM's management NIC is 10.0.2.15, so
-# a dc01 address of 10.0.2.15 in DNS would send sql01 to itself. This play
-# shows how sql01 finds dc01, pins dc01's names to its lab address, and
-# checks DPAPI works for the setup account before the role runs.
+# and third runs did (PR #69). Every lab VM's management NIC is 10.0.2.15, and
+# dc01's DNS answers dc01.gpolab.test with both 10.42.0.10 and 10.0.2.15 (the
+# fourth run's probe), in turn: when sql01 takes 10.0.2.15 it talks to itself,
+# so the backup fails about every other run. This play shows how sql01 finds
+# dc01, pins dc01's names to its lab address, and checks DPAPI works for the
+# setup account before the role runs.
 - name: Make sure the setup account can use DPAPI on sql01
   hosts: lab_sql
   gather_facts: false

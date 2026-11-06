@@ -129,4 +129,5 @@ WHERE r.name = N'sysadmin'
         tempdb_data_files = @(Invoke-Sql $connection "SELECT name FROM tempdb.sys.database_files WHERE type_desc = 'ROWS'").Count
     }
 }
-$Ansible.Result = $result
+# The output, read as output[0] (win_powershell with depth 5).
+$result
