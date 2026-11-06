@@ -12,7 +12,7 @@
 #   dst's names and SID        the same for dst (a migration table's work)
 # and reads the GPO's WMI filter and the trustees that may apply or edit it.
 #
-# With -SourceObsJson (this script's output on srcdc) and -WithTableJson
+# The result is JSON text. With -SourceObsJson (this script's output on srcdc) and -WithTableJson
 # (its output on dstdc after the import through the migration table), run on
 # dstdc after the import without one, it also classifies each row:
 #   pass                   lands, and nothing of src's is left even without a table
@@ -165,5 +165,7 @@ if ($SourceObsJson -and $WithTableJson) {
     $result.matrix = $matrix
 }
 
+# As JSON text: Ansible's serializer rejects some of the dictionaries the
+# readings build (non-string keys), ConvertTo-Json doesn't. Callers from_json it.
 $Ansible.Changed = $false
-$Ansible.Result = $result
+$Ansible.Result = $result | ConvertTo-Json -Depth 10 -Compress

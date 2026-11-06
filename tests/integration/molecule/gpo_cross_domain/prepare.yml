@@ -31,6 +31,7 @@
   vars:
     lab_xd_src: "{{ hostvars['srcdc'].lab_xd_seed.result.domain }}"
     lab_xd_dst: "{{ hostvars['dstdc'].lab_xd_seed.result.domain }}"
+    lab_xd_src_rows: "{{ (lab_xd_src_obs.result | from_json).rows }}"
   tasks:
     - name: Read every matrix GPO on src
       ansible.windows.win_powershell:
@@ -50,19 +51,19 @@
         fail_msg: "{{ lab_xd_bad | to_json }}"
       vars:
         lab_xd_bad: >-
-          {{ lab_xd_src_obs.result.rows | dict2items
+          {{ lab_xd_src_rows | dict2items
              | selectattr('value.lands', 'equalto', false)
              | list
-             + (lab_xd_src_obs.result.rows | dict2items
+             + (lab_xd_src_rows | dict2items
              | selectattr('value.renders', 'equalto', false) | list) }}
 
     - name: Require the WMI filter and the security filtering on src
       ansible.builtin.assert:
         that:
-          - lab_xd_src_obs.result.rows['XD - WMI Filtered'].wmi_filter == lab_xd_wmi_filter
-          - lab_xd_src_obs.result.rows['XD - Security Filtered'].apply == [lab_xd_groups.servers]
-          - lab_xd_groups.admins in lab_xd_src_obs.result.rows['XD - Security Filtered'].edit
-        fail_msg: "{{ lab_xd_src_obs.result.rows['XD - WMI Filtered'] | to_json }} {{ lab_xd_src_obs.result.rows['XD - Security Filtered'] | to_json }}"
+          - lab_xd_src_rows['XD - WMI Filtered'].wmi_filter == lab_xd_wmi_filter
+          - lab_xd_src_rows['XD - Security Filtered'].apply == [lab_xd_groups.servers]
+          - lab_xd_groups.admins in lab_xd_src_rows['XD - Security Filtered'].edit
+        fail_msg: "{{ lab_xd_src_rows['XD - WMI Filtered'] | to_json }} {{ lab_xd_src_rows['XD - Security Filtered'] | to_json }}"
 
     - name: Build the src -> dst migration table from the matrix GPOs (GPMC)
       ansible.windows.win_powershell:

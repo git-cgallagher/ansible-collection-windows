@@ -27,6 +27,9 @@
     lab_xd_dst: "{{ lab_xd_identity.output[0] }}"
     lab_xd_names: "{{ lab_xd_rows | map(attribute='name') | list }}"
     lab_xd_observe: "{{ lookup('ansible.builtin.file', 'files/observe_xdomain.ps1') }}"
+    lab_xd_src_r: "{{ lab_xd_obs_src.result | from_json }}"
+    lab_xd_table_r: "{{ lab_xd_obs_table.result | from_json }}"
+    lab_xd_plain_r: "{{ lab_xd_obs_plain.result | from_json }}"
     lab_xd_observe_params:
       Domain: "{{ lab_domain }}"
       RowsJson: "{{ lab_xd_rows | to_json }}"
@@ -79,39 +82,39 @@
           RowsJson: "{{ lab_xd_rows | to_json }}"
           SourceJson: "{{ lab_xd_src | to_json }}"
           TargetJson: "{{ lab_xd_dst | to_json }}"
-          SourceObsJson: "{{ lab_xd_obs_src.result | to_json }}"
-          WithTableJson: "{{ lab_xd_obs_table.result | to_json }}"
+          SourceObsJson: "{{ lab_xd_obs_src.result }}"
+          WithTableJson: "{{ lab_xd_obs_table.result }}"
       register: lab_xd_obs_plain
 
     - name: Keep the three readings on the controller
       ansible.builtin.copy:
-        content: "{{ {'source': lab_xd_obs_src.result, 'with_table': lab_xd_obs_table.result, 'without_table': lab_xd_obs_plain.result} | to_nice_json }}"
+        content: "{{ {'source': lab_xd_src_r, 'with_table': lab_xd_table_r, 'without_table': lab_xd_plain_r} | to_nice_json }}"
         dest: "{{ lab_xd_controller_dir }}/observed.json"
         mode: '0644'
       delegate_to: localhost
 
     - name: Show the observed matrix
       ansible.builtin.debug:
-        var: lab_xd_obs_plain.result.matrix
+        var: lab_xd_plain_r.matrix
 
     - name: Show what each row left of src, with and without the table
       ansible.builtin.debug:
         msg: >-
-          {{ item }}: with table {{ lab_xd_obs_table.result.rows[item].src_refs | to_json }}
-          dst {{ lab_xd_obs_table.result.rows[item].dst_refs | to_json }};
-          without {{ lab_xd_obs_plain.result.rows[item].src_refs | to_json }};
-          missing {{ lab_xd_obs_plain.result.rows[item].missing | to_json }};
-          renders {{ lab_xd_obs_plain.result.rows[item].renders | to_json }};
-          wmi {{ lab_xd_obs_plain.result.rows[item].wmi_filter | to_json }};
-          apply {{ lab_xd_obs_plain.result.rows[item].apply | to_json }};
-          edit {{ lab_xd_obs_plain.result.rows[item].edit | to_json }}
+          {{ item }}: with table {{ lab_xd_table_r.rows[item].src_refs | to_json }}
+          dst {{ lab_xd_table_r.rows[item].dst_refs | to_json }};
+          without {{ lab_xd_plain_r.rows[item].src_refs | to_json }};
+          missing {{ lab_xd_plain_r.rows[item].missing | to_json }};
+          renders {{ lab_xd_plain_r.rows[item].renders | to_json }};
+          wmi {{ lab_xd_plain_r.rows[item].wmi_filter | to_json }};
+          apply {{ lab_xd_plain_r.rows[item].apply | to_json }};
+          edit {{ lab_xd_plain_r.rows[item].edit | to_json }}
       loop: "{{ lab_xd_names }}"
 
     - name: Require the matrix the lab observed
       ansible.builtin.assert:
         that:
-          - lab_xd_obs_plain.result.matrix == lab_xd_expected
-        fail_msg: "Observed {{ lab_xd_obs_plain.result.matrix | to_json }}, pinned {{ lab_xd_expected | to_json }}"
+          - lab_xd_plain_r.matrix == lab_xd_expected
+        fail_msg: "Observed {{ lab_xd_plain_r.matrix | to_json }}, pinned {{ lab_xd_expected | to_json }}"
       when: lab_xd_expected | length > 0
 
     - name: Import through the migration table again
