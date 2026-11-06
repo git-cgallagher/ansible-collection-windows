@@ -79,6 +79,9 @@ provisioner:
         mssql_edition: enterprise_developer
         mssql_media: "{{ lab_mssql.media }}"
         mssql_features: [SQLEngine, Replication]
+        # Set here, not left to the role's default, because verify.yml checks it
+        # before it runs the role.
+        mssql_collation: SQL_Latin1_General_CP1_CI_AS
         mssql_engine_account: "{{ lab_netbios }}\\{{ lab_mssql.engine_account }}"
         mssql_engine_password: "{{ lab_mssql.password }}"
         mssql_agent_account: "{{ lab_netbios }}\\{{ lab_mssql.agent_gmsa }}$$"
