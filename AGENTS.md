@@ -78,7 +78,15 @@ Its second area is **failover clustering** (0.3.0):
   `wsfc_groups` (owners, failback, properties, resources' properties, a
   move), and `failover` moves `wsfc_failover_group` to another node and back,
   timed into `wsfc_failover_result`; `main` never touches groups, since a
-  workload's group exists only after the workload creates it. It's the base
+  workload's group exists only after the workload creates it. Since 0.20.0
+  `main` can provision the file share witness on a Windows host in the
+  inventory (`wsfc_witness_share`, `tasks/witness.yml`: cluster without the
+  quorum, then folder, CNO permission and share on that host, a TCP 445 check
+  from each node, then a second `wsfc_cluster` run for the quorum, registered
+  as `wsfc_quorum_run`), and `wsfc_cluster`'s `cno_create_computer_objects`
+  (`wsfc_cno_create_computer_objects`) grants the cluster name object Create
+  Computer objects on its container, for SQL Server's FCI names and AG
+  listeners where the machine account quota is 0. It's the base
   for file servers, SQL Server FCIs and AGs; it doesn't install SQL Server or
   create shares or AGs. The role is plain `wsfc` (owner's choice,
   2026-10-31; it was `wsfc_cluster` before PR #20 merged), so its variables
@@ -221,13 +229,21 @@ role):
 - `roles/wsfc_fileserver/molecule/default`: **three VMs** on a lab network
   (dc01 = DC + iSCSI target + client, node1/node2 joined): `wsfc` builds a
   two-node cluster (AD access point, static address, storage validation, two
-  formatted iSCSI disks, disk witness, management network role 0, a site
-  per node with DC1 preferred and node2's vote taken, and `wsfc`'s `groups`
-  entry point on `Cluster Group`), then `wsfc_fileserver` a file server with
-  two shares; idempotence, `validate` from dc01, `failover` there and back, a
-  report-only plan and drift fix, and last `wsfc`'s `failover` entry point on
-  `Cluster Group` (out and back, cluster up, witness online). It's the only
-  lab where a group moves.
+  formatted iSCSI disks, a file share witness the role provisions on dc01
+  while building the cluster (0.20.0), the CNO's Create Computer objects
+  right, management network role 0, a site per node with DC1 preferred and
+  node2's vote taken, and `wsfc`'s `groups` entry point on `Cluster Group`),
+  then `wsfc_fileserver` a file server with two shares. prepare sets the
+  domain's machine account quota to 0, so the file server's computer object
+  (FSLAB) exists only through the CNO's right; verify reads dc01 for the
+  share's and folder's permissions, the right, and FSLAB's empty
+  `ms-DS-CreatorSID` (the quota path would stamp it). Then idempotence,
+  `validate` from dc01, `failover` there and back, a report-only plan and
+  drift fix, `wsfc`'s `failover` entry point on `Cluster Group` (out and back,
+  cluster up, witness online), the `wsfc_cluster_cno` integration target on
+  node1 (through `ANSIBLE_ROLES_PATH`: the right removed on dc01, then check
+  mode, grant, repeat, option off), and last `wsfc` again with a disk
+  witness. It's the only lab where a group moves.
   It's `wsfc`'s multi-node coverage and the slowest job (about 35 minutes
   when it passes; its `molecule test` limit is 120 minutes, the job's 150).
   First passed end to end on 2026-11-02 (PR #36, 697ddc7), after eleven red
@@ -284,8 +300,10 @@ Not covered by the lab yet (issue #16 unless noted):
   multi-query WMI filters aren't supported (#13)
 - `wsfc` (#19): adding a node to an existing cluster (the lab creates both
   in one `New-Cluster`), the `Dns` access point, multi-subnet clusters, CSVs,
-  file share and cloud witnesses (and a file share witness's `credential`),
-  failover between sites, and a failing `Test-Cluster` (its failure
+  a cloud witness, a file share witness's `credential`, a witness share in
+  another AD site (replication delays its permission; the role retries ten
+  minutes), the CNO's right on an OU rather than `CN=Computers`, failover
+  between sites, and a failing `Test-Cluster` (its failure
   detection matches `ClusterNotApproved` in the warning stream, unconfirmed).
   The three-VM scenario covers the rest of what #19 listed.
 - `wsfc_fileserver`: Scale-Out File Server (not built), adding a disk to an
@@ -344,6 +362,10 @@ lab to the scripts — and record the surprise below as a gotcha.
   hashtables and return the changes. `wsfc_group` (0.17.0) plans with its
   `Get-WsfcGroupPlan`, refusals included (an availability group's group is
   SQL Server's); the SQL Server modules will use it too, rather than copies.
+  `Test-WsfcCreateComputerRight` (0.20.0) decides whether a container's
+  access rules, reduced to hashtables, already let the CNO create computer
+  objects; `wsfc_cluster` reads and writes them through
+  System.DirectoryServices (no RSAT on the nodes).
   Lists in it are made with `[System.Collections.Generic.List[object]]::new()`
   (see Gotchas).
 - The IIS modules share `plugins/module_utils/_IisConfig.psm1`: the calls
@@ -687,6 +709,48 @@ ansible-galaxy collection build --force
   resource: that's an outage the operator schedules. Failback window hours
   read back as 4294967295 (0xFFFFFFFF) for "no window", which the options
   spell `-1`.
+
+- **The witness share and the CNO's right run on Active Directory's
+  timing.** The cluster name object (CNO) exists only once `New-Cluster` has
+  run, so `wsfc` provisions a witness share between two `wsfc_cluster` runs
+  (`tasks/witness.yml`). `wsfc_cluster` finds the CNO through the cluster
+  name resource's private properties (`ADAware`, `CreatingDC`) and an LSA
+  lookup of `NAME$`, retried for two minutes when the run just created the
+  cluster, and it writes the right on the CNO's `CreatingDC`, so replication
+  doesn't matter there. The witness host resolves the CNO through its own
+  domain controller: the folder's permission names the SID (no lookup), the
+  share's goes by name (`win_share` translates it), so the share task retries
+  for ten minutes. The lab has one DC and never waits, so the delay between
+  sites is unconfirmed. Confirmed in the three-VM lab (PR #67, 2026-11-05,
+  Windows Server 2022): `ADAware` and `CreatingDC` find the CNO, the
+  `psbase` calls write the container's rule, and `Set-ClusterQuorum
+  -FileShareWitness` accepts a share whose only share permission is the
+  CNO's Full Control (no Administrators entry needed).
+
+- **A PowerShell variable that differs from a typed parameter only in case
+  *is* that parameter.** The lab's `ad_state.ps1` had `param([string]$FileServer)`
+  and then `$fileServer = Get-ADComputer …`, which stored the computer
+  object as a string, so its distinguished name read null (PR #67's second
+  lab run). PSScriptAnalyzer doesn't catch it. Give locals names no
+  parameter has.
+
+- **A backslash in a Jinja string literal inside `{{ }}` stays doubled on
+  ansible-core 2.21.** `'{{ path.split("\\") }}'` split on two backslashes,
+  so `\\server\share` came back as two parts and the witness share's name
+  lookup failed (PR #67's first lab run, 2026-11-05). The same literal in a
+  conditional (`assert`'s `that`, `when`) is unescaped, which is why the
+  role's `\\server\share` check passed. Keep backslashes out of template
+  literals: put the character in a plain YAML variable
+  (`wsfc_witness_backslash: "\\"`) and use that, which works on 2.18 and
+  2.21 alike.
+
+- **The machine account quota hides a missing CNO right.** In
+  `CN=Computers` the CNO creates up to `ms-DS-MachineAccountQuota` (10 by
+  default) computer objects for its roles without any right, and each gets
+  an `ms-DS-CreatorSID`; in an OU, or with the quota at 0, it needs Create
+  Computer objects. The three-VM lab sets the quota to 0, so its file
+  server's computer object exists only through the right, and verify checks
+  that its `ms-DS-CreatorSID` is empty.
 
 - **A domain cluster starts with a site of its own.** On the three-VM lab
   (Windows Server 2022, AD access point) `New-Cluster` created

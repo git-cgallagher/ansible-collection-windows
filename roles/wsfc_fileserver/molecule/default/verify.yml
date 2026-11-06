@@ -28,7 +28,9 @@
           - lab_c.nodes == ['NODE1', 'NODE2']
           - lab_c.node_states == ['Up']
           - lab_c.cluster_addresses == [lab_cluster.address]
-          - lab_c.witness == 'Witness'
+          - lab_c.witness_type == 'File Share Witness'
+          - (lab_c.witness_path | lower) == (wsfc_quorum.path | lower)
+          - lab_c.witness_state == 'Online'
           - lab_c.disks | map(attribute='name') | sort == ['FS Data', 'Witness']
           - lab_c.disks | map(attribute='state') | unique == ['Online']
           - (lab_c.networks | selectattr('name', 'equalto', 'Management') | first).role == 0
@@ -69,6 +71,39 @@
         lab_f: "{{ lab_state.result.fileserver }}"
         lab_projects: "{{ lab_state.result.shares | selectattr('name', 'equalto', 'Projects') | first }}"
         lab_appdata: "{{ lab_state.result.shares | selectattr('name', 'equalto', 'AppData') | first }}"
+      run_once: true
+
+    # The domain side, on dc01: the witness share wsfc provisioned, and the
+    # right it gave the cluster name object (CNO). With the machine account
+    # quota at 0, FSLAB's computer object exists only through that right, and
+    # an empty ms-DS-CreatorSID says it wasn't created through a quota.
+    - name: Read the witness share and the CNO's right on dc01
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/ad_state.ps1') }}"
+        parameters:
+          Cluster: "{{ lab_cluster.name }}"
+          FileServer: "{{ lab_fileserver.name }}"
+          Share: "{{ lab_cluster.witness_share }}"
+          Path: "{{ lab_cluster.witness_path }}"
+      delegate_to: dc01
+      run_once: true
+      register: lab_ad
+
+    - name: Check the witness share, the CNO's right and how FSLAB was created
+      ansible.builtin.assert:
+        that:
+          - lab_a.share_path == lab_cluster.witness_path
+          # The CNO has Full, and the share's default Everyone entry is gone.
+          - lab_a.cno_account ~ ':Allow:Full' in lab_a.share_access.split(';')
+          - "'Everyone' not in lab_a.share_access"
+          - lab_a.folder_rights == 'FullControl'
+          - lab_a.machine_account_quota == 0
+          - lab_a.cno_create_rules >= 1
+          - lab_a.fileserver_container == lab_a.cno_container
+          - lab_a.fileserver_creator_sid == ''
+        fail_msg: "Domain state: {{ lab_a | to_nice_json }}"
+      vars:
+        lab_a: "{{ lab_ad.result }}"
       run_once: true
 
     # 2. The shares from a client (dc01), through \\FSLAB\<share>.
@@ -268,7 +303,7 @@
       run_once: true
 
     # 5. wsfc's failover entry point, last, on the core group (the cluster's
-    #    name, its address and the disk witness): a move to the other node and
+    #    name, its address and the witness): a move to the other node and
     #    back. Not FSLAB, whose own failover above already proves it moves, and
     #    whose starting owner the steps above rely on. NODE2 has no vote, but
     #    NODE1 stays up and keeps quorum with the witness wherever it's owned.
@@ -305,10 +340,72 @@
           - lab_c.cluster_group_owner == lab_r.from
           - lab_c.cluster_group_state == 'Online'
           - lab_c.node_states == ['Up']
-          - lab_c.witness == 'Witness'
+          - lab_c.witness_type == 'File Share Witness'
           - lab_c.witness_state == 'Online'
         fail_msg: "Failover: {{ lab_r | to_nice_json }} / cluster state: {{ lab_c | to_nice_json }}"
       vars:
         lab_r: "{{ wsfc_failover_result }}"
         lab_c: "{{ lab_state_failover.result }}"
+      run_once: true
+
+# 6. wsfc_cluster's domain integration target: take the CNO's right away out
+#    of band, then plan, grant and repeat it through the module.
+- name: Test the CNO's right through wsfc_cluster
+  hosts: node1
+  gather_facts: false
+  tasks:
+    - name: Run tests/integration/targets/wsfc_cluster_cno
+      ansible.builtin.include_role:
+        name: wsfc_cluster_cno
+      vars:
+        wsfc_cluster_cno_name: "{{ lab_cluster.name }}"
+        wsfc_cluster_cno_nodes: "{{ groups['lab_nodes'] | map('extract', hostvars, 'lab_hostname') | list }}"
+        wsfc_cluster_cno_dc: dc01
+        wsfc_cluster_cno_become_user: "{{ lab_admin_user }}"
+        wsfc_cluster_cno_become_password: "{{ lab_admin_password }}"
+
+# 7. The disk witness, last: the same cluster moved from its file share witness
+#    to the Witness disk, which the lab otherwise no longer uses as a witness.
+- name: Move the quorum to the disk witness
+  hosts: lab_nodes
+  gather_facts: false
+  tasks:
+    - name: Run wsfc with a disk witness
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.wsfc
+      vars:
+        wsfc_quorum:
+          type: disk_witness
+          disk: Witness
+        wsfc_witness_share: {}
+        # The group var reads converge.yml's lab_wsfc_disks fact, which this
+        # run doesn't have; the disks are in the cluster, and [] leaves them.
+        wsfc_disks: []
+
+    - name: Read the cluster after the move
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_state.ps1') }}"
+        parameters:
+          FileServer: "{{ lab_fileserver.name }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      run_once: true
+      register: lab_state_disk
+
+    - name: Check the disk witness took over and the cluster stayed up
+      ansible.builtin.assert:
+        that:
+          - wsfc_run is changed
+          - wsfc_run.actions == ['set the quorum witness to disk Witness']
+          - lab_c.witness == 'Witness'
+          - lab_c.witness_type == 'Physical Disk'
+          - lab_c.witness_state == 'Online'
+          - lab_c.node_states == ['Up']
+          - lab_c.fileserver.state == 'Online'
+        fail_msg: "{{ wsfc_run.actions }} / cluster state: {{ lab_c | to_nice_json }}"
+      vars:
+        lab_c: "{{ lab_state_disk.result }}"
       run_once: true

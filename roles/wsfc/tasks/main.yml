@@ -15,6 +15,25 @@
       set, needs a type, and every wsfc_node_weights value must be 0 or 1
     quiet: true
 
+# The share is for the cluster name object, which only an Active Directory
+# access point has, and takes its name from wsfc_quorum's \\server\share.
+- name: Require a quorum the provisioned witness share can serve
+  ansible.builtin.assert:
+    that:
+      - wsfc_witness_share.host | default('', true) in hostvars
+      - wsfc_witness_share.path | default('', true) | length > 0
+      - wsfc_quorum.type | default('') == 'file_share_witness'
+      - wsfc_quorum.path | default('') is match('^\\\\\\\\[^\\\\]+\\\\[^\\\\]+$')
+      - wsfc_quorum.credential | default({}, true) | length == 0
+      - wsfc_administrative_access_point == 'ActiveDirectoryAndDns'
+    fail_msg: >-
+      wsfc_witness_share needs a host from the inventory and a path, a wsfc_quorum
+      of type file_share_witness whose path is \\server\share (no folder under the
+      share, no trailing backslash), with no credential, and the
+      ActiveDirectoryAndDns access point
+    quiet: true
+  when: wsfc_witness_share | length > 0
+
 # --- every node ------------------------------------------------------------------
 - name: Install Failover Clustering
   ansible.windows.win_feature:
@@ -62,7 +81,9 @@
     validate: "{{ wsfc_validate | bool }}"
     validate_ignore: "{{ wsfc_validate_ignore }}"
     report_dir: "{{ wsfc_report_dir }}"
-    quorum: "{{ wsfc_quorum }}"
+    cno_create_computer_objects: "{{ wsfc_cno_create_computer_objects | bool }}"
+    # A provisioned witness share is set after it exists (tasks/witness.yml).
+    quorum: "{{ {} if wsfc_witness_share | length > 0 else wsfc_quorum }}"
     networks: "{{ wsfc_networks }}"
     properties: "{{ wsfc_properties }}"
     sites: "{{ wsfc_sites }}"
@@ -86,11 +107,16 @@
   # check_mode false and the task would write during a check run.
   check_mode: "{{ wsfc_report_only | bool or ansible_check_mode }}"
 
+- name: Provision the witness share, then set the quorum to it
+  ansible.builtin.include_tasks: witness.yml
+  when: wsfc_witness_share | length > 0
+
+# A plan for a node that isn't in the cluster yet lists it in both runs.
 - name: Report actions and warnings
   ansible.builtin.debug:
     msg:
       - "planned only: {{ wsfc_report_only | bool or ansible_check_mode }}"
-      - "actions: {{ wsfc_run.actions | default([]) }}"
-      - "warnings: {{ wsfc_run.warnings | default([]) }}"
+      - "actions: {{ (wsfc_run.actions | default([]) + wsfc_quorum_run.actions | default([])) | unique }}"
+      - "warnings: {{ (wsfc_run.warnings | default([]) + wsfc_quorum_run.warnings | default([])) | unique }}"
       - "validation report: {{ wsfc_run.validation_report | default('') }}"
   run_once: true

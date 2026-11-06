@@ -1,0 +1,3 @@
+---
+# No setup_wsfc: the domain cluster comes from the scenario that runs this.
+dependencies: []

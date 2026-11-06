@@ -38,6 +38,10 @@ platforms:
     lab_networks:
       - {name: cluster, ipv4_address: 10.42.0.12}
 provisioner:
+  env:
+    # verify.yml runs wsfc_cluster's domain integration target
+    # (tests/integration/targets/wsfc_cluster_cno) as a role.
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/integration/targets
   inventory:
     group_vars:
       all:
@@ -62,6 +66,9 @@ provisioner:
             - {name: Witness, size_gb: 1, label: Witness}
             - {name: FS Data, size_gb: 4, label: FSData, drive_letter: S}
           iscsi_target: fsclu
+          # The file share witness, which wsfc provisions on dc01.
+          witness_share: FSCLU-Witness
+          witness_path: 'C:\ClusterWitness\FSCLU'
         lab_fileserver:
           name: FSLAB
           address: 10.42.0.101
@@ -86,9 +93,17 @@ provisioner:
             role: cluster_and_client
         # converge.yml reads the UniqueIds and builds the list.
         wsfc_disks: "{{ lab_wsfc_disks }}"
+        # A file share witness on dc01, as a third site would hold it. verify.yml
+        # ends on the disk witness (the Witness disk is in the cluster).
         wsfc_quorum:
-          type: disk_witness
-          disk: Witness
+          type: file_share_witness
+          path: "\\\\DC01.{{ lab_domain }}\\{{ lab_cluster.witness_share }}"
+        wsfc_witness_share:
+          host: dc01
+          path: "{{ lab_cluster.witness_path }}"
+        # prepare.yml sets the machine account quota to 0, so FSLAB's computer
+        # object can only be created through this right.
+        wsfc_cno_create_computer_objects: true
         # A site per node, as a cluster across two datacenters has, with
         # node1's preferred and node2 without a vote. The lab never stops a
         # node, so node1's vote (and the witness) keep the cluster up.

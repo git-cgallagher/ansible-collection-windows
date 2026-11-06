@@ -108,7 +108,10 @@
 
 # An availability group's cluster on one subnet stretched across two
 # datacenters, with the file share witness in a third: a site per
-# datacenter, DC1 preferred, and the vSphere profile's heartbeats.
+# datacenter, DC1 preferred, and the vSphere profile's heartbeats. The role
+# provisions the witness share on witness01 (a Windows server in DC3, in the
+# inventory) and lets the cluster name object create the listeners' computer
+# objects, for a domain whose machine account quota is 0.
 - name: Build the stretched availability group cluster
   hosts: agclu02_nodes            # ag11, ag12 in DC1; ag21, ag22 in DC2
   gather_facts: false
@@ -129,6 +132,10 @@
           RouteHistoryLength: 40
         wsfc_quorum:
           type: file_share_witness
-          path: '\\witness.dc3.example.com\witness$\AGCLU02'
+          path: '\\witness01.dc3.example.com\AGCLU02-Witness'
+        wsfc_witness_share:
+          host: witness01
+          path: 'C:\ClusterWitness\AGCLU02'
+        wsfc_cno_create_computer_objects: true
         wsfc_become_user: EXAMPLE\svc-cluster-build
         wsfc_become_password: "{{ vault_cluster_build_password }}"

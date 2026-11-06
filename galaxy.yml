@@ -1,6 +1,6 @@
 namespace: git_cgallagher
 name: windows
-version: 0.19.0
+version: 0.20.0
 readme: README.md
 authors:
   - Chris Gallagher (@git-cgallagher)

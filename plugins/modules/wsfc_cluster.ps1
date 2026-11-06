@@ -16,6 +16,9 @@
 #   2. Test-Cluster (optional) whenever nodes are about to join, then
 #      New-Cluster, or Add-ClusterNode for the nodes it is missing; extra
 #      nodes are reported, never evicted
+#   2b. the cluster name object (CNO, the cluster's computer account in
+#      Active Directory): read it, and optionally grant it Create Computer
+#      objects on the container that holds it
 #   3. cluster networks: name, role and metric, matched by subnet; then
 #      remove cluster name addresses on ignored networks (never the last)
 #   3c. site fault domains and the nodes in them, the preferred site, and
@@ -45,6 +48,7 @@ $spec = @{
         validate = @{ type = 'bool'; default = $true }
         validate_ignore = @{ type = 'list'; elements = 'str' }
         report_dir = @{ type = 'str'; default = 'C:\ProgramData\wsfc-iac' }
+        cno_create_computer_objects = @{ type = 'bool'; default = $false }
         quorum = @{
             type = 'dict'
             options = @{
@@ -122,6 +126,7 @@ $nodes = @($module.Params.nodes)
 $accessPoint = $module.Params.administrative_access_point
 $validate = $module.Params.validate
 $reportDir = $module.Params.report_dir
+$cnoCreateComputers = $module.Params.cno_create_computer_objects
 $checkMode = $module.CheckMode
 
 # A list option left out arrives as $null, and @($null).Count is 1.
@@ -152,6 +157,7 @@ if ($null -eq $nodeWeights) { $nodeWeights = @{} }
 $actions = New-Object System.Collections.Generic.List[string]
 $script:validationReport = ''
 $script:created = $false
+$script:cno = @{}
 
 # Record an action; carry it out unless this is a check-mode run.
 function Invoke-Change {
@@ -206,6 +212,91 @@ function Assert-NoClusterDatabase {
             throw ("Node $node has a cluster database ($db) but no cluster answered through it. It may belong to " +
                 'a cluster that is down. If it is stale, run Clear-ClusterNode on it, then re-run.')
         }
+    }
+}
+
+# The cluster's computer account in Active Directory, its cluster name object
+# (CNO): @{} when the cluster's name isn't in AD (an administrative access
+# point of Dns or None). The cluster name resource's private properties say
+# which (ADAware, ObjectGUID) and on which domain controller the account was
+# created (CreatingDC). The SID comes from an LSA lookup through the node's
+# domain controller, which right after New-Cluster may not have the account
+# yet, so a cluster this run created is looked up for up to two minutes.
+function Get-ClusterCno {
+    param([string]$Conn, [switch]$Retry)
+    $coreGroups = @(Get-ClusterGroup -Cluster $Conn | Where-Object { $_.IsCoreGroup } | ForEach-Object { [string]$_.Name })
+    $nameResource = @(Get-ClusterResource -Cluster $Conn | Where-Object {
+            (Get-ResourceTypeName $_) -eq 'Network Name' -and $coreGroups -contains [string]$_.OwnerGroup.Name
+        })
+    if ($nameResource.Count -eq 0) { return @{} }
+    $nameProperties = @{}
+    foreach ($parameter in @($nameResource[0] | Get-ClusterParameter)) { $nameProperties[[string]$parameter.Name] = $parameter.Value }
+    if ([string]$nameProperties['ADAware'] -ne '1' -and -not [string]$nameProperties['ObjectGUID']) { return @{} }
+    $account = '{0}$' -f [string]$nameProperties['Name']
+    $attempts = 1
+    if ($Retry) { $attempts = 12 }
+    $sid = $null
+    for ($attempt = 1; $null -eq $sid; $attempt++) {
+        try {
+            $sid = ([System.Security.Principal.NTAccount]$account).Translate([System.Security.Principal.SecurityIdentifier])
+        }
+        catch {
+            if ($attempt -ge $attempts) { throw "Can't look up the cluster name object $account in Active Directory: $($_.Exception.Message)" }
+            Start-Sleep -Seconds 10
+        }
+    }
+    @{
+        account = $sid.Translate([System.Security.Principal.NTAccount]).Value
+        sid = $sid.Value
+        creating_dc = ([string]$nameProperties['CreatingDC']).TrimStart('\')
+        distinguished_name = ''
+        container = ''
+    }
+}
+
+# Grant the CNO Create Computer objects on the container that holds it, the
+# way Microsoft's guide to prestaging cluster objects does (This object and
+# all descendant objects), so clustered roles can create their own computer
+# objects (an FCI's network name, an AG listener) where the machine account
+# quota is 0. Through System.DirectoryServices (no RSAT), on the domain
+# controller that created the CNO, writing only the DACL. Never removes a
+# permission. Fills in the CNO's and its container's distinguished names.
+function Grant-CnoCreateComputerRight {
+    $searcher = New-Object System.DirectoryServices.DirectorySearcher
+    if ($script:cno.creating_dc) {
+        $searcher.SearchRoot = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$($script:cno.creating_dc)")
+    }
+    $searcher.Filter = '(&(objectCategory=computer)(sAMAccountName={0}))' -f ($script:cno.account -split '\\')[-1]
+    $hit = $searcher.FindOne()
+    if ($null -eq $hit) { throw "Can't find the cluster name object $($script:cno.account) in Active Directory" }
+    $script:cno.distinguished_name = [string]$hit.Properties['distinguishedname'][0]
+    # PowerShell's ADSI adapter shows a DirectoryEntry's LDAP attributes in
+    # place of its .NET members, so those go through psbase. Only the DACL:
+    # by default CommitChanges also writes the owner and group.
+    $container = $hit.GetDirectoryEntry().psbase.Parent
+    $container.psbase.Options.SecurityMasks = [System.DirectoryServices.SecurityMasks]::Dacl
+    $script:cno.container = [string]$container.psbase.Properties['distinguishedName'].Value
+    $accessRules = $container.psbase.ObjectSecurity.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+    $rules = @($accessRules | ForEach-Object {
+            @{
+                sid = [string]$_.IdentityReference
+                rights = [int64]$_.ActiveDirectoryRights
+                type = [string]$_.AccessControlType
+                object_type = [string]$_.ObjectType
+                inheritance = [string]$_.InheritanceType
+                inherited_object_type = [string]$_.InheritedObjectType
+            }
+        })
+    if (Test-WsfcCreateComputerRight -Rules $rules -Sid $script:cno.sid) { return }
+    Invoke-Change "grant $($script:cno.account) Create Computer objects on $($script:cno.container)" {
+        $rule = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+            (New-Object System.Security.Principal.SecurityIdentifier($script:cno.sid)),
+            [System.DirectoryServices.ActiveDirectoryRights]::CreateChild,
+            [System.Security.AccessControl.AccessControlType]::Allow,
+            [guid]'bf967a86-0de6-11d0-a285-00aa003049e2',
+            [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All)
+        $container.psbase.ObjectSecurity.AddAccessRule($rule)
+        $container.psbase.CommitChanges()
     }
 }
 
@@ -269,8 +360,8 @@ function Invoke-Main {
             $script:created = $true
         }
         if ($checkMode) {
-            if ($networks.Count -or $disks.Count -or $properties.Count -or (Get-Setting -Object $quorum -Key 'type')) {
-                $module.Warn('Networks, properties, disks and quorum are planned once the cluster exists')
+            if ($networks.Count -or $disks.Count -or $properties.Count -or (Get-Setting -Object $quorum -Key 'type') -or $cnoCreateComputers) {
+                $module.Warn('Networks, properties, disks, quorum and the CNO''s right to create computer objects are planned once the cluster exists')
             }
             return
         }
@@ -296,6 +387,23 @@ function Invoke-Main {
     # not be a member yet, so use the node the cluster was found through.
     $conn = $local
     if ($checkMode -and $via) { $conn = $via }
+
+    # --- 2b. the cluster name object ---------------------------------------------
+    # Read on every run, for the result's cno; only the grant depends on it.
+    try {
+        $script:cno = Get-ClusterCno -Conn $conn -Retry:$script:created
+    }
+    catch {
+        if ($cnoCreateComputers) { throw }
+        $module.Warn("Couldn't read the cluster name object: $($_.Exception.Message)")
+    }
+    if ($cnoCreateComputers) {
+        if ($script:cno.Count -eq 0) {
+            throw ('cno_create_computer_objects needs a cluster whose name is in Active Directory (administrative access point ' +
+                "ActiveDirectoryAndDns), and cluster $name has no cluster name object")
+        }
+        Grant-CnoCreateComputerRight
+    }
 
     # --- 3. networks -----------------------------------------------------------
     $roleValues = @{ none = 0; cluster = 1; cluster_and_client = 3 }
@@ -650,6 +758,7 @@ function Invoke-Main {
 function Set-ModuleResult {
     $module.Result.cluster = $name
     $module.Result.created = $script:created
+    $module.Result.cno = $script:cno
     $module.Result.actions = @($actions)
     $module.Result.validation_report = $script:validationReport
     # Diagnostic only (the double hop); never worth failing the run for.

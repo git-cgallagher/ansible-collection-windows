@@ -94,6 +94,20 @@
             path: '\\nas01.example.com\witness'
             credential: {username: witness, password: example-not-secret}
 
+    - name: Accept a provisioned wsfc witness share and the CNO's right
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_cluster }}"
+        provided_arguments:
+          wsfc_name: SQLCLU01
+          wsfc_quorum:
+            type: file_share_witness
+            path: '\\witness01.example.com\SQLCLU01-Witness'
+          wsfc_witness_share:
+            host: witness01
+            path: 'C:\ClusterWitness\SQLCLU01'
+            description: SQLCLU01's witness
+          wsfc_cno_create_computer_objects: true
+
     # --- invalid input is rejected by the roles themselves --------------------------
     - name: Accept a full wsfc groups call
       ansible.builtin.validate_argument_spec:
@@ -346,6 +360,74 @@
         - name: Check the argument spec rejected it
           ansible.builtin.assert:
             that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('password')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    # The share's name comes from the quorum's \\server\share, so a path with
+    # a folder under the share can't be provisioned; the role's own check.
+    - name: Reject a provisioned wsfc witness share under another share
+      block:
+        - name: Include wsfc with a witness share path one level too deep
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+          vars:
+            wsfc_name: SQLCLU01
+            wsfc_quorum:
+              type: file_share_witness
+              path: '\\witness01.example.com\witness$\SQLCLU01'
+            wsfc_witness_share:
+              host: localhost
+              path: 'C:\ClusterWitness\SQLCLU01'
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: wsfc accepted a witness share path with a folder
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('wsfc_witness_share needs')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a provisioned wsfc witness share without a file share witness
+      block:
+        - name: Include wsfc with a witness share but a disk witness
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+          vars:
+            wsfc_name: SQLCLU01
+            wsfc_quorum: {type: disk_witness, disk: Witness}
+            wsfc_witness_share:
+              host: localhost
+              path: 'C:\ClusterWitness\SQLCLU01'
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: wsfc accepted a witness share for a disk witness
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('wsfc_witness_share needs')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a non-boolean wsfc_cno_create_computer_objects
+      block:
+        - name: Include wsfc with wsfc_cno_create_computer_objects=maybe
+          ansible.builtin.include_role:
+            name: git_cgallagher.windows.wsfc
+          vars:
+            wsfc_name: SQLCLU01
+            wsfc_cno_create_computer_objects: maybe
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: wsfc accepted wsfc_cno_create_computer_objects=maybe
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('wsfc_cno_create_computer_objects')
             fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
 
     # A spec can't limit a dict's values; the role's first task does.

@@ -2,7 +2,8 @@
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
 # Shared by the failover clustering modules (wsfc_cluster and wsfc_group):
-# the pure logic, with no Ansible.Basic or FailoverClusters calls, so Pester
+# the pure logic, with no Ansible.Basic, FailoverClusters or Active Directory
+# calls, so Pester
 # tests it without a cluster (tests/unit/plugins/modules/wsfc_cluster.Tests.ps1
 # and wsfc_group.Tests.ps1).
 # Private to this collection, with no compatibility promise. Windows
@@ -468,6 +469,41 @@ Function Get-WsfcGroupPlan {
     @{ Actions = @($actions); Warnings = @($warnings) }
 }
 
+Function Test-WsfcCreateComputerRight {
+    <#
+    .SYNOPSIS
+    Tells whether a container's access rules already let a principal create
+    computer objects in it.
+    .DESCRIPTION
+    Rules: the container's access rules, each reduced to a hashtable @{ sid;
+    rights (ActiveDirectoryRights as a number); type (Allow or Deny);
+    object_type and inherited_object_type (GUID strings); inheritance
+    (ActiveDirectorySecurityInheritance's name) }. Sid: the principal's SID.
+    A rule counts when it allows the principal CreateChild (bit 1, which
+    GenericAll carries too) for the computer class or for every class, applies
+    to the container itself rather than only to what it holds, and isn't
+    limited to one class of container. A right granted through a group isn't
+    seen; the module then adds its own rule, which does no harm.
+    #>
+    [CmdletBinding()]
+    param ([object[]]$Rules = @(), [string]$Sid)
+
+    $computerClass = 'bf967a86-0de6-11d0-a285-00aa003049e2'
+    $anyClass = '00000000-0000-0000-0000-000000000000'
+    foreach ($rule in @($Rules)) {
+        if ($null -eq $rule) { continue }
+        if ([string]$rule.sid -ne $Sid -or [string]$rule.type -ne 'Allow') { continue }
+        if (([int64]$rule.rights -band 1) -eq 0) { continue }
+        $objectType = ([string]$rule.object_type).ToLowerInvariant()
+        if ($objectType -and $objectType -ne $anyClass -and $objectType -ne $computerClass) { continue }
+        if (@('Descendents', 'Children') -contains [string]$rule.inheritance) { continue }
+        $inheritedType = ([string]$rule.inherited_object_type).ToLowerInvariant()
+        if ($inheritedType -and $inheritedType -ne $anyClass) { continue }
+        return $true
+    }
+    $false
+}
+
 $exportFunctions = @(
     'ConvertTo-WsfcFaultDomain'
     'ConvertTo-WsfcHour'
@@ -479,5 +515,6 @@ $exportFunctions = @(
     'Get-WsfcNodeWeightPlan'
     'Get-WsfcSitePlan'
     'Test-NetworkMatch'
+    'Test-WsfcCreateComputerRight'
 )
 Export-ModuleMember -Function $exportFunctions

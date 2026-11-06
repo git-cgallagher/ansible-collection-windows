@@ -1,7 +1,8 @@
 # Pester 5 unit tests for wsfc_cluster's logic: the pure functions it calls
 # from plugins/module_utils/_WsfcCommon.psm1 that decide which sites to
-# create, which nodes to move between them and which node votes to change,
-# and the module's wiring to that util. The module's behaviour against a
+# create, which nodes to move between them, which node votes to change and
+# whether the cluster name object may already create computer objects, and
+# the module's wiring to that util. The module's behaviour against a
 # cluster is its integration target (tests/integration/targets/wsfc_cluster).
 # Run with Invoke-Pester -Path tests/unit.
 
@@ -41,6 +42,13 @@ Describe 'wsfc_cluster''s wiring' {
     It 'calls both planners' {
         $script:text | Should -Match 'Get-WsfcSitePlan '
         $script:text | Should -Match 'Get-WsfcNodeWeightPlan '
+    }
+
+    It 'decides the CNO''s right through the util and writes only the DACL' {
+        $script:text | Should -Match 'cno_create_computer_objects = @\{ type = ''bool''; default = \$false \}'
+        $script:text | Should -Match 'Test-WsfcCreateComputerRight -Rules '
+        $script:text | Should -Match 'SecurityMasks\]::Dacl'
+        $script:defined | Should -Not -Contain 'Test-WsfcCreateComputerRight'
     }
 }
 
@@ -205,5 +213,88 @@ Describe 'Get-WsfcNodeWeightPlan' {
     It 'refuses a weight other than 0 or 1' {
         { Get-WsfcNodeWeightPlan -Weights @{ NODE1 = 2 } -Current @{ NODE1 = 1 } } |
             Should -Throw -ExpectedMessage 'Node NODE1''s weight must be 0 or 1, not ''2'''
+    }
+}
+
+Describe 'Test-WsfcCreateComputerRight' {
+    BeforeAll {
+        $script:cnoSid = 'S-1-5-21-1004336348-1177238915-682003330-1105'
+        $script:computerClass = 'bf967a86-0de6-11d0-a285-00aa003049e2'
+        $script:userClass = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+        $script:anyClass = '00000000-0000-0000-0000-000000000000'
+
+        # One access rule, reduced the way the module reduces them; by default
+        # the rule the module itself grants.
+        function script:New-Rule {
+            param(
+                [string]$Sid = $script:cnoSid,
+                [int64]$Rights = 1,
+                [string]$Type = 'Allow',
+                [string]$ObjectType = $script:computerClass,
+                [string]$Inheritance = 'All',
+                [string]$InheritedObjectType = $script:anyClass
+            )
+            @{
+                sid = $Sid
+                rights = $Rights
+                type = $Type
+                object_type = $ObjectType
+                inheritance = $Inheritance
+                inherited_object_type = $InheritedObjectType
+            }
+        }
+    }
+
+    It 'finds the rule the module grants' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule) -Sid $script:cnoSid | Should -BeTrue
+    }
+
+    It 'accepts the rule for this object only' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -Inheritance 'None') -Sid $script:cnoSid | Should -BeTrue
+    }
+
+    It 'accepts full control, and CreateChild for every class' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -Rights 983551 -ObjectType $script:anyClass) -Sid $script:cnoSid |
+            Should -BeTrue
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -ObjectType '') -Sid $script:cnoSid | Should -BeTrue
+    }
+
+    It 'compares the class without case' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -ObjectType $script:computerClass.ToUpperInvariant()) -Sid $script:cnoSid |
+            Should -BeTrue
+    }
+
+    It 'ignores a rule for someone else' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -Sid 'S-1-5-11') -Sid $script:cnoSid | Should -BeFalse
+    }
+
+    It 'ignores a deny rule' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -Type 'Deny') -Sid $script:cnoSid | Should -BeFalse
+    }
+
+    It 'ignores a rule without CreateChild' {
+        # ReadProperty (16) | WriteProperty (32)
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -Rights 48) -Sid $script:cnoSid | Should -BeFalse
+    }
+
+    It 'ignores CreateChild for another class' {
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -ObjectType $script:userClass) -Sid $script:cnoSid | Should -BeFalse
+    }
+
+    It 'ignores a rule that applies only to what the container holds' {
+        foreach ($inheritance in 'Descendents', 'Children') {
+            Test-WsfcCreateComputerRight -Rules @(New-Rule -Inheritance $inheritance) -Sid $script:cnoSid | Should -BeFalse
+        }
+    }
+
+    It 'ignores a rule limited to one class of container' {
+        $ouClass = 'bf967aa5-0de6-11d0-a285-00aa003049e2'
+        Test-WsfcCreateComputerRight -Rules @(New-Rule -InheritedObjectType $ouClass) -Sid $script:cnoSid | Should -BeFalse
+    }
+
+    It 'finds the rule among others, and nothing in an empty list' {
+        $rules = @((New-Rule -Sid 'S-1-5-11' -Rights 16), $null, (New-Rule))
+        Test-WsfcCreateComputerRight -Rules $rules -Sid $script:cnoSid | Should -BeTrue
+        Test-WsfcCreateComputerRight -Rules @() -Sid $script:cnoSid | Should -BeFalse
     }
 }
