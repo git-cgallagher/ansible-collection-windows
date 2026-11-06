@@ -138,10 +138,11 @@ jobs:
       # commit), the other collections, the checkout as git_cgallagher.windows
       # in .molecule-collections, KVM, QEMU, pypsrp and the lab directory.
       # Normally a few minutes; a stuck apt hung a run until the 120-minute job
-      # limit (2026-11-01), so fail fast and re-run instead. Since v0.2.1 the
-      # action limits its own apt-get calls (3 and 8 minutes); this step's
-      # limit is the backstop for the rest, because a composite action's own
-      # steps can't set one.
+      # limit (2026-11-01), so fail fast and re-run instead. The action limits
+      # its own apt-get calls (10 minutes at most in all since v0.5.1, which
+      # takes QEMU from the actions cache and moves a crawling download to the
+      # next mirror); this step's limit is the backstop for the rest, because
+      # a composite action's own steps can't set one.
       # Python packages and collections at the versions of the ansible-runtime image ansible-test.yml
       # pins: its constraints.txt, and its collections (setup-molecule's collections-image), so the
       # lab runs the same ansible-core, Molecule, pypsrp and collections as the jobs that run in the
@@ -157,7 +158,7 @@ jobs:
           docker run --rm "$image" cat /usr/share/ansible-runtime/constraints.txt > .cache/constraints.txt
 
       - name: Set up Molecule, the driver, KVM and QEMU
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@fe241402b3ecf67a343b634d39a14086ef913a50  # v0.5.0
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/setup-molecule@728a9fe0165e4e407d04557678e2cb0f0b9ff422  # v0.5.1
         timeout-minutes: 15
         with:
           constraints: .cache/constraints.txt
@@ -201,7 +202,7 @@ jobs:
       - name: Capture the VM screen
         if: failure()
         timeout-minutes: 2
-        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@fe241402b3ecf67a343b634d39a14086ef913a50  # v0.5.0
+        uses: git-cgallagher/ansible-collection-molecule/.github/actions/vm-screendump@728a9fe0165e4e407d04557678e2cb0f0b9ff422  # v0.5.1
         with:
           lab-dir: ${{ env.MOLECULE_LAB_DIR }}
           platforms: ${{ matrix.vm }}
