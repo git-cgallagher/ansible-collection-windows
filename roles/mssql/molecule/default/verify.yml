@@ -1,0 +1,115 @@
+---
+# Checks the instance the role installed through setup_mssql's
+# instance_state.ps1 (the registry, the services and SqlClient, never the
+# modules), that setup kept the passwords out of its logs, and that a
+# report-only run of the role plans nothing; then runs the modules'
+# integration targets (tests/integration/targets) as roles.
+- name: Verify
+  hosts: lab_sql
+  gather_facts: false
+  vars:
+    lab_state_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../../../tests/integration/targets/setup_mssql/files/instance_state.ps1') }}"
+    lab_iso: 'C:\ProgramData\mssql-iac\media\SQLServer2022-x64-ENU-Dev.iso'
+  tasks:
+    - name: Read the instance
+      ansible.windows.win_powershell:
+        script: "{{ lab_state_script }}"
+        parameters:
+          InstanceName: MSSQLSERVER
+          ImagePaths: ["{{ lab_iso }}"]
+        depth: 5
+      register: lab_instance
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+
+    # The registry values the modules read are unconfirmed until a lab shows
+    # them; this keeps them in the log.
+    - name: Show the instance as the registry, the services and SQL Server describe it
+      ansible.builtin.debug:
+        var: lab_instance.output[0]
+
+    - name: Look at the cached ISO
+      ansible.windows.win_stat:
+        path: "{{ lab_iso }}"
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: lab_cached_iso
+
+    - name: Check the instance the role installed
+      ansible.builtin.assert:
+        that:
+          - lab_sql_instance.installed
+          - lab_sql_instance.server.edition is search('^Developer Edition')
+          - lab_sql_instance.server.product_version is search('^16[.]')
+          - lab_sql_instance.server.collation == mssql_collation
+          - lab_sql_instance.server.is_sysadmin
+          - lab_sql_instance.server.sysadmins | map('lower') | list is contains(mssql_sysadmins[0] | lower)
+          - lab_sql_instance.server.tempdb_data_files == mssql_tempdb.file_count
+          - lab_sql_instance.server.services | select('search', '^SQL Server [(]MSSQLSERVER[)][|].*[|]Y$') | list | length == 1
+          - lab_sql_instance.services.engine.state == 'Running'
+          - lab_sql_instance.services.engine.start_mode == 'Auto'
+          - lab_sql_instance.services.engine.account | lower == mssql_engine_account | lower
+          - lab_sql_instance.services.agent.state == 'Running'
+          - lab_sql_instance.services.agent.start_mode == 'Auto'
+          - lab_sql_instance.services.agent.account | lower == mssql_agent_account | lower
+          - lab_sql_instance.tcp.Enabled == '1'
+          - lab_sql_instance.attached_images | length == 0
+          - lab_cached_iso.stat.exists
+          - ('sha256:' ~ lab_cached_iso.stat.checksum) == mssql_media.checksum
+        fail_msg: "{{ lab_sql_instance | to_json }}"
+      vars:
+        lab_sql_instance: "{{ lab_instance.output[0] }}"
+
+    # Setup writes the settings it ran with to ConfigurationFile.ini in each
+    # run's log folder; the engine's password must not be among them.
+    - name: Search setup's configuration files for the engine's password
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Secret)
+          $Ansible.Changed = $false
+          $files = @(Get-ChildItem -Path "$env:ProgramFiles\Microsoft SQL Server\*\Setup Bootstrap\Log" -Recurse -Filter ConfigurationFile.ini)
+          @{
+              files = $files.Count
+              found = @($files | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Contains($Secret) }).Count
+          }
+        parameters:
+          Secret: "{{ mssql_engine_password }}"
+      no_log: true
+      register: lab_config_files
+
+    - name: Check setup's configuration files hold no password
+      ansible.builtin.assert:
+        that:
+          - lab_config_files.output[0].files > 0
+          - lab_config_files.output[0].found == 0
+        fail_msg: "{{ lab_config_files.output[0].found }} of {{ lab_config_files.output[0].files }} ConfigurationFile.ini hold the password"
+        quiet: true
+
+    - name: Run the role report-only
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql
+      vars:
+        mssql_report_only: true
+
+    - name: Check it planned nothing, and read the features the role asked for
+      ansible.builtin.assert:
+        that:
+          - mssql__setup is not changed
+          - mssql__setup.notices | length == 0
+          - mssql_instance.features_known
+          - mssql_instance.features == mssql_features
+          - mssql_instance.server.is_sysadmin
+        fail_msg: "setup {{ mssql__setup | to_json }}; instance {{ mssql_instance | to_json }}"
+
+    # The modules' integration targets, which need the instance and the cached
+    # ISO the role left (setup_mssql checks they're there).
+    - name: Run mssql_info's integration target
+      ansible.builtin.include_role:
+        name: mssql_info
+
+    - name: Run mssql_setup's integration target
+      ansible.builtin.include_role:
+        name: mssql_setup

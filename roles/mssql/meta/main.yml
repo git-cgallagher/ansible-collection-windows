@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  role_name: mssql
+  author: Chris Gallagher
+  description: Install a standalone SQL Server 2022 or 2025 instance from an ISO
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+dependencies: []

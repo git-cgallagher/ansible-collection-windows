@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.22.0 — 2026-11-06
+
+A standalone SQL Server instance from an ISO: phase 3a of issue #48, the
+first SQL Server role that installs SQL Server itself.
+
+- New role `mssql`: installs a standalone SQL Server 2022 or 2025 instance
+  (Enterprise, Standard, a Developer edition or Evaluation) on each host in
+  the play, in parallel, adds the features an installed instance lacks, and
+  reads it back. Its variables are checked on the controller first
+  (`tasks/plan.yml`, which the argument-specs workflow runs). When
+  `mssql_allow_reboot` is set, the role plans setup in check mode first and
+  reboots before it when setup has work and a reboot is pending, and after it
+  when setup asks for one (exit code 3010); otherwise it fails and says why.
+  It publishes the instance as the `mssql_instance` fact and fails unless the
+  role's account is a `sysadmin` of it. Setup and the reads run as
+  `mssql_become_user` (`runas` become) when it's set.
+- New module `mssql_setup`: stages the ISO (a local path, a UNC path or an
+  http(s) URL, pinned by its SHA-256; a UNC or URL copy is cached in
+  `media_cache_dir` and reused), mounts it read-only, checks its version
+  (`MediaInfo.xml`) and edition (the key in `x64\DefaultSetup.ini`), runs
+  setup, dismounts it and checks the installed edition. The passwords and
+  product key reach setup only on its command line and come back as
+  `********`. Settings fixed at install that differ (version, edition,
+  collation) and unlisted installed features are reported as `notices` and
+  warnings, never changed. Before setup it checks for a pending reboot, that
+  the account it runs as is among the `sysadmins`, that the service accounts
+  resolve, each path's volume exists and the media matches its checksum, in
+  check mode too. `state: absent` with `allow_remove` uninstalls an instance
+  with the copy of setup its version keeps. Setup's `Summary.txt` reasons
+  come back on failure. Every instance gets TCP/IP; cumulative updates come
+  only from `update_source`, never Microsoft Update.
+- New module `mssql_info`: the host's instances from the registry and their
+  services (version, edition, features, collation, paths, TCP, encryption,
+  service accounts), and, connected over shared memory, what SQL Server says
+  (SERVERPROPERTY, its services, sysadmins, tempdb's files, sp_configure);
+  a failed connection is reported, not raised. Also whether a reboot is
+  pending.
+- `plugins/module_utils/_MssqlCommon.psm1` holds the modules' shared logic:
+  versions, editions and keys, the media, features, the instance plan,
+  setup's command line and its `Summary.txt`, with Pester tests.
+- Tests: Pester tests for the util and the modules' wiring; integration
+  targets `mssql_info` and `mssql_setup` (15 refusals, a pending reboot, and
+  a named instance installed from a UNC path, given a feature and
+  uninstalled); and the `mssql` Molecule scenario, a domain controller and a
+  SQL Server host in `domain-lab`, which installs Microsoft's free SQL Server
+  2022 Developer edition (downloaded by the host itself, pinned by its
+  SHA-256, never uploaded or published), checks it, and runs both targets.
+
 ## 0.21.0 — 2026-11-06
 
 What `gpo_export` and `gpo_import` carry between two unrelated domains: the

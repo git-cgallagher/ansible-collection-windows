@@ -1,0 +1,25 @@
+---
+# Included by the mssql targets before a step that runs setup, which won't
+# run while Windows has a reboot pending (setup can leave one, through file
+# renames, though it left none in the first green lab run).
+- name: Read whether a reboot is pending
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters:
+      InstanceName: "{{ setup_mssql_instance }}"
+      Query: false
+    depth: 5
+  register: setup_mssql_reboot_state
+
+# The first green run rebooted here once, before ITEST's install, for a
+# reboot set earlier in verify; this says which marker it was next time.
+- name: Show why a reboot is pending
+  ansible.builtin.debug:
+    var: setup_mssql_reboot_state.output[0].reboot_markers
+  when: setup_mssql_reboot_state.output[0].reboot_pending
+
+- name: Reboot, because a reboot is pending
+  ansible.windows.win_reboot:
+    reboot_timeout: 1800
+  become: false
+  when: setup_mssql_reboot_state.output[0].reboot_pending

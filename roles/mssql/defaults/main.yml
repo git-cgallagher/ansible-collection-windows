@@ -1,0 +1,53 @@
+---
+# Every variable is documented in meta/argument_specs.yml
+# (`ansible-doc -t role git_cgallagher.windows.mssql`). mssql_version,
+# mssql_edition, mssql_media and mssql_sysadmins are required, so they have no
+# default here.
+
+# The instance: MSSQLSERVER is the default instance.
+mssql_instance_name: MSSQLSERVER
+
+# For enterprise or standard media without a key of its own (keep it in a vault).
+mssql_product_key: ''
+
+# SQLEngine (with SQL Server Agent), and optionally Replication and FullText.
+mssql_features: [SQLEngine]
+
+# The server collation, set at install only.
+mssql_collation: SQL_Latin1_General_CP1_CI_AS
+
+# Where a UNC path's or URL's ISO is copied to, and kept.
+mssql_media_cache_dir: 'C:\ProgramData\mssql-iac\media'
+
+# A folder of cumulative updates to slipstream; '' means none, and no
+# Microsoft Update either.
+mssql_update_source: ''
+
+# The engine's and SQL Server Agent's accounts: a domain account with its
+# password, a gMSA (ending in $) without one, or '' for setup's virtual
+# account.
+mssql_engine_account: ''
+mssql_engine_password: ''
+mssql_agent_account: ''
+mssql_agent_password: ''
+mssql_agent_startup: automatic
+
+# Skip zeroing new data files (instant file initialization).
+mssql_instant_file_init: true
+
+# Install-time folders (instance_dir, data_root, data, log, backup,
+# tempdb_data, tempdb_log) and tempdb's files (file_count, file_size_mb,
+# file_growth_mb, log_size_mb, log_growth_mb); {} = setup's defaults.
+mssql_paths: {}
+mssql_tempdb: {}
+
+# The account setup and the role's reads run as (runas become); '' = the
+# connection account.
+mssql_become_user: ''
+mssql_become_password: ''
+
+# Let the role reboot the host when setup needs it, before or after.
+mssql_allow_reboot: false
+
+# Plan only: report what setup would do, change nothing.
+mssql_report_only: false

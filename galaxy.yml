@@ -1,6 +1,6 @@
 namespace: git_cgallagher
 name: windows
-version: 0.21.0
+version: 0.22.0
 readme: README.md
 authors:
   - Chris Gallagher (@git-cgallagher)
@@ -10,7 +10,8 @@ description: >-
   into a target domain), failover clusters for file servers, SQL Server FCIs
   and availability groups, clustered file servers that fail over and validate
   on demand, the Active Directory accounts and Kerberos SPNs SQL Server runs
-  under, and IIS MIME type mappings.
+  under, standalone SQL Server instances installed from an ISO, and IIS MIME
+  type mappings.
 license:
   - MIT
 tags:

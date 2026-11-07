@@ -1,0 +1,31 @@
+---
+# Included by main.yml once per case (itest_case): runs mssql_setup with the
+# case's options over the target's defaults, in check mode unless the case
+# needs a real run (what only a mounted ISO tells), and expects a failure
+# whose message matches the case's expect.
+- name: "Refuse {{ itest_case.case }}"
+  git_cgallagher.windows.mssql_setup:
+    instance_name: "{{ itest_case.instance_name | default(itest_instance) }}"
+    state: "{{ itest_case.state | default('present') }}"
+    version: "{{ itest_case.version | default(setup_mssql_version) }}"
+    edition: "{{ itest_case.edition | default(setup_mssql_edition) }}"
+    product_key: "{{ itest_case.product_key | default(omit) }}"
+    features: "{{ itest_case.features | default(['SQLEngine']) }}"
+    media:
+      path: "{{ itest_case.media_path | default(itest_unc) }}"
+      checksum: "{{ itest_case.checksum | default(setup_mssql_media_checksum) }}"
+    media_cache_dir: "{{ setup_mssql_cache_dir }}"
+    engine_account: "{{ itest_case.engine_account | default(omit) }}"
+    engine_password: "{{ itest_case.engine_password | default(omit) }}"
+    sysadmins: "{{ itest_case.sysadmins | default(setup_mssql_sysadmins) }}"
+    paths: "{{ itest_case.paths | default(omit) }}"
+  check_mode: "{{ itest_case.check_mode | default(true) }}"
+  register: itest_refusal
+  ignore_errors: true
+
+- name: "Check it refused {{ itest_case.case }}"
+  ansible.builtin.assert:
+    that:
+      - itest_refusal is failed
+      - itest_refusal.msg is search(itest_case.expect)
+    fail_msg: "{{ itest_case.case }}: expected a failure matching '{{ itest_case.expect }}', got {{ itest_refusal | to_json }}"

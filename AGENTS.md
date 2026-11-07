@@ -125,7 +125,7 @@ collection's MIT license: don't copy code from GPL-licensed IIS modules
 (microsoft.iis, community.windows) into it.
 
 Its fourth area is **SQL Server** (0.12.0), planned in issue #48 (the roles,
-their phases and the owner's decisions of 2026-11-01). The first role:
+their phases and the owner's decisions of 2026-11-01). Its roles:
 
 - `roles/mssql_prereqs` — the Active Directory accounts SQL Server runs
   under, created before SQL Server is: domain users (`microsoft.ad.user`) or
@@ -136,9 +136,20 @@ their phases and the owner's decisions of 2026-11-01). The first role:
   `tests/argument_specs/validate.yml` runs on localhost with
   `tasks_from: plan` and `public: true`; `tasks/main.yml` imports it, then
   reads (KDS root keys, SPNs held elsewhere) before it writes anything.
+- `roles/mssql` (0.22.0, phase 3a) — a standalone SQL Server 2022 or 2025
+  instance from an ISO, on each host in parallel, through the modules
+  `mssql_setup` (stage the ISO from a local path, UNC path or URL into a
+  cache, mount it, check its version and edition, run setup; or uninstall)
+  and `mssql_info` (the instances from the registry, services and SQL Server
+  itself). `tasks/plan.yml` checks the variables on the controller (the
+  argument-specs workflow runs it); `tasks/main.yml` plans setup in check
+  mode when it may reboot first, installs, reboots after 3010 when allowed,
+  reads the instance back and requires a sysadmin connection.
 
-Next, per issue #48: `mssql` (standalone instances and FCIs) and `mssql_ag`
-(availability groups). **Every cluster change is made by `wsfc` itself**
+Next, per issue #48: 3b (`mssql_network`: static port, certificate, the three
+encryption modes, firewall), 3c (`mssql_configuration`: `sp_configure`), the
+FCI topology of `mssql` (phase 5) and `mssql_ag` (availability groups,
+phase 4). **Every cluster change is made by `wsfc` itself**
 (owner rule, 2026-11-01): amend `wsfc`/`wsfc_cluster`, never put cluster
 configuration into an `mssql` role. Service accounts and SPNs stay in
 `mssql_prereqs`, never in `mssql` or `mssql_ag`. The base role `mssql` must
@@ -214,6 +225,27 @@ role):
   nothing), plans a new account report-only (creating nothing), and checks
   that add mode keeps an out-of-band SPN while exclusive mode removes it and
   a repeat changes nothing.
+- `roles/mssql/molecule/default` (0.22.0): **two VMs** on a lab network
+  (dc01 = DC holding the accounts, sql01 joined). prepare runs
+  `mssql_prereqs` (the engine's domain account with its SPNs, a gMSA sql01
+  may use for the Agent, the administrators' group); converge installs a
+  default instance of **SQL Server 2022 Developer**, which sql01 downloads
+  from Microsoft itself through the role's URL staging (pinned by SHA-256 in
+  `molecule.yml`; Chris agreed to the Developer ISO in CI on 2026-11-06, and
+  it's never uploaded or published). verify reads the instance through
+  `setup_mssql`'s `instance_state.ps1` (edition, version, collation, service
+  accounts, sysadmins, tempdb, instant file initialization, TCP), searches
+  setup's `ConfigurationFile.ini` files for the engine's password, runs the
+  role report-only, then the `mssql_info` and `mssql_setup` integration
+  targets through `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
+  extends and uninstalls a named instance of its own (ITEST) from a UNC path
+  (an SMB share of the role's cache on sql01 itself) and reboots first
+  whenever Windows has a reboot pending (once in the first green run, before
+  ITEST's install; setup itself left none). That run (2026-11-06) took 25
+  minutes: create 5, prepare 10, converge 2 (the role's install, download
+  included, about 2), verify 7 (ITEST's install under a minute, the feature
+  add and the uninstall about 25 seconds each). `molecule test` keeps the
+  default 75-minute limit.
 - `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
@@ -329,13 +361,17 @@ Not covered by the lab yet (issue #16 unless noted):
   The three-VM scenario covers the rest of what #19 listed.
 - `wsfc_fileserver`: Scale-Out File Server (not built), adding a disk to an
   existing file server, a multi-subnet client access point, encrypted shares.
+- `mssql`: SQL Server 2025 (no 2025 ISO is pinned yet), Standard and
+  Enterprise media with a product key, Evaluation, a cumulative-update folder
+  (`update_source`), Windows Server 2025 (phase 0's box), and setup without
+  `become`.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
 third-party box download. Promote its jobs, `molecule (gpo_backup)`,
 `molecule (gpo_import)`, `molecule (wsfc)`, `molecule (iis)`,
-`molecule (wsfc_fileserver)`, `molecule (mssql_prereqs)` and
-`molecule (gpo_cross_domain)`, after four
+`molecule (wsfc_fileserver)`, `molecule (mssql_prereqs)`,
+`molecule (gpo_cross_domain)` and `molecule (mssql)`, after four
 consecutive green weekly runs each, and replace the path filter with a job that always reports and skips the lab
 when nothing relevant changed.
 
@@ -402,6 +438,22 @@ lab to the scripts — and record the surprise below as a gotcha.
   (`Get-IisMimeTypeList`). Its Pester tests run without IIS against
   `tests/unit/plugins/module_utils/IisFake.ps1`, a fake of the API behind a
   mock of the util's one call into it (`Invoke-IisComInvokeMember`).
+- The SQL Server modules share `plugins/module_utils/_MssqlCommon.psm1`
+  (0.22.0): the versions (2022 = 16, 2025 = 17) and the Developer editions'
+  keys, reading the media (`Get-MssqlMediaInfo`: the build from
+  `MediaInfo.xml`, the key from `x64\DefaultSetup.ini`), the edition plan
+  (`Get-MssqlEditionPlan`), the media source and its cache path
+  (`Get-MssqlMediaSource`), the features an instance has
+  (`Get-MssqlInstalledFeature`: `ConfigurationState`, then `FeatureList`,
+  then its services), the plan for an instance (`Get-MssqlInstancePlan`:
+  install, add_features, uninstall or none, with notices for what's fixed
+  at install), setup's command line (`Get-MssqlSetupArgument`,
+  `Format-MssqlSetupArgument -Redact`) and its `Summary.txt`
+  (`Get-MssqlSetupSummary`). Three readers the modules share live there too
+  (`Get-MssqlInstanceRegistry`, `Get-MssqlServiceState`,
+  `Invoke-MssqlQuery`, plus `Get-MssqlRebootState`); Pester loads them but
+  doesn't call them. The targets' own reads (`setup_mssql`'s
+  `instance_state.ps1`) never use the util.
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -570,7 +622,13 @@ lab to the scripts — and record the surprise below as a gotcha.
   run, and provides `files/read_domain.ps1`, GPMC and AD, `read_export.ps1`,
   the zip and state file, and `new_migtable.ps1`; its `setup_gpo_lab_dir`,
   `C:\ProgramData\gpo-iac-test`, keeps the targets apart from the roles'
-  state under `C:\ProgramData\gpo-iac`). The role scenarios keep role
+  state under `C:\ProgramData\gpo-iac`), and `mssql_info` then `mssql_setup`
+  from `roles/mssql` (both need the instance the role installed and the ISO
+  it cached, which `setup_mssql` checks rather than installs; its
+  `instance_state.ps1` reads the registry, services and SqlClient directly,
+  and its `tasks/reboot.yml` reboots before a step that runs setup when a
+  reboot is pending; the targets keep to `C:\ProgramData\mssql-iac-test`
+  and an instance of their own, ITEST). The role scenarios keep role
   behaviour (staging, fetch/unpack, variables, `*_report_only`, the
   converge/idempotence of the role) and leave the module's behaviour to the
   targets. `gpo_sync_import`'s target builds its source with `gpo_sync_export`
@@ -679,6 +737,13 @@ ansible-galaxy collection build --force
   array, so local checks miss it. Unroll with
   `$json | ConvertFrom-Json | ForEach-Object { $_ }` (gpo_cross_domain's
   first two lab runs, 2026-11-06).
+- **A PowerShell function that returns one row returns the row itself, not a
+  one-element array.** `$rows = Invoke-Sql ...` and then `$rows[0]` indexes
+  into the row: a hashtable's key `0` is `$null` (an `[ordered]` row would
+  give its first value instead). The fifth `molecule (mssql)` run's verify
+  read an empty edition that way (PR #69, 2026-11-06). Wrap the call,
+  `@(Invoke-Sql ...)[0]`, as `instance_state.ps1` does and as `mssql_info`
+  does with `Invoke-MssqlQuery`.
 - **A `"\\"` literal inside a single-quoted YAML template reaches Ansible
   2.19's Jinja as two backslashes**, so `replace("\\", "/")` matches nothing
   in a Windows path. Pass the backslash in as a variable (`sep: '\'`) or
@@ -1018,6 +1083,27 @@ ansible-galaxy collection build --force
   an update or a download too slow for its limit gets one more try without
   the first Ubuntu mirror: on 2026-11-05 westus2's Azure mirror sent them at
   40 kB/s, and 5 `domain-lab` jobs hit v0.5.0's 8-minute install limit.
+- **A domain account's first DPAPI use on a lab member needs dc01 by its lab
+  address.** SQL Server setup encrypts the service passwords with DPAPI as the
+  account it runs as, and Windows creates a domain account's first master key
+  on a host only once it has backed it up to a writable DC (KB 3205778).
+  dc01's DNS answers `dc01.gpolab.test` with 10.42.0.10 *and* its management
+  10.0.2.15 (the driver keeps only the DNS client's registration off the
+  management NIC), and on a member 10.0.2.15 is the member itself, so the
+  backup failed about every other run: setup's "There was an error generating
+  the XML document", inside it CryptographicException "The computer must be
+  trusted for delegation" (0x80090345; PR #69's second and third runs). The
+  domain join doesn't notice (the DC locator uses the address that answered
+  its LDAP ping). `roles/mssql/molecule/default/prepare.yml` pins dc01's names
+  to 10.42.0.10 in sql01's hosts file and checks DPAPI as the setup account;
+  the lasting fix is for the driver's `ad_forest` to keep the management
+  address out of the DC's DNS.
+- **Molecule expands environment variables in `molecule.yml`, so a literal `$`
+  is written `$$`.** `retrieve_password: [SQL01$]` and a gMSA's
+  `...\gmsa-sqlagt-lab$` stopped the first `molecule (mssql)` run before it
+  booted anything: "Invalid placeholder in string" (PR #69, 2026-11-06).
+  Playbooks and group_vars files aren't expanded, only the scenario's
+  `molecule.yml` and the base config.
 - **Molecule's base config is implicit.** `.config/molecule/config.yml` at
   the repository root is merged under every scenario's `molecule.yml`
   because `--base-config` defaults to it (Molecule logs "Found config

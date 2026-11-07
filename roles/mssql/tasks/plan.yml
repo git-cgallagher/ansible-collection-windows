@@ -1,0 +1,66 @@
+---
+# Checks the variables the argument spec can't check alone, without touching
+# a host: the argument-specs workflow runs this file on localhost. On the host,
+# mssql_setup checks the same again, and more (the accounts resolve, the
+# sysadmins include the account it runs as, the media matches its checksum).
+- name: Require 2025 for Standard Developer
+  ansible.builtin.assert:
+    that: not (mssql_edition == 'standard_developer' and mssql_version == '2022')
+    fail_msg: mssql_edition standard_developer needs mssql_version 2025; SQL Server 2022 has no Standard Developer edition
+    quiet: true
+
+- name: Take a product key only for enterprise or standard
+  ansible.builtin.assert:
+    that: mssql_product_key | length == 0 or mssql_edition in ['enterprise', 'standard']
+    fail_msg: mssql_product_key is only for enterprise or standard; mssql_edition {{ mssql_edition }} takes none
+    quiet: true
+
+- name: Require SQLEngine among the features
+  ansible.builtin.assert:
+    that: "'SQLEngine' in mssql_features"
+    fail_msg: mssql_features must include SQLEngine; the other features are part of an instance
+    quiet: true
+
+- name: Require at least one sysadmin
+  ansible.builtin.assert:
+    that: mssql_sysadmins | select | list | length > 0
+    fail_msg: mssql_sysadmins must name at least one account or group
+    quiet: true
+
+- name: Check the media is an ISO pinned by its SHA-256
+  ansible.builtin.assert:
+    that:
+      - mssql_media.path | lower is search('[.]iso$')
+      - mssql_media.checksum is match('sha256:[0-9A-Fa-f]{64}$')
+    fail_msg: >-
+      mssql_media needs a path naming an .iso file and a checksum of sha256: and 64 hex digits, got
+      {{ mssql_media.path }} and {{ mssql_media.checksum }}
+    quiet: true
+
+# A gMSA (a name ending in $) and the built-in NT SERVICE\ and NT AUTHORITY\
+# accounts take no password; any other account needs one. One task per
+# account, so a failure says which (a loop's failure only says an item
+# failed).
+- name: Check the engine's account against its password
+  ansible.builtin.assert:
+    that:
+      - mssql_engine_account | length > 0 or mssql_engine_password | length == 0
+      - mssql_engine_account | length == 0 or (mssql__engine_passwordless | bool) == (mssql_engine_password | length == 0)
+    fail_msg: >-
+      mssql_engine_account and mssql_engine_password don't fit: a domain account needs its password, a gMSA (a name
+      ending in $) or a built-in account takes none, and a password needs an account
+    quiet: true
+  vars:
+    mssql__engine_passwordless: "{{ mssql_engine_account.endswith('$') or mssql_engine_account | upper is match('NT (SERVICE|AUTHORITY).') }}"
+
+- name: Check SQL Server Agent's account against its password
+  ansible.builtin.assert:
+    that:
+      - mssql_agent_account | length > 0 or mssql_agent_password | length == 0
+      - mssql_agent_account | length == 0 or (mssql__agent_passwordless | bool) == (mssql_agent_password | length == 0)
+    fail_msg: >-
+      mssql_agent_account and mssql_agent_password don't fit: a domain account needs its password, a gMSA (a name
+      ending in $) or a built-in account takes none, and a password needs an account
+    quiet: true
+  vars:
+    mssql__agent_passwordless: "{{ mssql_agent_account.endswith('$') or mssql_agent_account | upper is match('NT (SERVICE|AUTHORITY).') }}"

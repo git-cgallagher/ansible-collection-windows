@@ -1,0 +1,137 @@
+---
+# Integration tests for git_cgallagher.windows.mssql_info, against the
+# instance the mssql role installed (setup_mssql, meta/main.yml, checks it's
+# there). The module only reads, so the target changes nothing but the local
+# account it creates to connect as a non-login, which it removes. Every check
+# compares with setup_mssql's instance_state.ps1 (the registry, the services
+# and SqlClient), never with the module itself.
+- name: Test mssql_info
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ setup_mssql_become_user }}"
+  vars:
+    ansible_become_password: "{{ setup_mssql_become_password }}"
+    info_nologin_user: mssql-itest-nologin
+    info_keys: [name, id, version, version_number, edition, edition_id, features, features_known, features_unknown, features_source,
+                collation, paths, clustered, tcp, encryption, services, server]
+    info_server_keys: [connected, connection_error, query_errors, product_version, product_level, product_update_level, edition,
+                       edition_id, engine_edition, collation, is_clustered, is_hadr_enabled, is_fulltext_installed,
+                       default_paths, login, is_sysadmin, services, sysadmins, tempdb, configuration]
+  block:
+    - name: Read every instance
+      git_cgallagher.windows.mssql_info:
+      register: info_all
+
+    - name: Read the instance through the targets' own script
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters:
+          InstanceName: "{{ setup_mssql_instance }}"
+        depth: 5
+      register: info_oracle
+
+    - name: Check the result's shape, and that it agrees with the instance
+      ansible.builtin.assert:
+        that:
+          - info_all is not changed
+          - info_all.reboot_pending is boolean
+          - info_all.reboot_pending_reasons is sequence
+          - info_all.instances | map(attribute='name') | list | sort == info_oracle.output[0].instance_names | sort
+          - info_keys | difference(info_instance.keys()) | length == 0
+          - info_server_keys | difference(info_instance.server.keys()) | length == 0
+          - info_instance.id == info_oracle.output[0].id
+          - info_instance.version == setup_mssql_version
+          - info_instance.version_number == info_oracle.output[0].setup.PatchLevel | default(info_oracle.output[0].setup.Version)
+          - info_instance.edition == info_oracle.output[0].setup.Edition
+          - info_instance.edition_id == setup_mssql_edition
+          - "'SQLEngine' in info_instance.features"
+          - info_instance.collation == info_oracle.output[0].server.collation
+          - info_instance.tcp.enabled == (info_oracle.output[0].tcp.Enabled == '1')
+          - info_instance.services.engine.account == info_oracle.output[0].services.engine.account
+          - info_instance.services.engine.state == 'running'
+          - info_instance.services.agent.account == info_oracle.output[0].services.agent.account
+          - info_instance.server.connected
+          - info_instance.server.query_errors | length == 0
+          - info_instance.server.is_sysadmin
+          - info_instance.server.login == info_oracle.output[0].server.login
+          - info_instance.server.edition == info_oracle.output[0].server.edition
+          - info_instance.server.product_version == info_oracle.output[0].server.product_version
+          - info_instance.server.sysadmins | sort == info_oracle.output[0].server.sysadmins | sort
+          - info_instance.server.tempdb | selectattr('type', 'equalto', 'ROWS') | list | length == info_oracle.output[0].server.tempdb_data_files
+          - info_instance.server.configuration['max server memory (MB)'].value_in_use is number
+          - info_instance.server.services | length > 0
+        fail_msg: "mssql_info returned {{ info_instance | to_json }}; the instance reads {{ info_oracle.output[0] | to_json }}"
+      vars:
+        info_instance: "{{ info_all.instances | selectattr('name', 'equalto', setup_mssql_instance) | first }}"
+
+    - name: Read one instance by name, and one that doesn't exist
+      git_cgallagher.windows.mssql_info:
+        instance_name: "{{ item }}"
+      register: info_named
+      loop: ["{{ setup_mssql_instance }}", NOSUCHINSTANCE]
+
+    - name: Check the filter
+      ansible.builtin.assert:
+        that:
+          - info_named.results[0].instances | length == 1
+          - info_named.results[0].instances[0].name == setup_mssql_instance
+          - info_named.results[1].instances | length == 0
+        fail_msg: "{{ info_named.results | map(attribute='instances') | list | to_json }}"
+
+    - name: Read without connecting
+      git_cgallagher.windows.mssql_info:
+        instance_name: "{{ setup_mssql_instance }}"
+        connect: false
+      register: info_unconnected
+
+    - name: Read in check mode
+      git_cgallagher.windows.mssql_info:
+        instance_name: "{{ setup_mssql_instance }}"
+      check_mode: true
+      register: info_check
+
+    - name: Check connect false skips SQL Server, and check mode reads the same
+      ansible.builtin.assert:
+        that:
+          - info_unconnected.instances[0].server is none
+          - info_unconnected.instances[0].edition == info_named.results[0].instances[0].edition
+          - info_check is not changed
+          - info_check.instances[0].server.connected
+          - info_check.instances[0].version_number == info_named.results[0].instances[0].version_number
+
+    # Made once: a lookup in vars would make a new one at every use.
+    - name: Make a throwaway password for that account
+      ansible.builtin.set_fact:
+        info_nologin_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=20, chars=['ascii_letters', 'digits']) }}-Aa1"
+      no_log: true
+
+    - name: Create a local account that is no login of the instance
+      ansible.windows.win_user:
+        name: "{{ info_nologin_user }}"
+        password: "{{ info_nologin_password }}"
+        groups: [Users]
+        state: present
+
+    - name: Read as that account
+      git_cgallagher.windows.mssql_info:
+        instance_name: "{{ setup_mssql_instance }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ info_nologin_user }}"
+      vars:
+        ansible_become_password: "{{ info_nologin_password }}"
+      register: info_nologin
+
+    - name: Check the failed connection is reported, not raised
+      ansible.builtin.assert:
+        that:
+          - info_nologin is not failed
+          - not info_nologin.instances[0].server.connected
+          - info_nologin.instances[0].server.connection_error is search('Login failed')
+          - info_nologin.instances[0].version_number == info_named.results[0].instances[0].version_number
+        fail_msg: "{{ info_nologin.instances[0].server | to_json }}"
+  always:
+    - name: Remove the local account
+      ansible.windows.win_user:
+        name: "{{ info_nologin_user }}"
+        state: absent

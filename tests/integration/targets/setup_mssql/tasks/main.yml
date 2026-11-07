@@ -1,0 +1,33 @@
+---
+# Installs nothing: SQL Server is the mssql role's to install, so the mssql
+# targets run from its scenario (roles/mssql/molecule/default), after the
+# role. This checks what they need is there, and reads the computer name a
+# UNC path to this host needs.
+- name: Read the computer name, and look for the instance and the cached ISO
+  ansible.windows.win_powershell:
+    script: |
+      param([string]$Instance, [string]$Iso)
+      $Ansible.Changed = $false
+      $names = Get-Item -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL' -ErrorAction SilentlyContinue
+      @{
+          computer = $env:COMPUTERNAME
+          instance = $null -ne $names -and @($names.GetValueNames()) -contains $Instance
+          iso = Test-Path -LiteralPath $Iso -PathType Leaf
+      }
+    parameters:
+      Instance: "{{ setup_mssql_instance }}"
+      Iso: "{{ setup_mssql_media_dir }}\\{{ setup_mssql_media_file }}"
+  register: setup_mssql_host
+
+- name: Require the role's instance and its cached ISO
+  ansible.builtin.assert:
+    that:
+      - setup_mssql_host.output[0].instance
+      - setup_mssql_host.output[0].iso
+    fail_msg: >-
+      The mssql targets need instance {{ setup_mssql_instance }} and the ISO {{ setup_mssql_media_file }} in
+      {{ setup_mssql_media_dir }}, as the mssql role's scenario leaves them; found {{ setup_mssql_host.output[0] | to_json }}
+
+- name: Remember the computer name
+  ansible.builtin.set_fact:
+    setup_mssql_computer: "{{ setup_mssql_host.output[0].computer }}"

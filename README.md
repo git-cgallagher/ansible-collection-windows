@@ -7,7 +7,7 @@ Each area's roles and modules carry its prefix.
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; modules `gpo_export`, `gpo_import`, `gpo_sync_export`, `gpo_sync_import` | Back up named GPOs' settings to a directory and import them into a domain; or mirror a whole domain's GPOs, with their links, precedence, filtering and WMI filters, into Git and converge the same domain or a different one on it |
 | [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; modules `wsfc_cluster`, `wsfc_group` | Build a Windows Server Failover Cluster and converge its networks, sites, node votes, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; converge its groups' owners, failback and resource properties, and test failover; run a clustered file server on it, fail it over between nodes and validate it from a client |
-| [SQL Server](#sql-server) | role `mssql_prereqs` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under |
+| [SQL Server](#sql-server) | roles `mssql_prereqs`, `mssql`; modules `mssql_setup`, `mssql_info` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under; install a standalone SQL Server 2022 or 2025 instance from an ISO (a local path, a share or a URL, pinned by its SHA-256), add features to it, and report the instances on a host |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
@@ -418,8 +418,21 @@ gMSA is listed, and plans without writing under `--check`. It runs once, on
 a domain controller (or a member server with the ActiveDirectory PowerShell
 module). The [role README](roles/mssql_prereqs/README.md) covers SPNs for
 standalone instances, FCIs and availability groups, gMSAs and the KDS root
-key, and the add and exclusive list modes. The roles that install and
-cluster SQL Server itself are planned in
+key, and the add and exclusive list modes.
+
+`mssql` then installs a standalone SQL Server 2022 or 2025 instance from an
+ISO, on each host in the play in parallel. The ISO comes from a local path, a
+share or a URL, pinned by its SHA-256; a share's or URL's copy is cached on
+the host and reused. The role checks the media is the version and edition
+asked for, runs setup with the service accounts (a domain account, or a gMSA
+with no password), adds the features an installed instance lacks, reports
+(never "fixes") what was fixed at install, reboots only when allowed, and
+reads the instance back. The work is in two modules: `mssql_setup` (stage,
+mount, check, run setup, or uninstall) and `mssql_info` (the instances, from
+the registry, their services and SQL Server itself). The
+[role README](roles/mssql/README.md) covers editions and media, secrets and
+running setup over WinRM. Ports, certificates and encryption, `sp_configure`,
+failover cluster instances and availability groups are planned in
 [issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48).
 
 ```yaml
@@ -438,6 +451,26 @@ cluster SQL Server itself are planned in
             type: gmsa
             dns_hostname: gmsa-sqlagt-ag01.example.com
             retrieve_password: [SQL01$, SQL02$]
+
+- name: SQL Server
+  hosts: sql01.example.com, sql02.example.com
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.windows.mssql
+      vars:
+        mssql_version: '2022'
+        mssql_edition: enterprise
+        mssql_product_key: "{{ vault_sql2022_key }}"
+        mssql_media:
+          path: \\files.example.com\media\SQLServer2022-x64-ENU.iso
+          checksum: "sha256:{{ sql2022_iso_sha256 }}"
+        mssql_engine_account: EXAMPLE\svc-sqldb-ag01
+        mssql_engine_password: "{{ vault_svc_sqldb_ag01 }}"
+        mssql_agent_account: EXAMPLE\gmsa-sqlagt-ag01$
+        mssql_sysadmins: [EXAMPLE\GG-SQL-Admins]
+        mssql_become_user: EXAMPLE\svc-ansible
+        mssql_become_password: "{{ vault_svc_ansible }}"
+        mssql_allow_reboot: true
 ```
 
 ## IIS
