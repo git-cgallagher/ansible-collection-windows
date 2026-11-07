@@ -49,15 +49,41 @@
       $null = & secedit.exe /export /areas USER_RIGHTS /cfg $cfg
       $deny = @(Get-Content -LiteralPath $cfg | Where-Object { $_ -match '^SeDeny(Remote)?InteractiveLogonRight' })
       Remove-Item -LiteralPath $cfg -Force
+      # secedit lists a principal it resolves by name (GG-XD-Staff) and one it
+      # can't as *SID, so every entry is compared as a SID.
+      function Get-RightSid {
+          param([string]$Right)
+          $line = @($deny | Where-Object { $_ -match "^$Right\s*=" })
+          if ($line.Count -eq 0) { return @() }
+          foreach ($entry in (($line[0] -split '=', 2)[1] -split ',')) {
+              $name = $entry.Trim()
+              if (-not $name) { continue }
+              if ($name.StartsWith('*')) {
+                  $name.Substring(1)
+                  continue
+              }
+              try {
+                  $account = New-Object -TypeName System.Security.Principal.NTAccount -ArgumentList $name
+                  $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+              }
+              catch {
+                  "unresolved:$name"
+              }
+          }
+      }
       $adminsGroup = Get-ADGroup -Identity $Admins
       $staffSid = (Get-ADGroup -Identity $Staff).SID.Value
       $members = @((Get-ADGroup -Identity 'Administrators' -Properties member).member)
+      $interactive = @(Get-RightSid -Right 'SeDenyInteractiveLogonRight')
+      $remote = @(Get-RightSid -Right 'SeDenyRemoteInteractiveLogonRight')
       [ordered]@{
           admins_in_administrators = $members -contains $adminsGroup.DistinguishedName
           deny = $deny
-          deny_interactive_dst = @($deny | Where-Object { $_ -match '^SeDenyInteractiveLogonRight' -and $_.Contains("*$staffSid") }).Count -eq 1
-          deny_remote_dst = @($deny | Where-Object { $_ -match '^SeDenyRemoteInteractiveLogonRight' -and $_.Contains("*$staffSid") }).Count -eq 1
-          deny_names_src = @($deny | Where-Object { $_.Contains("*$SourceSid-") }).Count -gt 0
+          deny_interactive_sids = $interactive
+          deny_remote_sids = $remote
+          deny_interactive_dst = $interactive -contains $staffSid
+          deny_remote_dst = $remote -contains $staffSid
+          deny_names_src = @($interactive + $remote | Where-Object { $_.StartsWith("$SourceSid-") }).Count -gt 0
       }
     lab_xd_effective_params:
       Admins: "{{ lab_xd_groups.admins }}"
