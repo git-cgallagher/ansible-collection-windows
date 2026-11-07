@@ -172,6 +172,12 @@ two forests moved one GPO per kind of setting
 You supply the links, inheritance, security filtering, delegation, WMI
 filters and ADMX files in the target domain.
 
+For local administrators and logon restrictions that you author once and
+import into many domains, use Restricted Groups' *Member Of* form and the
+deny-logon user rights, with a migration table that maps groups by relative
+name. Both are lab-verified to apply on the target DC
+([the recipe](docs/gpo-cross-domain.md#recipe-local-administrators-and-logon-restrictions-one-template-for-every-domain)).
+
 ### Requirements
 
 - A Windows management host (or DC) in each domain, reachable over

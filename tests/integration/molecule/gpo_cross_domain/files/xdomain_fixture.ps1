@@ -255,6 +255,21 @@ function Invoke-Source {
         '[Registry Keys]', ('"MACHINE\SOFTWARE\XdLabKey",0,"D:PAR(A;CI;KA;;;BA)(A;CI;KR;;;{0})"' -f $staffSid)
     )
 
+    # The two policies a domain's server baseline is usually built from, in
+    # their migration-table-friendly forms. Local admins, additive: Restricted
+    # Groups' "Member Of" form puts the group in the built-in Administrators
+    # and leaves its other members alone (unlike "Members", which replaces
+    # them, and unlike GPP's Local Users and Groups, which no table
+    # translates). Logon restriction: deny local and Remote Desktop logon.
+    $gpo = Get-GpoOrNew -Name 'XD - Local Admins Member Of'
+    Set-SecurityTemplate -GpoId $gpo.Id -Body @(
+        '[Group Membership]', "*$($adminsSid)__Memberof = *S-1-5-32-544", "*$($adminsSid)__Members ="
+    )
+    $gpo = Get-GpoOrNew -Name 'XD - Deny Logon'
+    Set-SecurityTemplate -GpoId $gpo.Id -Body @(
+        '[Privilege Rights]', "SeDenyInteractiveLogonRight = *$staffSid", "SeDenyRemoteInteractiveLogonRight = *$staffSid"
+    )
+
     # Startup scripts: one stored in the GPO, one on a src UNC path.
     $gpo = Get-GpoOrNew -Name 'XD - Startup Scripts'
     $scripts = Join-Path (Get-GpoFolder -Id $gpo.Id) 'Machine\Scripts'

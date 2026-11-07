@@ -322,18 +322,26 @@ Moving GPOs between forests is lab-tested by `molecule (gpo_cross_domain)`
 (0.21.0, issue #16's cross-domain part):
 `tests/integration/molecule/gpo_cross_domain` boots two DCs of separate
 forests (`src.example.test`/SRCDC01, `dst.example.test`/DSTDC01) with no
-trust, DNS forwarding or network between them. prepare authors 17 GPOs on
+trust, DNS forwarding or network between them. prepare authors 19 GPOs on
 src, one per kind of setting (Admin Templates, security settings with and
-without principals, scripts, folder redirection, four GPP kinds, a custom
-ADMX, a firewall rule, a hard-coded server, a WMI filter, security
+without principals, local admins through Restricted Groups' Member Of and
+deny-logon rights (0.23.0), scripts, folder redirection, four GPP kinds, a
+custom ADMX, a firewall rule, a hard-coded server, a WMI filter, security
 filtering), checks each in src's own report and SYSVOL, and builds a GPMC
-migration table, pinning the entries GPMC found. converge runs `gpo_export` on
+migration table (groups mapped by relative name, UNC paths to dst's server),
+pinning the entries GPMC found. converge runs `gpo_export` on
 src, fetches the backup file by file, copies it to dst and runs `gpo_import`
 through the table; the idempotence step repeats all of it. verify reads every
 GPO (`files/observe_xdomain.ps1`: `Get-GPOReport` XML plus every SYSVOL file,
 hidden ones included), imports again without the table, classifies each row
 (pass, needs-migration-table, not-migrated, not-carried) and asserts the
 pinned matrix (`lab_xd_expected`), which `docs/gpo-cross-domain.md` explains.
+It also links the local-admins and deny-logon GPOs (only those: the
+exact-membership Restricted Groups row would empty the DC's Administrators) to
+dst's Domain Controllers OU at order 1 and refreshes policy. Through the table,
+dst's GG-XD-Admins lands in Administrators and both deny rights name dst's
+GG-XD-Staff (kept empty, so the deny never locks the lab out). Without the
+table, dst's group is no longer denied.
 It first passed on 2026-11-06 (PR #70, run 42293538842). It doesn't cover
 the sync layer's link rebasing or domain-relative trustees across domains.
 
@@ -744,6 +752,14 @@ ansible-galaxy collection build --force
   read an empty edition that way (PR #69, 2026-11-06). Wrap the call,
   `@(Invoke-Sql ...)[0]`, as `instance_state.ps1` does and as `mssql_info`
   does with `Invoke-MssqlQuery`.
+- **GPMC keeps some of a GPO's SYSVOL files hidden** after an import
+  (`scripts.ini`, `fdeploy.ini`): `Get-ChildItem -File` lists them only with
+  `-Force` (gpo_cross_domain's observer, run 42296220291).
+- **"Map by relative name" is written into the saved migration table.**
+  The COM call the lab uses (`UpdateDestination`) sets explicit
+  destinations, so `new_xdomain_migtable.ps1` writes
+  `<DestinationByRelativeName />` in place of the mapping's
+  `<DestinationSameAsSource />`, as the Migration Table Editor does.
 - **A `"\\"` literal inside a single-quoted YAML template reaches Ansible
   2.19's Jinja as two backslashes**, so `replace("\\", "/")` matches nothing
   in a Windows path. Pass the backslash in as a variable (`sep: '\'`) or

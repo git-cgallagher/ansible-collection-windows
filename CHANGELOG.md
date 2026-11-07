@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.23.0 — 2026-11-07
+
+Local administrators and logon restrictions, authored once and imported into
+other domains with `gpo_export` and `gpo_import` (issue #16). No module
+changes.
+
+- Docs: `docs/gpo-cross-domain.md` has a recipe for two policies.
+  - Local administrators, through Restricted Groups' *Member Of* form: it
+    adds a group to the built-in Administrators and leaves the other members
+    alone.
+  - The deny-logon user rights, local and Remote Desktop.
+  - The recipe covers authoring them, exporting them, a migration table that
+    maps groups by relative name (so one table serves every target domain
+    whose group names match), importing, and linking.
+  - `docs/scenarios.md` adds scenario 2c (*Member Of*) and scenario 4 (deny
+    logon), and shows the relative-name table in scenario 3. The README
+    points to the recipe.
+- Tests: the `gpo_cross_domain` lab has two new matrix rows, local admins
+  through *Member Of* and deny logon. Both need the migration table.
+  - The lab's migration table now maps the source groups by relative name.
+    prepare checks that.
+  - verify links the two GPOs to dst's Domain Controllers OU and refreshes
+    policy. Through the table, dst's group lands in Administrators and both
+    deny rights name dst's group. Imported without the table, the rights
+    don't deny dst's group at all, and nothing fails.
+
 ## 0.22.0 — 2026-11-06
 
 A standalone SQL Server instance from an ISO: phase 3a of issue #48, the

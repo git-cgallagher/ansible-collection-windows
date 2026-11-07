@@ -5,7 +5,10 @@ Each one is part of `gpo_import`'s Molecule scenario
 (`roles/gpo_import/molecule/default`), which builds it on a real Windows
 Server 2022 domain controller in CI, exports it, breaks it the way it breaks
 in real life, and checks `gpo_import` puts it back. The fixture that builds
-them is `tests/domain_lab/files/lab_fixture.ps1`.
+them is `tests/domain_lab/files/lab_fixture.ps1`. Scenarios 2c and 4 come from
+the `gpo_cross_domain` lab instead (`tests/integration/molecule/gpo_cross_domain`),
+which moves them between two forests with `gpo_export` and `gpo_import` and
+applies them on the target DC.
 
 The workflow is the same every time: **edit the GPO in GPMC in your authoring
 (lab) domain → run `gpo_backup` → review the diff and merge → run `gpo_import`
@@ -84,8 +87,8 @@ into another domain, `Groups.xml` still names the *source* domain's group
 (`LAB\…`) and SID, so the preference fails or targets the wrong account.
 Template the member's name and SID per environment before importing, and
 after a first cross-domain import search the target GPO's report for the
-source domain's SID prefix. Restricted Groups (2b) doesn't have this
-problem.
+source domain's SID prefix. Or use Restricted Groups' *Member Of* form (2c),
+which adds the group the same way and which a migration table does translate.
 
 ### 2b. Enforce exact membership — Restricted Groups
 
@@ -109,6 +112,30 @@ in the right position and the `[Group Membership]` members are intact.
 **Migration tables do translate these.** Restricted Groups members are
 security settings, so `Import-GPO -MigrationTable` rewrites the SIDs. See
 scenario 3.
+
+### 2c. Add a group, template-friendly — Restricted Groups' *Member Of*
+
+**The change:** add `CORP\GG-Server-Admins` to the built-in Administrators
+group, as 2a does, but in a form a migration table carries into other
+domains.
+
+**Where it lives:** *Restricted Groups → Add Group* `GG-Server-Admins`, then
+**"This group is a member of"** `Administrators`. In `GptTmpl.inf`:
+
+```ini
+[Group Membership]
+*S-1-5-21-…-1104__Memberof = *S-1-5-32-544
+*S-1-5-21-…-1104__Members =
+```
+
+The other members of Administrators are left alone, unlike 2b's "Members"
+list.
+
+**What the lab proves:** the `gpo_cross_domain` lab authors this in one
+forest, exports it, and imports it into another through a migration table
+that maps the group by relative name. There it applies on the target DC, and
+the target's `GG-XD-Admins` lands in Administrators. The recipe is in
+[gpo-cross-domain.md](gpo-cross-domain.md#recipe-local-administrators-and-logon-restrictions-one-template-for-every-domain).
 
 ## 3. Promoting a GPO from lab to production (migration tables)
 
@@ -146,6 +173,12 @@ foreach ($e in @($table.GetEntries())) {                # retarget what differs
 $table.Save('C:\work\prod.migtable')
 ```
 
+**One table for every domain:** when the target groups have the same
+names as the source's, set each group's entry to **"Map by relative name"**
+(Migration Table Editor, or `<DestinationByRelativeName />` in the saved
+XML). One table then serves every target domain. The `gpo_cross_domain` lab
+builds its table that way.
+
 **What the lab proves:** within one domain, a table mapping
 `GG-IacLab-Workstation-Admins` → `GG-IacLab-Helpdesk` makes `gpo_import` (with
 `gpo_import_migration_table`, `gpo_import_force` and a `gpo_import_gpos`
@@ -154,6 +187,30 @@ again without the table restores the original. Between two forests, see
 [gpo-cross-domain.md](gpo-cross-domain.md): the `gpo_cross_domain` lab moves
 one GPO per kind of setting and shows which need the table, and which (Group
 Policy Preferences, hard-coded names) it never fixes.
+
+## 4. Keeping a group from logging on — deny logon rights
+
+**The change:** members of `CORP\GG-Service-Accounts` can't log on at the
+console or over Remote Desktop.
+
+**Where it lives:** *Security Settings → Local Policies → User Rights
+Assignment*: **Deny log on locally** and **Deny log on through Remote Desktop
+Services**. In `GptTmpl.inf`:
+
+```ini
+[Privilege Rights]
+SeDenyInteractiveLogonRight = *S-1-5-21-…-1106
+SeDenyRemoteInteractiveLogonRight = *S-1-5-21-…-1106
+```
+
+A user right is set by the highest-precedence GPO that defines it, so link
+this GPO above any other that sets the same rights. Never deny a group your
+admins or the automation account belong to.
+
+**What the lab proves:** the same cross-forest move as 2c (`gpo_cross_domain`). Through the
+migration table, both rights deny the target domain's group. Without the
+table, the import succeeds, but the rights deny the source domain's SID, so
+the target's group *isn't* denied, and nothing reports an error.
 
 ## Not covered (yet)
 
