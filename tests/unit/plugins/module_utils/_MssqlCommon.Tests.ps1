@@ -497,7 +497,9 @@ Describe 'ConvertTo-MssqlInstanceFact' {
         $fact.clustered | Should -BeFalse
         $fact.tcp.enabled | Should -BeTrue
         $fact.tcp.port | Should -Be '1433'
+        $fact.encryption.mode | Should -Be 'optional'
         $fact.encryption.force_encryption | Should -BeFalse
+        $fact.encryption.force_strict | Should -BeFalse
         $fact.services.engine.state | Should -Be 'running'
         $fact.services.agent.start_mode | Should -Be 'manual'
         $fact.services.agent.account | Should -Be 'EXAMPLE\gmsa-sqlagt$'
@@ -512,5 +514,252 @@ Describe 'ConvertTo-MssqlInstanceFact' {
         $fact.features_known | Should -BeFalse
         $fact.features_unknown | Should -Be @('Replication')
         $fact.tcp.enabled | Should -BeFalse
+    }
+}
+
+Describe 'Thumbprints' {
+    It 'reads a thumbprint copied from the certificate dialog' {
+        $copied = [string][char]0x200E + '5F 1B 7C 0A 9E 3D 4C 2B 1A 0F 9E 8D 7C 6B 5A 4F 3E 2D 1C 0B'
+        ConvertTo-MssqlThumbprint $copied | Should -Be '5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b'
+        Get-MssqlThumbprintProblem $copied | Should -Be ''
+    }
+
+    It 'refuses what isn''t a SHA-1 thumbprint' {
+        Get-MssqlThumbprintProblem 'abc' | Should -Match '40 hex digits'
+        Get-MssqlThumbprintProblem ('g' * 40) | Should -Match '40 hex digits'
+        Get-MssqlThumbprintProblem ('a' * 64) | Should -Match '40 hex digits'
+    }
+}
+
+Describe 'ConvertTo-MssqlEncryptionMode' {
+    It 'names the mode the flags set' {
+        ConvertTo-MssqlEncryptionMode -ForceEncryption 0 -ForceStrict 0 | Should -Be 'optional'
+        ConvertTo-MssqlEncryptionMode -ForceEncryption 1 -ForceStrict 0 | Should -Be 'mandatory'
+        ConvertTo-MssqlEncryptionMode -ForceEncryption 0 -ForceStrict 1 | Should -Be 'strict'
+        ConvertTo-MssqlEncryptionMode -ForceEncryption 1 -ForceStrict 1 | Should -Be 'strict'
+        ConvertTo-MssqlEncryptionMode -ForceEncryption $null -ForceStrict $null | Should -Be 'optional'
+    }
+
+    It 'reports the mode with the instance' {
+        $registry = @{ Name = 'MSSQLSERVER'; Id = 'MSSQL16.MSSQLSERVER'; SuperSocketNetLib = @{ ForceEncryption = 0; ForceStrict = 1; Certificate = 'AB CD' } }
+        $fact = ConvertTo-MssqlInstanceFact -Registry $registry -Services @{}
+        $fact.encryption.mode | Should -Be 'strict'
+        $fact.encryption.force_strict | Should -BeTrue
+        $fact.encryption.certificate | Should -Be 'abcd'
+    }
+}
+
+Describe 'Get-MssqlNetworkPlan' {
+    BeforeAll {
+        # A default instance as setup leaves it, with TCP/IP on.
+        function script:New-Current {
+            param([hashtable]$Override = @{})
+            $current = @{ TcpEnabled = 1; ListenOnAllIPs = 1; TcpPort = '1433'; TcpDynamicPorts = ''; ForceEncryption = 0; ForceStrict = 0; Certificate = '' }
+            foreach ($key in $Override.Keys) { $current[$key] = $Override[$key] }
+            $current
+        }
+        $script:thumbprint = '5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b'
+    }
+
+    It 'plans nothing when nothing is asked' {
+        $plan = Get-MssqlNetworkPlan -Current (New-Current) -Desired @{}
+        $plan.Changes.Count | Should -Be 0
+        $plan.Notices.Count | Should -Be 0
+    }
+
+    It 'plans nothing when everything matches, whatever the thumbprint''s case' {
+        $current = New-Current @{ ForceEncryption = 1; Certificate = $script:thumbprint.ToUpperInvariant() }
+        $plan = Get-MssqlNetworkPlan -Current $current -Desired @{ TcpPort = 1433; Encryption = 'mandatory'; Thumbprint = $script:thumbprint }
+        $plan.Changes.Count | Should -Be 0
+    }
+
+    It 'gives a named instance a static port, turning TCP/IP on and dynamic ports off' {
+        $current = New-Current @{ TcpEnabled = 0; TcpPort = ''; TcpDynamicPorts = '0' }
+        $plan = Get-MssqlNetworkPlan -Current $current -Desired @{ TcpPort = 14331 }
+        @($plan.Changes | ForEach-Object { '{0}\{1}={2}' -f $_.Key, $_.Name, $_.Value }) |
+            Should -Be @('Tcp\Enabled=1', 'TcpAll\TcpPort=14331', 'TcpAll\TcpDynamicPorts=')
+        @($plan.Changes | ForEach-Object { $_.Kind }) | Should -Be @('DWord', 'String', 'String')
+    }
+
+    It 'says when Listen All is off, so the IPAll port does nothing' {
+        $plan = Get-MssqlNetworkPlan -Current (New-Current @{ ListenOnAllIPs = 0 }) -Desired @{ TcpPort = 1433 }
+        $plan.Changes.Count | Should -Be 0
+        $plan.Notices[0] | Should -Match 'Listen All is off'
+    }
+
+    It 'binds a certificate in lowercase' {
+        $plan = Get-MssqlNetworkPlan -Current (New-Current) -Desired @{ Thumbprint = $script:thumbprint.ToUpperInvariant() }
+        $plan.Changes.Count | Should -Be 1
+        $plan.Changes[0].Name | Should -Be 'Certificate'
+        $plan.Changes[0].Value | Should -Be $script:thumbprint
+        $plan.Changes[0].Description | Should -Match '\(was none\)$'
+    }
+
+    It 'sets the flags each mode needs' -TestCases @(
+        @{ From = @{ ForceEncryption = 0; ForceStrict = 0 }; Mode = 'mandatory'; Expected = @('ForceEncryption=1') }
+        @{ From = @{ ForceEncryption = 1; ForceStrict = 0 }; Mode = 'strict'; Expected = @('ForceEncryption=0', 'ForceStrict=1') }
+        @{ From = @{ ForceEncryption = 0; ForceStrict = 1 }; Mode = 'optional'; Expected = @('ForceStrict=0') }
+        @{ From = @{ ForceEncryption = 1; ForceStrict = 1 }; Mode = 'mandatory'; Expected = @('ForceStrict=0') }
+    ) {
+        param($From, $Mode, $Expected)
+        $plan = Get-MssqlNetworkPlan -Current (New-Current $From) -Desired @{ Encryption = $Mode }
+        @($plan.Changes | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) | Should -Be $Expected
+        @($plan.Changes | ForEach-Object { $_.Kind } | Select-Object -Unique) | Should -Be @('DWord')
+    }
+
+    It 'reads a ForceStrict value setup never wrote as off' {
+        $plan = Get-MssqlNetworkPlan -Current (New-Current @{ ForceStrict = $null }) -Desired @{ Encryption = 'optional' }
+        $plan.Changes.Count | Should -Be 0
+    }
+}
+
+Describe 'Certificates' {
+    BeforeAll {
+        # A certificate SQL Server can load, as the module reads it.
+        function script:New-Certificate {
+            param([hashtable]$Override = @{})
+            $certificate = @{
+                Thumbprint = '5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b'; Found = $true
+                NotBefore = (Get-Date).AddDays(-1); NotAfter = (Get-Date).AddDays(30); ServerAuth = $true
+                HasPrivateKey = $true; KeyProvider = 'csp'; MachineKey = $true; KeySpec = 1
+            }
+            foreach ($key in $Override.Keys) { $certificate[$key] = $Override[$key] }
+            $certificate
+        }
+    }
+
+    It 'accepts a certificate SQL Server can load' {
+        Get-MssqlCertificateProblem -Certificate (New-Certificate) | Should -Be ''
+    }
+
+    It 'refuses one SQL Server can''t load' -TestCases @(
+        @{ Override = @{ Found = $false }; Pattern = 'personal store' }
+        @{ Override = @{ NotAfter = (Get-Date).AddDays(-1) }; Pattern = 'not now' }
+        @{ Override = @{ NotBefore = (Get-Date).AddDays(1) }; Pattern = 'not now' }
+        @{ Override = @{ ServerAuth = $false }; Pattern = 'server authentication' }
+        @{ Override = @{ HasPrivateKey = $false }; Pattern = 'no private key' }
+        @{ Override = @{ KeyProvider = 'ksp' }; Pattern = 'key storage provider' }
+        @{ Override = @{ MachineKey = $false }; Pattern = 'user''s key store' }
+        @{ Override = @{ KeySpec = 2 }; Pattern = 'KeySpec 2' }
+    ) {
+        param($Override, $Pattern)
+        Get-MssqlCertificateProblem -Certificate (New-Certificate $Override) | Should -Match $Pattern
+    }
+
+    It 'is quiet when a name covers the host' {
+        Get-MssqlCertificateNameNotice -DnsNames @('sql01.example.com', 'sql01') -HostName 'SQL01.example.com' -Thumbprint 'x' | Should -Be ''
+        Get-MssqlCertificateNameNotice -DnsNames @('*.example.com') -HostName 'sql01.example.com' -Thumbprint 'x' | Should -Be ''
+    }
+
+    It 'says when no name covers the host, a wildcard covering one label only' {
+        Get-MssqlCertificateNameNotice -DnsNames @('*.example.com') -HostName 'sql01.dc1.example.com' -Thumbprint 'x' |
+            Should -Match 'names \*\.example\.com, not sql01\.dc1\.example\.com'
+        Get-MssqlCertificateNameNotice -DnsNames @() -HostName 'sql01.example.com' -Thumbprint 'x' | Should -Match 'names no DNS name'
+    }
+}
+
+Describe 'Test-MssqlReadRight' {
+    It 'counts Read and more, and the generic rights, as read' {
+        Test-MssqlReadRight -Rights 0x20089 | Should -BeTrue
+        Test-MssqlReadRight -Rights 0x200A9 | Should -BeTrue
+        Test-MssqlReadRight -Rights 0x1F01FF | Should -BeTrue
+        Test-MssqlReadRight -Rights ([int]-2147483648) | Should -BeTrue
+        Test-MssqlReadRight -Rights 0x10000000 | Should -BeTrue
+    }
+
+    It 'doesn''t count part of Read, or Write' {
+        Test-MssqlReadRight -Rights 0x1 | Should -BeFalse
+        Test-MssqlReadRight -Rights 0x116 | Should -BeFalse
+    }
+}
+
+Describe 'Errorlog' {
+    It 'finds the errorlog among the startup parameters' {
+        $parameters = @{ SQLArg0 = '-dC:\SQL\DATA\master.mdf'; SQLArg1 = '-eC:\SQL\Log\ERRORLOG'; SQLArg2 = '-lC:\SQL\DATA\mastlog.ldf' }
+        Get-MssqlErrorLogPath $parameters | Should -Be 'C:\SQL\Log\ERRORLOG'
+        Get-MssqlErrorLogPath @{} | Should -Be ''
+        Get-MssqlErrorLogPath $null | Should -Be ''
+    }
+
+    It 'reads a start: process, certificate, ports, ready' {
+        $certificateLine = '2026-11-07 18:30:02.40 Server      The certificate [Cert Hash(sha1) "5F1B7C0A9E3D4C2B1A0F9E8D7C6B5A4F3E2D1C0B"]'
+        $certificateLine += ' was successfully loaded for encryption.'
+        $lines = @(
+            '2026-11-07 18:30:00.12 Server      Microsoft SQL Server 2022 (RTM) - 16.0.1000.6 (X64)'
+            '2026-11-07 18:30:00.13 Server      Server process ID is 4321.'
+            $certificateLine
+            '2026-11-07 18:30:02.41 Server      Server is listening on [ ''any'' <ipv6> 1433].'
+            '2026-11-07 18:30:02.41 Server      Server is listening on [ ''any'' <ipv4> 1433].'
+            '2026-11-07 18:30:02.42 Server      Server is listening on [ ::1 <ipv6> 1434].'
+            '2026-11-07 18:30:02.43 Server      Dedicated admin connection support was established for listening locally on port 1434.'
+            '2026-11-07 18:30:03.10 spid9s      SQL Server is now ready for client connections. This is an informational message; no user action is required.'
+        )
+        $fact = Get-MssqlErrorLogFact -Lines $lines
+        $fact.ProcessId | Should -Be 4321
+        $fact.Certificate | Should -Be '5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b'
+        $fact.Ports | Should -Be @(1433)
+        $fact.Ready | Should -BeTrue
+        $fact.StrictLines.Count | Should -Be 0
+    }
+
+    It 'reads a self-generated certificate and a start still under way' {
+        $lines = @(
+            '2026-11-07 18:30:02.40 Server      A self-generated certificate was successfully loaded for encryption.'
+            '2026-11-07 18:30:02.41 Server      Server is listening on [ ''any'' <ipv4> 14331].'
+            '2026-11-07 18:30:02.42 Server      The server accepts only strict (TDS 8.0 and above) connections.'
+        )
+        $fact = Get-MssqlErrorLogFact -Lines $lines
+        $fact.Certificate | Should -Be 'self-generated'
+        $fact.Ports | Should -Be @(14331)
+        $fact.Ready | Should -BeFalse
+        $fact.ProcessId | Should -Be 0
+        $fact.StrictLines.Count | Should -Be 1
+    }
+}
+
+Describe 'Firewall rules' {
+    It 'opens a default instance''s ports' {
+        $rules = @(Get-MssqlFirewallRuleSpec -InstanceName 'MSSQLSERVER' -Ports @('1433'))
+        $rules.Count | Should -Be 1
+        $rules[0].Name | Should -Be 'mssql-iac-MSSQLSERVER-tcp'
+        $rules[0].DisplayName | Should -Be 'SQL Server (MSSQLSERVER) TCP 1433'
+        $rules[0].Protocol | Should -Be 'TCP'
+        $rules[0].LocalPort | Should -Be @('1433')
+    }
+
+    It 'adds SQL Server Browser for a named instance' {
+        $rules = @(Get-MssqlFirewallRuleSpec -InstanceName 'INST1' -Ports @('14331', '14332'))
+        $rules.Count | Should -Be 2
+        $rules[0].DisplayName | Should -Be 'SQL Server (INST1) TCP 14331, 14332'
+        $rules[1].Name | Should -Be 'mssql-iac-browser-udp'
+        $rules[1].Protocol | Should -Be 'UDP'
+        $rules[1].LocalPort | Should -Be @('1434')
+    }
+
+    It 'says what an existing rule has that its spec doesn''t' {
+        $spec = @(Get-MssqlFirewallRuleSpec -InstanceName 'MSSQLSERVER' -Ports @('1433'))[0]
+        $rule = @{
+            DisplayName = 'SQL Server (MSSQLSERVER) TCP 1433'; Enabled = 'True'; Direction = 'Inbound'; Action = 'Allow'
+            Profile = 'Any'; Protocol = 'TCP'; LocalPort = @('1433')
+        }
+        Get-MssqlFirewallRuleDifference -Spec $spec -Rule $rule | Should -Be ''
+        $rule.LocalPort = @('14330')
+        $rule.Enabled = 'False'
+        Get-MssqlFirewallRuleDifference -Spec $spec -Rule $rule | Should -Be "Enabled 'False', ports '14330'"
+    }
+}
+
+Describe 'Restarts and the engine''s identity' {
+    It 'waits for a restart only after a write the running engine predates' {
+        $start = [datetime]::new(2026, 11, 7, 18, 0, 0, [System.DateTimeKind]::Utc)
+        Test-MssqlRestartPending -ChangedAt $start.AddMinutes(5) -StartedAt $start | Should -BeTrue
+        Test-MssqlRestartPending -ChangedAt $start.AddMinutes(-5) -StartedAt $start | Should -BeFalse
+        Test-MssqlRestartPending -ChangedAt $null -StartedAt $start | Should -BeFalse
+        Test-MssqlRestartPending -ChangedAt $start -StartedAt $null | Should -BeFalse
+    }
+
+    It 'names the engine''s per-service SID' {
+        Get-MssqlServiceSidName 'MSSQLSERVER' | Should -Be 'NT SERVICE\MSSQLSERVER'
+        Get-MssqlServiceSidName 'INST1' | Should -Be 'NT SERVICE\MSSQL$INST1'
     }
 }

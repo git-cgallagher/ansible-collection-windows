@@ -1,12 +1,16 @@
 # Read one SQL Server instance for the mssql targets' and the role scenario's
-# assertions: its registry keys, its services, and (with Query) what SQL
-# Server says about itself; plus which of ImagePaths are mounted. Read-only,
-# and independent of the modules under test and their util: the registry,
-# Win32_Service and System.Data.SqlClient, directly.
+# assertions: its registry keys (network settings included), its services,
+# its errorlog's last start, the firewall rule mssql_network names after it,
+# who may read Thumbprint's private key, and (with Query) what SQL Server says
+# about itself; plus which of ImagePaths are mounted. Read-only, and
+# independent of the modules under test and their util: the registry,
+# Win32_Service, the errorlog, NetSecurity, the certificate store and
+# System.Data.SqlClient, directly.
 param(
     [string]$InstanceName = 'MSSQLSERVER',
     [bool]$Query = $true,
-    [string[]]$ImagePaths = @()
+    [string[]]$ImagePaths = @(),
+    [string]$Thumbprint = ''
 )
 $ErrorActionPreference = 'Stop'
 $Ansible.Changed = $false
@@ -95,9 +99,71 @@ $result = @{
     instance_names = @(if ($null -ne $names) { $names.Keys })
 }
 if ($null -ne $id) {
+    $netLib = "$root\$id\MSSQLServer\SuperSocketNetLib"
     $result.setup = Read-Key "$root\$id\Setup"
     $result.configuration_state = Read-Key "$root\$id\ConfigurationState"
-    $result.tcp = Read-Key "$root\$id\MSSQLServer\SuperSocketNetLib\Tcp"
+    $result.tcp = Read-Key "$netLib\Tcp"
+    $result.tcp_all = Read-Key "$netLib\Tcp\IPAll"
+    $result.netlib = Read-Key $netLib
+    # The kinds setup gave the values (String, DWord), for the log.
+    $netLibKey = Get-Item -LiteralPath $netLib -ErrorAction SilentlyContinue
+    $result.netlib_kinds = @{}
+    if ($null -ne $netLibKey) { foreach ($name in $netLibKey.GetValueNames()) { $result.netlib_kinds[$name] = [string]$netLibKey.GetValueKind($name) } }
+
+    # The errorlog's last start: the -e startup parameter names the file,
+    # which SQL Server holds open (UTF-16).
+    $errorLog = @{ path = ''; process_id = 0; certificate = ''; ports = @(); ready = $false; lines = @() }
+    $parameters = Read-Key "$root\$id\MSSQLServer\Parameters"
+    if ($null -ne $parameters) {
+        foreach ($value in $parameters.Values) { if ($value -match '^-e(.+)$') { $errorLog.path = $Matches[1] } }
+    }
+    if ($errorLog.path -and (Test-Path -LiteralPath $errorLog.path)) {
+        $stream = New-Object -TypeName System.IO.FileStream -ArgumentList @(
+            $errorLog.path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try { $text = (New-Object -TypeName System.IO.StreamReader -ArgumentList @($stream, $true)).ReadToEnd() }
+        finally { $stream.Dispose() }
+        $ports = [System.Collections.Generic.List[int]]::new()
+        foreach ($line in ($text -split "`r?`n")) {
+            if ($line -match 'Server process ID is (\d+)') { $errorLog.process_id = [int]$Matches[1] }
+            if ($line -match 'Cert Hash\(sha1\) "([0-9A-Fa-f]+)"\] was successfully loaded') { $errorLog.certificate = $Matches[1].ToLowerInvariant() }
+            if ($line -match 'self-generated certificate was successfully loaded') { $errorLog.certificate = 'self-generated' }
+            if ($line -match "listening on \[ 'any' <ipv4> (\d+)\]") { $ports.Add([int]$Matches[1]) }
+            if ($line -match 'ready for client connections') { $errorLog.ready = $true }
+        }
+        $errorLog.ports = $ports.ToArray()
+        # The lines about encryption, TLS and TDS, for the log.
+        $errorLog.lines = @($text -split "`r?`n" | Where-Object { $_ -match '(?i)encrypt|certificate|TDS|TLS|strict|listening' } |
+                Select-Object -First 25 | ForEach-Object { $_.Trim() })
+    }
+    $result.errorlog = $errorLog
+}
+
+# The firewall rule mssql_network names after the instance.
+$result.firewall = $null
+$rule = Get-NetFirewallRule -Name ('mssql-iac-{0}-tcp' -f $InstanceName) -ErrorAction SilentlyContinue
+if ($null -ne $rule) {
+    $portFilter = $rule | Get-NetFirewallPortFilter
+    $result.firewall = @{
+        enabled = [string]$rule.Enabled
+        direction = [string]$rule.Direction
+        action = [string]$rule.Action
+        profile = [string]$rule.Profile
+        protocol = [string]$portFilter.Protocol
+        ports = @($portFilter.LocalPort | ForEach-Object { [string]$_ })
+    }
+}
+
+# Who an allow rule lets read the certificate's private key (a legacy CSP
+# key, under MachineKeys).
+$result.key_readers = @()
+if ($Thumbprint) {
+    $certificate = Get-Item -LiteralPath ('Cert:\LocalMachine\My\' + $Thumbprint.ToUpperInvariant()) -ErrorAction SilentlyContinue
+    if ($null -ne $certificate -and $certificate.HasPrivateKey) {
+        $container = $certificate.PrivateKey.CspKeyContainerInfo.UniqueKeyContainerName
+        $keyFile = Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $container)
+        $result.key_readers = @((Get-Acl -LiteralPath $keyFile).Access | Where-Object { [string]$_.AccessControlType -eq 'Allow' } |
+                ForEach-Object { [string]$_.IdentityReference })
+    }
 }
 
 if ($Query -and $null -ne $id -and $null -ne $services.engine -and $services.engine.state -eq 'Running') {

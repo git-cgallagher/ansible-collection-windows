@@ -136,18 +136,31 @@ their phases and the owner's decisions of 2026-11-01). Its roles:
   `tests/argument_specs/validate.yml` runs on localhost with
   `tasks_from: plan` and `public: true`; `tasks/main.yml` imports it, then
   reads (KDS root keys, SPNs held elsewhere) before it writes anything.
-- `roles/mssql` (0.22.0, phase 3a) — a standalone SQL Server 2022 or 2025
-  instance from an ISO, on each host in parallel, through the modules
-  `mssql_setup` (stage the ISO from a local path, UNC path or URL into a
-  cache, mount it, check its version and edition, run setup; or uninstall)
-  and `mssql_info` (the instances from the registry, services and SQL Server
-  itself). `tasks/plan.yml` checks the variables on the controller (the
-  argument-specs workflow runs it); `tasks/main.yml` plans setup in check
-  mode when it may reboot first, installs, reboots after 3010 when allowed,
-  reads the instance back and requires a sysadmin connection.
+- `roles/mssql` (0.22.0, phase 3a; network in 0.23.0, phase 3b) — a
+  standalone SQL Server 2022 or 2025 instance from an ISO, on each host in
+  parallel, through the modules `mssql_setup` (stage the ISO from a local
+  path, UNC path or URL into a cache, mount it, check its version and
+  edition, run setup; or uninstall), `mssql_network` (static TCP port, a
+  certificate bound by thumbprint with read access to its key for the
+  engine's per-service SID and account, the encryption mode, firewall rules,
+  restart) and `mssql_info` (the instances from the registry, services and
+  SQL Server itself). `tasks/plan.yml` checks the variables on the
+  controller (the argument-specs workflow runs it); `tasks/main.yml` plans
+  setup in check mode when it may reboot first, installs, reboots after 3010
+  when allowed, configures the network (restarting when it installed the
+  instance in the run, from `mssql_setup`'s `setup.action`, or with
+  `mssql_allow_restart`), reads the instance back and requires a sysadmin
+  connection. `mssql_network` never connects to SQL Server: it writes
+  `SuperSocketNetLib` as SQL Server Configuration Manager does (values
+  `ForceEncryption`, `ForceStrict`, `Certificate` lowercase without spaces;
+  `Tcp\IPAll` `TcpPort` and `TcpDynamicPorts`), reuses each value's kind,
+  and reads what the engine runs with from its errorlog (`-e` startup
+  parameter; process ID, certificate, listening ports, "ready for client
+  connections"). A write left for a later restart is recorded in
+  `C:\ProgramData\mssql-iac\network\<instance id>.restart`, so the next run
+  still reports `restart_required`.
 
-Next, per issue #48: 3b (`mssql_network`: static port, certificate, the three
-encryption modes, firewall), 3c (`mssql_configuration`: `sp_configure`), the
+Next, per issue #48: 3c (`mssql_configuration`: `sp_configure`), the
 FCI topology of `mssql` (phase 5) and `mssql_ag` (availability groups,
 phase 4). **Every cluster change is made by `wsfc` itself**
 (owner rule, 2026-11-01): amend `wsfc`/`wsfc_cluster`, never put cluster
@@ -225,19 +238,27 @@ role):
   nothing), plans a new account report-only (creating nothing), and checks
   that add mode keeps an out-of-band SPN while exclusive mode removes it and
   a repeat changes nothing.
-- `roles/mssql/molecule/default` (0.22.0): **two VMs** on a lab network
-  (dc01 = DC holding the accounts, sql01 joined). prepare runs
-  `mssql_prereqs` (the engine's domain account with its SPNs, a gMSA sql01
-  may use for the Agent, the administrators' group); converge installs a
-  default instance of **SQL Server 2022 Developer**, which sql01 downloads
-  from Microsoft itself through the role's URL staging (pinned by SHA-256 in
-  `molecule.yml`; Chris agreed to the Developer ISO in CI on 2026-11-06, and
-  it's never uploaded or published). verify reads the instance through
-  `setup_mssql`'s `instance_state.ps1` (edition, version, collation, service
-  accounts, sysadmins, tempdb, instant file initialization, TCP), searches
-  setup's `ConfigurationFile.ini` files for the engine's password, runs the
-  role report-only, then the `mssql_info` and `mssql_setup` integration
-  targets through `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
+- `roles/mssql/molecule/default` (0.22.0; network checks 0.23.0): **two VMs**
+  on a lab network (dc01 = DC holding the accounts and the client, sql01
+  joined). prepare runs `mssql_prereqs` (the engine's domain account with its
+  SPNs, a gMSA sql01 may use for the Agent, the administrators' group) and
+  issues sql01 a server certificate (SChannel CSP, KeySpec 1, SANs
+  `sql01.gpolab.test` and `sql01`) from a lab root CA that sql01 and dc01
+  trust; converge looks its thumbprint up by friendly name and installs a
+  default instance of **SQL Server 2022 Developer** with mandatory
+  encryption, which sql01 downloads from Microsoft itself through the role's
+  URL staging (pinned by SHA-256 in `molecule.yml`; Chris agreed to the
+  Developer ISO in CI on 2026-11-06, and it's never uploaded or published).
+  verify reads the instance through `setup_mssql`'s `instance_state.ps1`
+  (edition, version, collation, service accounts, sysadmins, tempdb, instant
+  file initialization, TCP, the network registry, the errorlog's last start,
+  the firewall rule, the key's readers), searches setup's
+  `ConfigurationFile.ini` files for the engine's password, probes the
+  instance from dc01 (`client.ps1`: Kerberos, a checked certificate, forced
+  encryption, a TDS PRELOGIN), turns strict on and logs what it does to the
+  Agent, to SqlClient and to dc01's probes, turns mandatory back on, runs
+  the role report-only, then the `mssql_info`, `mssql_network` and
+  `mssql_setup` integration targets through `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
   extends and uninstalls a named instance of its own (ITEST) from a UNC path
   (an SMB share of the role's cache on sql01 itself) and reboots first
   whenever Windows has a reboot pending (once in the first green run, before
@@ -361,10 +382,14 @@ Not covered by the lab yet (issue #16 unless noted):
   The three-VM scenario covers the rest of what #19 listed.
 - `wsfc_fileserver`: Scale-Out File Server (not built), adding a disk to an
   existing file server, a multi-subnet client access point, encrypted shares.
-- `mssql`: SQL Server 2025 (no 2025 ISO is pinned yet), Standard and
-  Enterprise media with a product key, Evaluation, a cumulative-update folder
-  (`update_source`), Windows Server 2025 (phase 0's box), and setup without
-  `become`.
+- `mssql`: SQL Server 2025 (no 2025 ISO is pinned yet; its Agent supports
+  strict encryption), Standard and Enterprise media with a product key,
+  Evaluation, a cumulative-update folder (`update_source`), Windows Server
+  2025 (phase 0's box), setup without `become`, a client with a TDS 8.0
+  driver (none ships with Windows Server 2022, so the lab sees strict only
+  through probes that need none), `mssql_network` on a named instance (the
+  SQL Server Browser rule), and the role's `validate` entry point from the
+  plan (a Kerberos and encryption check from a client), not built yet.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
@@ -622,13 +647,16 @@ lab to the scripts — and record the surprise below as a gotcha.
   run, and provides `files/read_domain.ps1`, GPMC and AD, `read_export.ps1`,
   the zip and state file, and `new_migtable.ps1`; its `setup_gpo_lab_dir`,
   `C:\ProgramData\gpo-iac-test`, keeps the targets apart from the roles'
-  state under `C:\ProgramData\gpo-iac`), and `mssql_info` then `mssql_setup`
-  from `roles/mssql` (both need the instance the role installed and the ISO
-  it cached, which `setup_mssql` checks rather than installs; its
-  `instance_state.ps1` reads the registry, services and SqlClient directly,
-  and its `tasks/reboot.yml` reboots before a step that runs setup when a
-  reboot is pending; the targets keep to `C:\ProgramData\mssql-iac-test`
-  and an instance of their own, ITEST). The role scenarios keep role
+  state under `C:\ProgramData\gpo-iac`), and `mssql_info`, `mssql_network`
+  then `mssql_setup` from `roles/mssql` (all need the instance the role
+  installed and the ISO it cached, which `setup_mssql` checks rather than
+  installs; its `instance_state.ps1` reads the registry, services, errorlog,
+  firewall, key ACL and SqlClient directly, and its `tasks/reboot.yml`
+  reboots before a step that runs setup when a reboot is pending, and says
+  which marker; `mssql_setup`'s target keeps to `C:\ProgramData\mssql-iac-test`
+  and an instance of its own, ITEST; `mssql_network`'s works on the role's
+  instance with certificates it makes and puts the instance back in an
+  `always` block). The role scenarios keep role
   behaviour (staging, fetch/unpack, variables, `*_report_only`, the
   converge/idempotence of the role) and leave the module's behaviour to the
   targets. `gpo_sync_import`'s target builds its source with `gpo_sync_export`
@@ -744,6 +772,17 @@ ansible-galaxy collection build --force
   read an empty edition that way (PR #69, 2026-11-06). Wrap the call,
   `@(Invoke-Sql ...)[0]`, as `instance_state.ps1` does and as `mssql_info`
   does with `Invoke-MssqlQuery`.
+- **A script block the modules' `Invoke-Change` runs can't use a variable
+  named `$change` or `$description`.** PowerShell scopes script blocks
+  dynamically and ignores case, so inside the block those names read
+  `Invoke-Change`'s own `-Change` and `-Description` parameters: a
+  `foreach ($change in $plan.Changes)` whose block writes `$change.Value`
+  writes the script block's properties instead. `mssql_network` loops over
+  `$write`, and its Pester wiring test fails on either name inside an
+  `Invoke-Change` call (caught in review, 0.23.0).
+- **`Set-NetFirewallRule -DisplayName` selects the rules to change; it
+  doesn't rename.** With `-Name` as well it fails to resolve a parameter set.
+  Rename with `-NewDisplayName` (`mssql_network`, 0.23.0).
 - **A `"\\"` literal inside a single-quoted YAML template reaches Ansible
   2.19's Jinja as two backslashes**, so `replace("\\", "/")` matches nothing
   in a Windows path. Pass the backslash in as a variable (`sep: '\'`) or

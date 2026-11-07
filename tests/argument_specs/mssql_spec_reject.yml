@@ -14,6 +14,8 @@
         mssql_sysadmins: "{{ spec_case.sysadmins | default(['EXAMPLE\\GG-SQL-Admins']) }}"
         mssql_features: "{{ spec_case.features | default(['SQLEngine']) }}"
         mssql_agent_startup: "{{ spec_case.agent_startup | default('automatic') }}"
+        mssql_encryption: "{{ spec_case.encryption | default('optional') }}"
+        mssql_tcp_port: "{{ spec_case.tcp_port | default(1433) }}"
 
     - name: Fail because validation accepted it
       ansible.builtin.fail:

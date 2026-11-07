@@ -1,0 +1,279 @@
+---
+# Integration tests for git_cgallagher.windows.mssql_network, on the instance
+# the mssql role installed (setup_mssql, meta/main.yml, checks it's there).
+# The target makes its own certificates: one SQL Server can load, and three
+# it can't. It checks the refusals write nothing, then moves the instance's
+# port (first without a restart, which stays pending until one) and its
+# encryption through optional, mandatory and strict, each in check mode, for
+# real and again (step.yml). Every check reads the host through
+# setup_mssql's instance_state.ps1, never through the module. The always
+# block puts the instance back as it found it (port, encryption, certificate)
+# and removes the certificates.
+#
+# Strict on SQL Server 2022 stops SQL Server Agent and every TDS 7.x client,
+# the modules' own SqlClient connections among them; the strict step records
+# what it sees for the log.
+- name: Test mssql_network, then put the instance back
+  vars:
+    net_instance: "{{ setup_mssql_instance }}"
+    net_engine: "{{ 'MSSQLSERVER' if setup_mssql_instance == 'MSSQLSERVER' else 'MSSQL$' ~ setup_mssql_instance }}"
+    net_port: 14330
+    net_certs: "{{ net_made.output[0] }}"
+    net_start: "{{ net_before.output[0] }}"
+  block:
+    - name: Read the instance before the tests
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: "{{ net_instance }}", Query: false}
+        depth: 5
+      register: net_before
+
+    - name: Require a static port to start from
+      ansible.builtin.assert:
+        that:
+          - net_before.output[0].installed
+          - net_before.output[0].tcp_all.TcpPort | length > 0
+        fail_msg: "{{ net_instance }} needs a static TCP port for the target to put back: {{ net_before.output[0] | to_json }}"
+
+    # Self-signed is enough for SQL Server to load; the role's scenario checks
+    # a certificate clients trust.
+    - name: Make the test certificates
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $properties = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
+          $fqdn = $properties.HostName
+          if ($properties.DomainName) { $fqdn = '{0}.{1}' -f $properties.HostName, $properties.DomainName }
+          $common = @{
+              Type = 'Custom'; Subject = "CN=$fqdn"; DnsName = @($fqdn, $properties.HostName); CertStoreLocation = 'Cert:\LocalMachine\My'
+              NotAfter = (Get-Date).AddDays(7); KeyAlgorithm = 'RSA'; KeyLength = 2048; HashAlgorithm = 'SHA256'
+              KeyUsage = @('KeyEncipherment', 'DigitalSignature')
+          }
+          $serverAuth = '2.5.29.37={text}1.3.6.1.5.5.7.3.1'
+          $schannel = 'Microsoft RSA SChannel Cryptographic Provider'
+          $made = @{
+              good = New-SelfSignedCertificate @common -FriendlyName 'mssql_network test: good' -Provider $schannel -KeySpec KeyExchange `
+                  -TextExtension @($serverAuth)
+              ksp = New-SelfSignedCertificate @common -FriendlyName 'mssql_network test: CNG key' -TextExtension @($serverAuth)
+              client_auth = New-SelfSignedCertificate @common -FriendlyName 'mssql_network test: client authentication' -Provider $schannel `
+                  -KeySpec KeyExchange -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2')
+              signature = New-SelfSignedCertificate @common -FriendlyName 'mssql_network test: signature key' `
+                  -Provider 'Microsoft Enhanced RSA and AES Cryptographic Provider' -KeySpec Signature -TextExtension @($serverAuth)
+          }
+          $out = @{ fqdn = $fqdn }
+          foreach ($name in $made.Keys) { $out[$name] = $made[$name].Thumbprint.ToLowerInvariant() }
+          $out
+      register: net_made
+
+    - name: Refuse what SQL Server can't load, or the module can't do
+      ansible.builtin.include_tasks: refuse.yml
+      loop:
+        - case: an instance that isn't installed
+          instance_name: NOSUCHINSTANCE
+          expect: isn't installed
+        - case: a value that isn't a thumbprint
+          encryption: mandatory
+          certificate: 'not-a-thumbprint'
+          expect: 40 hex digits
+        - case: a certificate that isn't in the store
+          encryption: mandatory
+          certificate: "{{ '0' * 40 }}"
+          expect: isn't in the computer's personal store
+        - case: a certificate with a CNG key
+          encryption: mandatory
+          certificate: "{{ net_certs.ksp }}"
+          expect: key storage provider
+        - case: a certificate for client authentication only
+          encryption: mandatory
+          certificate: "{{ net_certs.client_auth }}"
+          expect: isn't for server authentication
+        - case: a certificate with a signature key
+          encryption: mandatory
+          certificate: "{{ net_certs.signature }}"
+          expect: KeySpec 2
+        - case: mandatory without a certificate
+          encryption: mandatory
+          expect: certificate_thumbprint
+        - case: a port out of range
+          tcp_port: 70000
+          expect: 1 to 65535
+        - case: a restart timeout too short to wait for SQL Server
+          restart_timeout: 10
+          expect: 30 seconds or more
+      loop_control:
+        loop_var: net_case
+        label: "{{ net_case.case }}"
+
+    - name: Read the instance after the refusals
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: "{{ net_instance }}", Query: false}
+        depth: 5
+      register: net_refused
+
+    - name: Check the refusals wrote nothing and restarted nothing
+      ansible.builtin.assert:
+        that:
+          - net_refused.output[0].netlib == net_start.netlib
+          - net_refused.output[0].tcp_all == net_start.tcp_all
+          - net_refused.output[0].errorlog.process_id == net_start.errorlog.process_id
+        fail_msg: "before {{ net_start | to_json }}; after {{ net_refused.output[0] | to_json }}"
+
+    # --- the port: written without a restart, which stays pending -----------
+    - name: Move to another port without a restart
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        net_step: {name: "move to port {{ net_port }} without a restart", tcp_port: "{{ net_port }}", firewall: true, restart: false}
+
+    - name: Check the port is written and opened, and waits for a restart
+      ansible.builtin.assert:
+        that:
+          - net_real.restart_required
+          - net_again.restart_required
+          - net_state.output[0].tcp_all.TcpPort == net_port | string
+          - net_state.output[0].tcp_all.TcpDynamicPorts == ''
+          - net_state.output[0].firewall.ports == [net_port | string]
+          - net_state.output[0].firewall.enabled == 'True'
+          - net_state.output[0].errorlog.process_id == net_start.errorlog.process_id
+          - net_real.running.ports == net_start.errorlog.ports
+        fail_msg: "run {{ net_real | to_json }}; instance {{ net_state.output[0] | to_json }}"
+
+    - name: Restart for the waiting port
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        net_step: {name: restart for the waiting port}
+
+    - name: Check the engine listens on the new port
+      ansible.builtin.assert:
+        that:
+          - net_real.actions == ['restart ' ~ net_engine ~ ' so the network settings take effect']
+          - not net_real.restart_required
+          - net_state.output[0].errorlog.ports == [net_port]
+          - net_state.output[0].errorlog.ready
+        fail_msg: "run {{ net_real | to_json }}; instance {{ net_state.output[0] | to_json }}"
+
+    - name: Move back to the starting port, with a restart
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        net_step: {name: move back to the starting port, tcp_port: "{{ net_start.tcp_all.TcpPort | int }}", firewall: true}
+
+    - name: Check the engine listens on the starting port again
+      ansible.builtin.assert:
+        that:
+          - net_state.output[0].errorlog.ports == [net_start.tcp_all.TcpPort | int]
+          - net_state.output[0].firewall.ports == [net_start.tcp_all.TcpPort]
+        fail_msg: "{{ net_state.output[0] | to_json }}"
+
+    # --- encryption: optional, mandatory, strict -----------------------------
+    - name: Turn encryption optional
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        net_step: {name: turn encryption optional, encryption: optional}
+      when: net_start.netlib.ForceEncryption | default('0') == '1' or net_start.netlib.ForceStrict | default('0') == '1'
+
+    - name: Check no encryption is forced
+      ansible.builtin.assert:
+        that:
+          - net_state.output[0].netlib.ForceEncryption == '0'
+          - net_state.output[0].netlib.ForceStrict | default('0') == '0'
+        fail_msg: "{{ net_state.output[0] | to_json }}"
+      when: net_start.netlib.ForceEncryption | default('0') == '1' or net_start.netlib.ForceStrict | default('0') == '1'
+
+    - name: Force encryption with the test certificate
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        net_step: {name: force encryption with the test certificate, encryption: mandatory, certificate: "{{ net_certs.good }}"}
+
+    - name: Check the certificate is bound, loaded and readable by the engine
+      ansible.builtin.assert:
+        that:
+          - net_state.output[0].netlib.ForceEncryption == '1'
+          - net_state.output[0].netlib.Certificate | lower == net_certs.good
+          - net_state.output[0].errorlog.certificate == net_certs.good
+          - net_real.certificate.thumbprint == net_certs.good
+          - ('NT SERVICE\\' ~ net_engine) | lower in net_state.output[0].key_readers | map('lower') | list
+          - net_state.output[0].services.engine.account | lower in net_state.output[0].key_readers | map('lower') | list
+          - net_real.actions | select('search', '^grant .* read access') | list | length == 2
+          - net_real.services.agent in ['running', '']
+        fail_msg: "run {{ net_real | to_json }}; instance {{ net_state.output[0] | to_json }}"
+
+    - name: Turn strict encryption on
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        net_step: {name: turn strict encryption on, encryption: strict, certificate: "{{ net_certs.good }}"}
+
+    - name: Read the instance under strict encryption through mssql_info
+      git_cgallagher.windows.mssql_info:
+        instance_name: "{{ net_instance }}"
+      register: net_strict_info
+      vars:
+        ansible_become_password: "{{ setup_mssql_become_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ setup_mssql_become_user }}"
+
+    # What strict does to the rest is for the log, until a lab has shown it.
+    - name: Show what strict encryption did to SQL Server Agent and to a SqlClient connection
+      ansible.builtin.debug:
+        msg:
+          services: "{{ net_real.services }}"
+          notices: "{{ net_real.notices }}"
+          errorlog_strict_lines: "{{ net_real.running.strict_lines }}"
+          errorlog_lines: "{{ net_state.output[0].errorlog.lines }}"
+          agent: "{{ net_state.output[0].services.agent }}"
+          mssql_info_server: "{{ (net_strict_info.instances | first).server }}"
+
+    - name: Check strict encryption is set, and the engine runs with the certificate
+      ansible.builtin.assert:
+        that:
+          - net_state.output[0].netlib.ForceStrict == '1'
+          - net_state.output[0].netlib.ForceEncryption == '0'
+          - net_state.output[0].errorlog.certificate == net_certs.good
+          - net_state.output[0].errorlog.ready
+        fail_msg: "{{ net_state.output[0] | to_json }}"
+
+  always:
+    # Back as the target found it: port, flags and certificate, with a
+    # restart, which also starts SQL Server Agent again; then the test
+    # certificates can go.
+    - name: Put the instance's network back
+      git_cgallagher.windows.mssql_network:
+        instance_name: "{{ net_instance }}"
+        tcp_port: "{{ net_start.tcp_all.TcpPort | int }}"
+        encryption: >-
+          {{ 'strict' if net_start.netlib.ForceStrict | default('0') == '1'
+             else 'mandatory' if net_start.netlib.ForceEncryption | default('0') == '1' else 'optional' }}
+        certificate_thumbprint: "{{ net_start.netlib.Certificate | default('') | default(omit, true) }}"
+        restart: true
+      when: net_before is succeeded and net_before.output[0].tcp_all.TcpPort | default('') | length > 0
+
+    # A certificate the instance didn't start with can't be put back through
+    # the module, which never unbinds one.
+    - name: Unbind the test certificate when the instance started with none
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Id, [string]$Engine, [string]$Agent)
+          $ErrorActionPreference = 'Stop'
+          $key = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$Id\MSSQLServer\SuperSocketNetLib"
+          Set-ItemProperty -LiteralPath $key -Name Certificate -Value ''
+          Restart-Service -Name $Engine -Force
+          Start-Service -Name $Agent -ErrorAction SilentlyContinue
+        parameters:
+          Id: "{{ net_start.id }}"
+          Engine: "{{ net_engine }}"
+          Agent: "{{ 'SQLSERVERAGENT' if net_instance == 'MSSQLSERVER' else 'SQLAgent$' ~ net_instance }}"
+      when: net_before is succeeded and net_start.netlib.Certificate | default('') | length == 0
+
+    - name: Remove the test certificates and the module's restart marker
+      ansible.windows.win_powershell:
+        script: |
+          param([string[]]$Thumbprints, [string]$Id)
+          foreach ($thumbprint in $Thumbprints) {
+              $path = 'Cert:\LocalMachine\My\' + $thumbprint.ToUpperInvariant()
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -DeleteKey }
+          }
+          Remove-Item -LiteralPath "$env:ProgramData\mssql-iac\network\$Id.restart" -Force -ErrorAction SilentlyContinue
+        parameters:
+          Thumbprints: "{{ [net_certs.good, net_certs.ksp, net_certs.client_auth, net_certs.signature] }}"
+          Id: "{{ net_start.id }}"
+      when: net_made is succeeded
