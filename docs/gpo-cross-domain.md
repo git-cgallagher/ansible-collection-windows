@@ -28,6 +28,8 @@ files on both sides. The result is pinned, so a change fails the job.
 | Restricted Groups naming a src group | `GptTmpl.inf` | **needs migration table** | Same |
 | File system ACL with a src group | `GptTmpl.inf` (SDDL) | **needs migration table** | Same, inside the SDDL |
 | Registry ACL with a src group | `GptTmpl.inf` (SDDL) | **needs migration table** | Same |
+| Local admins, additive: Restricted Groups' *Member Of* form (`*<group SID>__Memberof = *S-1-5-32-544`) | `GptTmpl.inf` | **needs migration table** | Same. Applied on dst's DC through the table: dst's group lands in Administrators |
+| Deny log on locally and through Remote Desktop for a src group | `GptTmpl.inf` | **needs migration table** | Same. Applied on dst's DC: with the table, both rights deny dst's group. Without one, they deny src's SID and **dst's group isn't denied at all**, with no error |
 | Startup scripts: one stored in the GPO, one on `\\SRCDC01\...` | `scripts.ini` + the script file | **needs migration table** | The stored script travels inside the GPO. Without a table, the UNC path still names src's server. With one, it's rewritten to dst's |
 | Folder redirection to `\\SRCDC01\...` | `fdeploy.ini` | **needs migration table** | Same as the UNC script |
 | GPP registry item | `Registry.xml` | **pass** | Lands; nothing names src |
@@ -49,7 +51,7 @@ even with the table. **Not carried**: the import doesn't bring it at all.
 Things the run also showed:
 
 - **GPMC's migration table covers less than it looks.** Built from all
-  17 GPOs, it listed the two src groups named in security settings, the
+  19 GPOs, it listed the two src groups named in security settings, the
   built-in Administrators, and the two UNC paths in `scripts.ini` and
   `fdeploy.ini`. It didn't list the GPP drive map's path, GPP's groups or
   targeting, the hard-coded server, or the security-filtering group.
@@ -60,6 +62,86 @@ Things the run also showed:
   includes the table, so importing again with or without it re-imports
   every GPO without `force`. Repeating the same import changes nothing.
 
+## Recipe: local administrators and logon restrictions, one template for every domain
+
+Both policies are security settings, so a migration table carries them into
+any domain whose groups have the same names. One table, mapping each group
+**by relative name**, serves every target domain. The lab does exactly this
+and applies the result on the target DC.
+
+**1. Author in the source (template) domain**, one GPO per policy:
+
+- **Local administrators, additive:** *Computer Configuration → Policies →
+  Windows Settings → Security Settings → Restricted Groups → Add Group*: your
+  group (`GG-Server-Admins`), then under **"This group is a member of"** add
+  `Administrators`. That puts the group in each computer's built-in
+  Administrators and leaves the other members alone. Don't use the
+  **"Members of this group"** list on Administrators unless you mean *exactly
+  these members*: it removes everyone else at the next refresh. Don't use
+  GPP's Local Users and Groups either: no migration table translates it (the
+  matrix above). In `GptTmpl.inf`:
+
+  ```ini
+  [Group Membership]
+  *S-1-5-21-…-1104__Memberof = *S-1-5-32-544
+  *S-1-5-21-…-1104__Members =
+  ```
+
+- **Deny interactive logon:** *Security Settings → Local Policies → User
+  Rights Assignment*: **Deny log on locally** and **Deny log on through
+  Remote Desktop Services**, with the groups to restrict. Never put a group
+  your admins or service accounts belong to there. In `GptTmpl.inf`:
+
+  ```ini
+  [Privilege Rights]
+  SeDenyInteractiveLogonRight = *S-1-5-21-…-1106
+  SeDenyRemoteInteractiveLogonRight = *S-1-5-21-…-1106
+  ```
+
+**2. Export** them with `gpo_export`, on a host in the source domain:
+
+```yaml
+- name: Back up the baseline GPOs
+  git_cgallagher.windows.gpo_export:
+    domain: template.example.com
+    gpo_names: [Server Local Admins, Deny Interactive Logon]
+    path: D:\gpo-backups
+```
+
+**3. Build the migration table once**, from the same GPOs. GPMC lists the
+groups as `GG-Server-Admins@template.example.com`. Set each to **"Map by
+relative name"**, in the Migration Table Editor (`mtedit.exe`) or in the
+saved XML: `<DestinationByRelativeName />` in place of
+`<DestinationSameAsSource />`. Leave the built-in `Administrators` same as
+source. The lab scripts it in
+`tests/integration/molecule/gpo_cross_domain/files/new_xdomain_migtable.ps1`.
+Commit the table with the backups.
+
+**4. Create the groups in each target domain, then import:**
+
+```yaml
+- name: Apply the baseline GPOs
+  git_cgallagher.windows.gpo_import:
+    domain: prod.example.com
+    path: D:\gpo-backups
+    gpo_names: [Server Local Admins, Deny Interactive Logon]
+    migration_table_path: D:\gpo-backups\by-name.migtable
+```
+
+**5. Link** each GPO in the target domain (`New-GPLink`, or your own
+role). `gpo_import` is content-only and never links. For user rights, the
+GPO that wins is the one with the highest link precedence that defines the
+right, so put the deny-logon GPO above any other that sets the same rights.
+On domain controllers, that includes Default Domain Controllers Policy.
+
+**Always import these with the table.** Without it the import succeeds and
+the GPOs apply, but they name the source domain's SIDs. In the lab, the
+deny-logon rights then denied an unresolvable SID, and the target's group
+could log on.
+
+If the group names differ per domain, use one table per target domain with
+explicit destinations instead (scenarios.md, scenario 3).
+
 ## What you supply on dst
 
 The backup carries settings content only (issue #64). To reapply GPOs in
@@ -67,8 +149,9 @@ another domain:
 
 1. **A migration table**, built by GPMC from the GPOs you move: the
    Migration Table Editor's "Populate from GPO/backup", or the COM API as the
-   lab's `files/new_xdomain_migtable.ps1` does. Point each src principal at
-   its dst equivalent and each UNC path at dst's server, commit it with the
+   lab's `files/new_xdomain_migtable.ps1` does. Map each src principal by
+   relative name, or to an explicit dst equivalent, and each UNC path to dst's
+   server, commit it with the
    backups, and pass it as `migration_table_path`. Create the destination
    groups on dst first; the lab does, so that `Import-GPO` can resolve them.
 2. **GPP fix-ups.** A migration table never touches Group Policy Preferences.

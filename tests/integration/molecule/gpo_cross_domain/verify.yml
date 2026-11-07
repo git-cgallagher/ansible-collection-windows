@@ -5,8 +5,11 @@
 # includes the table, so no force is needed). files/observe_xdomain.ps1 then
 # classifies each row from those three readings, and the matrix it observed
 # is pinned below (lab_xd_expected): a change in what a move carries fails
-# here. Last, the import goes back through the table, once with a change and
-# once without.
+# here. Two of the GPOs, local admins (Restricted Groups' Member Of) and deny
+# logon, are also linked to dst's Domain Controllers OU and applied there,
+# through the table (dst's groups in force) and without it (dst's group no
+# longer denied). Last, the import goes back through the table, once with a
+# change and once without.
 - name: Read the matrix on src
   hosts: lab_src
   gather_facts: false
@@ -30,13 +33,44 @@
     lab_xd_src_r: "{{ lab_xd_obs_src.result | from_json }}"
     lab_xd_table_r: "{{ lab_xd_obs_table.result | from_json }}"
     lab_xd_plain_r: "{{ lab_xd_obs_plain.result | from_json }}"
+    # The two GPOs the lab also applies on dst's DC (linked to its Domain
+    # Controllers OU). Never the exact-membership Restricted Groups row: it
+    # would empty the DC's Administrators of everyone but GG-XD-Admins.
+    lab_xd_applied: [XD - Local Admins Member Of, XD - Deny Logon]
+    # Refreshes computer policy, then reads what applied: whether dst's
+    # GG-XD-Admins is in the DC's Administrators (BUILTIN, on a DC), and the
+    # effective deny-logon rights (secedit's export of the local policy).
+    lab_xd_effective_script: |
+      param([string]$Admins, [string]$Staff, [string]$SourceSid)
+      $ErrorActionPreference = 'Stop'
+      $Ansible.Changed = $false
+      $null = & gpupdate.exe /target:computer /force
+      $cfg = Join-Path $env:TEMP 'xd-user-rights.inf'
+      $null = & secedit.exe /export /areas USER_RIGHTS /cfg $cfg
+      $deny = @(Get-Content -LiteralPath $cfg | Where-Object { $_ -match '^SeDeny(Remote)?InteractiveLogonRight' })
+      Remove-Item -LiteralPath $cfg -Force
+      $adminsGroup = Get-ADGroup -Identity $Admins
+      $staffSid = (Get-ADGroup -Identity $Staff).SID.Value
+      $members = @((Get-ADGroup -Identity 'Administrators' -Properties member).member)
+      [ordered]@{
+          admins_in_administrators = $members -contains $adminsGroup.DistinguishedName
+          deny = $deny
+          deny_interactive_dst = @($deny | Where-Object { $_ -match '^SeDenyInteractiveLogonRight' -and $_.Contains("*$staffSid") }).Count -eq 1
+          deny_remote_dst = @($deny | Where-Object { $_ -match '^SeDenyRemoteInteractiveLogonRight' -and $_.Contains("*$staffSid") }).Count -eq 1
+          deny_names_src = @($deny | Where-Object { $_.Contains("*$SourceSid-") }).Count -gt 0
+      }
+    lab_xd_effective_params:
+      Admins: "{{ lab_xd_groups.admins }}"
+      Staff: "{{ lab_xd_groups.staff }}"
+      SourceSid: "{{ lab_xd_src.sid }}"
     lab_xd_observe_params:
       Domain: "{{ lab_domain }}"
       RowsJson: "{{ lab_xd_rows | to_json }}"
       SourceJson: "{{ lab_xd_src | to_json }}"
       TargetJson: "{{ lab_xd_dst | to_json }}"
-    # The matrix the lab observed (run 42293538842, 2026-11-06), which
-    # docs/gpo-cross-domain.md explains row by row.
+    # The matrix the lab observed (run 42293538842, 2026-11-06; the local-admins
+    # and deny-logon rows since 0.23.0), which docs/gpo-cross-domain.md explains
+    # row by row.
     lab_xd_expected:
       XD - Admin Templates: pass
       XD - Security Settings: pass
@@ -44,6 +78,8 @@
       XD - Restricted Groups: needs-migration-table
       XD - File ACL: needs-migration-table
       XD - Registry ACL: needs-migration-table
+      XD - Local Admins Member Of: needs-migration-table
+      XD - Deny Logon: needs-migration-table
       XD - Startup Scripts: needs-migration-table
       XD - Folder Redirection: needs-migration-table
       XD - GPP Registry: pass
@@ -77,6 +113,52 @@
         parameters: "{{ lab_xd_observe_params }}"
       register: lab_xd_obs_table
 
+    - name: Link the local-admins and deny-logon GPOs to dst's Domain Controllers OU
+      ansible.windows.win_powershell:
+        script: |
+          param([string[]]$Names)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $target = 'OU=Domain Controllers,' + (Get-ADDomain).DistinguishedName
+          $linked = @((Get-GPInheritance -Target $target).GpoLinks | ForEach-Object { $_.DisplayName })
+          foreach ($name in $Names) {
+              if ($linked -notcontains $name) {
+                  # Order 1: above Default Domain Controllers Policy, which
+                  # also sets user rights.
+                  $null = New-GPLink -Name $name -Target $target -Order 1
+                  $Ansible.Changed = $true
+              }
+          }
+        parameters:
+          Names: "{{ lab_xd_applied }}"
+
+    # The first refresh after a change can take a minute or two to apply the
+    # security settings (AGENTS.md), so read until they show.
+    - name: Apply them through the migration table's import, and read what applied
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_effective_script }}"
+        parameters: "{{ lab_xd_effective_params }}"
+      register: lab_xd_applied_table
+      until: >-
+        lab_xd_applied_table.output[0].admins_in_administrators
+        and lab_xd_applied_table.output[0].deny_interactive_dst
+        and lab_xd_applied_table.output[0].deny_remote_dst
+      retries: 10
+      delay: 30
+
+    - name: Show the deny-logon rights in force through the table
+      ansible.builtin.debug:
+        var: lab_xd_applied_table.output[0]
+
+    - name: Require dst's groups in force, and nothing of src's
+      ansible.builtin.assert:
+        that:
+          - lab_xd_applied_table.output[0].admins_in_administrators
+          - lab_xd_applied_table.output[0].deny_interactive_dst
+          - lab_xd_applied_table.output[0].deny_remote_dst
+          - not lab_xd_applied_table.output[0].deny_names_src
+        fail_msg: "{{ lab_xd_applied_table.output[0] | to_json }}"
+
     - name: Import the same backup without the migration table
       git_cgallagher.windows.gpo_import:
         domain: "{{ lab_domain }}"
@@ -102,6 +184,25 @@
           SourceObsJson: "{{ lab_xd_obs_src.result }}"
           WithTableJson: "{{ lab_xd_obs_table.result }}"
       register: lab_xd_obs_plain
+
+    # The hazard of a move without the table: the deny-logon GPO still applies,
+    # but names src's group, which nobody in dst can be. Nothing fails.
+    - name: Apply the import without the table, and read what applied
+      ansible.windows.win_powershell:
+        script: "{{ lab_xd_effective_script }}"
+        parameters: "{{ lab_xd_effective_params }}"
+      register: lab_xd_applied_plain
+
+    - name: Show the deny-logon rights in force without the table
+      ansible.builtin.debug:
+        var: lab_xd_applied_plain.output[0]
+
+    - name: Require dst's group no longer denied
+      ansible.builtin.assert:
+        that:
+          - not lab_xd_applied_plain.output[0].deny_interactive_dst
+          - not lab_xd_applied_plain.output[0].deny_remote_dst
+        fail_msg: "{{ lab_xd_applied_plain.output[0] | to_json }}"
 
     - name: Keep the three readings on the controller
       ansible.builtin.copy:
