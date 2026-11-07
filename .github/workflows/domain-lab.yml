@@ -90,7 +90,7 @@ jobs:
           - {name: iis, workdir: tests/integration, scenario: iis, vm: iis01}
           - {name: wsfc_fileserver, workdir: roles/wsfc_fileserver, scenario: default, vm: dc01 node1 node2, timeout: 120}
           - {name: gpo_cross_domain, workdir: tests/integration, scenario: gpo_cross_domain, vm: srcdc dstdc, timeout: 100}
-          - {name: mssql, workdir: roles/mssql, scenario: default, vm: dc01 sql01, timeout: 130}
+          - {name: mssql, workdir: roles/mssql, scenario: default, vm: dc01 sql01}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

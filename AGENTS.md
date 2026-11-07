@@ -240,8 +240,12 @@ role):
   targets through `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
   extends and uninstalls a named instance of its own (ITEST) from a UNC path
   (an SMB share of the role's cache on sql01 itself) and reboots first
-  whenever setup left a reboot pending. Setup runs three times, so the job
-  is the slowest (its `molecule test` limit is 130 minutes).
+  whenever Windows has a reboot pending (once in the first green run, before
+  ITEST's install; setup itself left none). That run (2026-11-06) took 25
+  minutes: create 5, prepare 10, converge 2 (the role's install, download
+  included, about 2), verify 7 (ITEST's install under a minute, the feature
+  add and the uninstall about 25 seconds each). `molecule test` keeps the
+  default 75-minute limit.
 - `roles/wsfc/molecule/default`: a one-node **workgroup** cluster
   (access point `None`) on the same VM, never promoted: feature install,
   `Test-Cluster`, `New-Cluster`, network name/role/metric, common
@@ -733,6 +737,13 @@ ansible-galaxy collection build --force
   array, so local checks miss it. Unroll with
   `$json | ConvertFrom-Json | ForEach-Object { $_ }` (gpo_cross_domain's
   first two lab runs, 2026-11-06).
+- **A PowerShell function that returns one row returns the row itself, not a
+  one-element array.** `$rows = Invoke-Sql ...` and then `$rows[0]` indexes
+  into the row: a hashtable's key `0` is `$null` (an `[ordered]` row would
+  give its first value instead). The fifth `molecule (mssql)` run's verify
+  read an empty edition that way (PR #69, 2026-11-06). Wrap the call,
+  `@(Invoke-Sql ...)[0]`, as `instance_state.ps1` does and as `mssql_info`
+  does with `Invoke-MssqlQuery`.
 - **A `"\\"` literal inside a single-quoted YAML template reaches Ansible
   2.19's Jinja as two backslashes**, so `replace("\\", "/")` matches nothing
   in a Windows path. Pass the backslash in as a variable (`sep: '\'`) or
