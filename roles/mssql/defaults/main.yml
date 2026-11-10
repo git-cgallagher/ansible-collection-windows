@@ -41,6 +41,16 @@ mssql_instant_file_init: true
 mssql_paths: {}
 mssql_tempdb: {}
 
+# The network (mssql_network): a static TCP port, the encryption mode
+# (optional, mandatory or strict) with the certificate mandatory and strict
+# need ('' leaves the binding alone), inbound firewall rules, and whether the
+# role may restart an instance it didn't install in the same run.
+mssql_tcp_port: 1433
+mssql_encryption: optional
+mssql_certificate_thumbprint: ''
+mssql_firewall: true
+mssql_allow_restart: false
+
 # The account setup and the role's reads run as (runas become); '' = the
 # connection account.
 mssql_become_user: ''

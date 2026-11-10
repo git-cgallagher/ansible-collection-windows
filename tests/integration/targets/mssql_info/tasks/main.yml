@@ -47,6 +47,11 @@
           - "'SQLEngine' in info_instance.features"
           - info_instance.collation == info_oracle.output[0].server.collation
           - info_instance.tcp.enabled == (info_oracle.output[0].tcp.Enabled == '1')
+          - info_instance.tcp.port == info_oracle.output[0].tcp_all.TcpPort
+          - info_instance.encryption.force_encryption == (info_oracle.output[0].netlib.ForceEncryption | default('0') == '1')
+          - info_instance.encryption.force_strict == (info_oracle.output[0].netlib.ForceStrict | default('0') == '1')
+          - info_instance.encryption.mode in ['optional', 'mandatory', 'strict']
+          - info_instance.encryption.certificate == info_oracle.output[0].netlib.Certificate | default('') | lower | regex_replace('\s', '')
           - info_instance.services.engine.account == info_oracle.output[0].services.engine.account
           - info_instance.services.engine.state == 'running'
           - info_instance.services.agent.account == info_oracle.output[0].services.agent.account

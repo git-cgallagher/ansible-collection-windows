@@ -874,6 +874,11 @@
             tempdb_data: 'T:\TempDB'
             tempdb_log: 'T:\TempDB'
           mssql_tempdb: {file_count: 8, file_size_mb: 1024, file_growth_mb: 512, log_size_mb: 1024, log_growth_mb: 512}
+          mssql_tcp_port: 14331
+          mssql_encryption: strict
+          mssql_certificate_thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
+          mssql_firewall: false
+          mssql_allow_restart: true
           mssql_become_user: EXAMPLE\svc-ansible
           mssql_become_password: example-not-secret
           mssql_allow_reboot: true
@@ -897,6 +902,12 @@
         - case: an Agent startup of delayed
           agent_startup: delayed
           expect: mssql_agent_startup
+        - case: an encryption of required
+          encryption: required
+          expect: mssql_encryption
+        - case: a TCP port that isn't a number
+          tcp_port: any
+          expect: mssql_tcp_port
       loop_control:
         loop_var: spec_case
         label: "{{ spec_case.case }}"
@@ -965,6 +976,15 @@
         - case: a password without an account
           vars: {engine_password: example-not-secret}
           expect: mssql_engine_account and mssql_engine_password don't fit
+        - case: mandatory encryption without a certificate
+          vars: {encryption: mandatory}
+          expect: mssql_encryption mandatory needs mssql_certificate_thumbprint
+        - case: strict encryption without a certificate
+          vars: {encryption: strict}
+          expect: mssql_encryption strict needs mssql_certificate_thumbprint
+        - case: a TCP port out of range
+          vars: {tcp_port: 70000}
+          expect: mssql_tcp_port must be 1 to 65535
       loop_control:
         loop_var: plan_case
         label: "{{ plan_case.case }}"

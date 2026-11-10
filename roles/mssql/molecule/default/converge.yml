@@ -3,7 +3,21 @@
   hosts: lab_sql
   gather_facts: false
   tasks:
-    # The role's variables come from molecule.yml's group_vars (lab_sql).
+    # prepare.yml issued the certificate, whose thumbprint is new every lab.
+    - name: Find the lab's server certificate
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name)
+          $Ansible.Changed = $false
+          @(Get-ChildItem -LiteralPath Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq $Name })[0].Thumbprint
+        parameters:
+          Name: "{{ lab_cert_name }}"
+      register: lab_cert_lookup
+
+    # The role's other variables come from molecule.yml's group_vars
+    # (lab_sql).
     - name: Install SQL Server 2022 Developer
       ansible.builtin.include_role:
         name: git_cgallagher.windows.mssql
+      vars:
+        mssql_certificate_thumbprint: "{{ lab_cert_lookup.output[0] }}"

@@ -1,0 +1,199 @@
+DOCUMENTATION:
+  module: mssql_network
+  short_description: Configure a SQL Server instance's TCP port, certificate, encryption and firewall rules
+  description:
+    - Sets how a SQL Server instance listens and encrypts, as SQL Server Configuration Manager does, by writing the
+      registry under the instance's C(SuperSocketNetLib) key. It never connects to SQL Server.
+    - O(tcp_port) makes the instance listen on a static port with dynamic ports off (C(Tcp\IPAll)'s C(TcpPort) and
+      C(TcpDynamicPorts)), and turns TCP/IP on.
+    - O(certificate_thumbprint) binds a certificate from the computer's personal store, and grants read access to its
+      private key to the engine's per-service SID (C(NT SERVICE\MSSQLSERVER)) and to the account the engine runs as.
+      The module refuses a certificate SQL Server can't load, because SQL Server then won't start. It must be valid
+      now, for server authentication, with its private key in a legacy CSP, as a key exchange key. It warns when the
+      certificate doesn't name the host.
+    - O(encryption) sets the encryption clients get. V(optional) lets them ask for it. V(mandatory) turns Force
+      Encryption on. V(strict) turns Force Strict Encryption on (TDS 8.0, with TLS before any TDS traffic). Strict refuses
+      every client and feature that doesn't speak TDS 8.0, such as .NET Framework's System.Data.SqlClient.
+    - O(firewall) adds or updates an inbound firewall rule for the instance's static TCP ports. For a named instance
+      it adds one for SQL Server Browser too (UDP 1434).
+    - Every registry change takes effect when the engine restarts. With O(restart), the module restarts the engine,
+      starts again the services that stopped with it (SQL Server Agent depends on the engine), and checks the new
+      errorlog for the certificate and port it set. Without O(restart), it reports RV(restart_required). It also
+      records when it wrote the settings, under C(C:\ProgramData\mssql-iac\network), so later runs keep reporting
+      the restart until the engine has restarted.
+    - Check mode runs every check that only reads (the instance, the certificate and its key, the firewall rules)
+      and changes nothing.
+  version_added: 0.23.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    instance_name:
+      description:
+        - The instance, V(MSSQLSERVER) for the default instance.
+      type: str
+      default: MSSQLSERVER
+    tcp_port:
+      description:
+        - The static TCP port to listen on, on every address (C(IPAll)). Dynamic ports are turned off.
+        - Leave it out to leave the port as it is.
+      type: int
+    encryption:
+      description:
+        - V(optional) turns Force Encryption and Force Strict Encryption off. V(mandatory) turns Force Encryption on.
+          V(strict) turns Force Strict Encryption on.
+        - V(mandatory) and V(strict) need O(certificate_thumbprint).
+        - Leave it out to leave the flags as they are.
+      type: str
+      choices: [optional, mandatory, strict]
+    certificate_thumbprint:
+      description:
+        - The SHA-1 thumbprint of the certificate to bind, from C(Cert:\LocalMachine\My). Spaces and the invisible
+          characters a thumbprint copied from the certificate dialog carries are ignored.
+        - Its subject alternative names should cover every name clients connect by. Strict encryption always checks
+          the name.
+        - Leave it out to leave the binding as it is.
+      type: str
+    firewall:
+      description:
+        - V(true) adds or updates an enabled inbound rule, for every profile, for the instance's static TCP ports. For
+          a named instance it adds one for SQL Server Browser (UDP 1434) too. The rules are named
+          C(mssql-iac-<instance>-tcp) and C(mssql-iac-browser-udp), in group C(SQL Server (git_cgallagher.windows)).
+        - It needs a static port, from O(tcp_port) or the instance's own.
+        - V(false) or leaving it out leaves the firewall as it is.
+      type: bool
+    restart:
+      description:
+        - Restart the engine when a change needs it, or when one written earlier still waits for a restart.
+        - Restarting stops every connection to the instance.
+      type: bool
+      default: false
+    restart_timeout:
+      description:
+        - How many seconds a restarted engine has to reach C(ready for client connections) in its errorlog.
+      type: int
+      default: 300
+  notes:
+    - Strict encryption refuses every client without TDS 8.0, over shared memory as well as TCP, .NET Framework's
+      System.Data.SqlClient among them, so this collection's modules can't connect to an instance under it. The
+      module warns when it turns strict on.
+    - SQL Server 2022 supports strict encryption on standalone instances only. Its SQL Server Agent has no TDS 8.0,
+      so under strict it retries for about 16 seconds and stops; the module watches it for 40 seconds after a
+      restart under strict and reports it. SQL Server 2025's Agent supports strict.
+    - This module doesn't configure failover cluster instances yet.
+  seealso:
+    - module: git_cgallagher.windows.mssql_info
+    - module: git_cgallagher.windows.mssql_setup
+    - name: Certificate requirements for SQL Server
+      link: https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/certificate-requirements
+      description: What a certificate needs for SQL Server to load it.
+    - name: Connect to SQL Server with strict encryption
+      link: https://learn.microsoft.com/en-us/sql/relational-databases/security/networking/connect-with-strict-encryption
+      description: TDS 8.0, Force Strict Encryption, and the clients that support it.
+
+EXAMPLES: |
+  - name: Listen on 1433 and open it in the firewall, restarting the engine when needed
+    git_cgallagher.windows.mssql_network:
+      tcp_port: 1433
+      firewall: true
+      restart: true
+
+  - name: Force encryption with a certificate from the computer's store
+    git_cgallagher.windows.mssql_network:
+      encryption: mandatory
+      certificate_thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
+      restart: true
+
+  - name: Plan strict encryption for a named instance, leaving the restart to a maintenance window
+    git_cgallagher.windows.mssql_network:
+      instance_name: INST1
+      tcp_port: 14331
+      encryption: strict
+      certificate_thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
+      firewall: true
+    register: network
+
+  - name: Say when it waits for a restart
+    ansible.builtin.debug:
+      msg: INST1 needs a restart for its network settings
+    when: network.restart_required
+
+RETURN:
+  instance:
+    description: The instance's C(name), C(id) (its registry key) and C(version).
+    returned: always
+    type: dict
+    sample: {name: MSSQLSERVER, id: MSSQL16.MSSQLSERVER, version: '2022'}
+  tcp:
+    description:
+      - TCP/IP's settings in the registry after the run (in check mode, as they are). C(enabled), C(listen_all), and
+        C(port) and C(dynamic_ports) for every address.
+    returned: when the instance exists
+    type: dict
+    sample: {enabled: true, listen_all: true, port: '1433', dynamic_ports: ''}
+  encryption:
+    description:
+      - The encryption settings in the registry after the run (in check mode, as they are). C(mode) (V(optional),
+        V(mandatory), V(strict)), C(force_encryption), C(force_strict) and the bound C(certificate)'s thumbprint.
+    returned: when the instance exists
+    type: dict
+    sample: {mode: mandatory, force_encryption: true, force_strict: false, certificate: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b}
+  certificate:
+    description:
+      - The certificate O(certificate_thumbprint) names. Its C(thumbprint), C(subject), C(dns_names), C(not_after),
+        the C(key_provider) holding its private key, and the C(key_readers) granted read access to that key.
+    returned: when O(certificate_thumbprint) is set
+    type: dict
+    sample:
+      thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
+      subject: CN=sql01.example.com
+      dns_names: [sql01.example.com, sql01]
+      not_after: '2027-11-07T00:00:00.0000000Z'
+      key_provider: Microsoft RSA SChannel Cryptographic Provider
+      key_readers: ['NT SERVICE\MSSQLSERVER', 'EXAMPLE\svc-sqldb']
+  firewall_rules:
+    description: The rules O(firewall) manages, with their C(name), C(display_name), C(protocol) and C(ports).
+    returned: always
+    type: list
+    elements: dict
+    sample: [{name: mssql-iac-MSSQLSERVER-tcp, display_name: SQL Server (MSSQLSERVER) TCP 1433, protocol: TCP, ports: ['1433']}]
+  restart_required:
+    description: Whether settings in the registry wait for the engine to restart.
+    returned: always
+    type: bool
+    sample: false
+  restarted:
+    description: Whether the module restarted the engine.
+    returned: always
+    type: bool
+    sample: true
+  services:
+    description: The C(engine)'s and C(agent)'s states after the run (V(running), V(stopped)); empty for one that isn't installed.
+    returned: when the instance exists
+    type: dict
+    sample: {engine: running, agent: running}
+  running:
+    description:
+      - What the engine runs with, from its current errorlog. The C(certificate) it loaded (a thumbprint, or
+        V(self-generated)), the TCP C(ports) it listens on, whether it is C(ready) for client connections, its
+        C(errorlog) path, and C(strict_lines), the errorlog's lines about strict encryption or TDS 8.0.
+      - After a restart the module fails unless the certificate and port it set are the ones running.
+    returned: when the errorlog's path is known
+    type: dict
+    sample:
+      certificate: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
+      ports: [1433]
+      ready: true
+      errorlog: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Log\ERRORLOG'
+      strict_lines: []
+  notices:
+    description: What the module left alone or wants you to know, also given as warnings.
+    returned: always
+    type: list
+    elements: str
+    sample: ['The network settings take effect when MSSQLSERVER restarts: restart it, or run with restart']
+  actions:
+    description: What the module did, or in check mode would do, in order.
+    returned: always
+    type: list
+    elements: str
+    sample: ['bind certificate 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b (was none)', 'turn Force Encryption on (encryption mandatory)']

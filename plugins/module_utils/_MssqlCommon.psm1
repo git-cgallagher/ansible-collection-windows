@@ -1,14 +1,16 @@
 # Copyright: (c) 2026, Chris Gallagher (@git-cgallagher)
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-# Shared by the SQL Server modules (mssql_setup and mssql_info). Most of it is
-# pure logic, with no Ansible.Basic, registry, setup or SQL Server calls, so
-# Pester tests it on any platform (tests/unit/plugins/module_utils/
-# _MssqlCommon.Tests.ps1): versions and editions, the media and its checksum,
-# the features, the plan for an instance, setup's command line and its
-# Summary.txt. Three functions read the host, for both modules: the instances
-# the registry lists (Get-MssqlInstanceRegistry), their services
-# (Get-MssqlServiceState) and a query through SqlClient (Invoke-MssqlQuery).
+# Shared by the SQL Server modules (mssql_setup, mssql_info and
+# mssql_network). Most of it is pure logic, with no Ansible.Basic, registry,
+# setup or SQL Server calls, so Pester tests it on any platform
+# (tests/unit/plugins/module_utils/_MssqlCommon.Tests.ps1): versions and
+# editions, the media and its checksum, the features, the plan for an
+# instance, setup's command line and its Summary.txt, and the network plan,
+# certificate checks, errorlog lines and firewall rules. A few functions read
+# the host for every module: the instances the registry lists
+# (Get-MssqlInstanceRegistry), their services (Get-MssqlServiceState) and a
+# query through SqlClient (Invoke-MssqlQuery).
 # Private to this collection, with no compatibility promise. Windows
 # PowerShell 5.1 syntax only.
 
@@ -777,8 +779,10 @@ Function ConvertTo-MssqlInstanceFact {
             dynamic_ports = [string]$tcpAll['TcpDynamicPorts']
         }
         encryption = @{
+            mode = ConvertTo-MssqlEncryptionMode -ForceEncryption $netLib['ForceEncryption'] -ForceStrict $netLib['ForceStrict']
             force_encryption = [string]$netLib['ForceEncryption'] -eq '1'
-            certificate = [string]$netLib['Certificate']
+            force_strict = [string]$netLib['ForceStrict'] -eq '1'
+            certificate = ConvertTo-MssqlThumbprint ([string]$netLib['Certificate'])
         }
         services = $serviceFacts
     }
@@ -871,6 +875,367 @@ Function Get-MssqlServiceState {
     $services
 }
 
+Function ConvertTo-MssqlThumbprint {
+    <#
+    .SYNOPSIS
+    Returns a certificate thumbprint the way SQL Server's Certificate registry
+    value holds it: lowercase hex, without the spaces and invisible marks a
+    thumbprint copied from the certificate dialog carries.
+    #>
+    [CmdletBinding()]
+    param ([string]$Thumbprint)
+
+    ([string]$Thumbprint -replace '[\s\p{Cf}]', '').ToLowerInvariant()
+}
+
+Function Get-MssqlThumbprintProblem {
+    <#
+    .SYNOPSIS
+    Returns why a value isn't a certificate thumbprint (a SHA-1 hash: 40 hex
+    digits, spaces allowed), or '' when it is one.
+    #>
+    [CmdletBinding()]
+    param ([string]$Thumbprint)
+
+    if ((ConvertTo-MssqlThumbprint $Thumbprint) -notmatch '^[0-9a-f]{40}$') {
+        return "certificate_thumbprint must be a certificate's SHA-1 thumbprint, 40 hex digits; got '$Thumbprint'"
+    }
+    ''
+}
+
+Function ConvertTo-MssqlEncryptionMode {
+    <#
+    .SYNOPSIS
+    Names the encryption mode SuperSocketNetLib's flags set: strict (Force
+    Strict Encryption), mandatory (Force Encryption) or optional (neither).
+    #>
+    [CmdletBinding()]
+    param ([object]$ForceEncryption, [object]$ForceStrict)
+
+    if ([string]$ForceStrict -eq '1') { return 'strict' }
+    if ([string]$ForceEncryption -eq '1') { return 'mandatory' }
+    'optional'
+}
+
+Function Get-MssqlStrictNotice {
+    <#
+    .SYNOPSIS
+    What turning strict encryption on costs, as the mssql lab showed on SQL
+    Server 2022 RTM: every client without TDS 8.0 is refused, over shared
+    memory as well as TCP, .NET Framework's System.Data.SqlClient among them,
+    and on 2022 SQL Server Agent too, which then stops (2025's Agent speaks
+    TDS 8.0).
+    #>
+    [CmdletBinding()]
+    param ([string]$Version)
+
+    $notice = ('Strict encryption refuses every client without TDS 8.0, over shared memory as well as TCP: .NET ' +
+        "Framework's System.Data.SqlClient among them, so this collection's modules can't connect to the instance")
+    if ($Version -eq '2022') {
+        $notice += ", and SQL Server 2022's SQL Server Agent, which stops (2025's Agent supports strict)"
+    }
+    $notice
+}
+
+Function Get-MssqlNetworkPlan {
+    <#
+    .SYNOPSIS
+    Compares an instance's network registry values with the desired TCP port,
+    certificate and encryption mode. Returns the writes that make them match
+    (Changes: each with the Key it goes under, Tcp, TcpAll or NetLib, and the
+    value's Name, Value, default Kind and a Description) and what it leaves
+    alone but should say (Notices). A desired value that is $null or '' is
+    left as it is.
+    .PARAMETER Current
+    The values as read: TcpEnabled and ListenOnAllIPs (the Tcp key), TcpPort
+    and TcpDynamicPorts (Tcp\IPAll), ForceEncryption, ForceStrict and
+    Certificate (SuperSocketNetLib).
+    .PARAMETER Desired
+    TcpPort (an int), Encryption (optional, mandatory or strict) and
+    Thumbprint.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Current, [hashtable]$Desired)
+
+    $changes = [System.Collections.Generic.List[object]]::new()
+    $notices = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $Desired.TcpPort) {
+        $port = [string][int]$Desired.TcpPort
+        if ([string]$Current.TcpEnabled -ne '1') {
+            $changes.Add(@{ Key = 'Tcp'; Name = 'Enabled'; Value = 1; Kind = 'DWord'; Description = 'enable TCP/IP' })
+        }
+        if ([string]$Current.TcpPort -ne $port) {
+            $changes.Add(@{
+                    Key = 'TcpAll'; Name = 'TcpPort'; Value = $port; Kind = 'String'
+                    Description = "listen on TCP port $port (was '$($Current.TcpPort)')"
+                })
+        }
+        if ([string]$Current.TcpDynamicPorts -ne '') {
+            $changes.Add(@{
+                    Key = 'TcpAll'; Name = 'TcpDynamicPorts'; Value = ''; Kind = 'String'
+                    Description = "turn dynamic ports off (was '$($Current.TcpDynamicPorts)')"
+                })
+        }
+        if ([string]$Current.ListenOnAllIPs -eq '0') {
+            $notices.Add(("TCP/IP's Listen All is off, so SQL Server ignores the IPAll port this sets and listens on the " +
+                    'ports of each address (IP1, IP2, ...) instead; turn Listen All on to use it'))
+        }
+    }
+    if ($Desired.Thumbprint) {
+        $thumbprint = ConvertTo-MssqlThumbprint $Desired.Thumbprint
+        if ((ConvertTo-MssqlThumbprint $Current.Certificate) -ne $thumbprint) {
+            $was = ConvertTo-MssqlThumbprint $Current.Certificate
+            if (-not $was) { $was = 'none' }
+            $changes.Add(@{
+                    Key = 'NetLib'; Name = 'Certificate'; Value = $thumbprint; Kind = 'String'
+                    Description = "bind certificate $thumbprint (was $was)"
+                })
+        }
+    }
+    if ($Desired.Encryption) {
+        $flags = @{ optional = @(0, 0); mandatory = @(1, 0); strict = @(0, 1) }[[string]$Desired.Encryption]
+        $names = @(@('ForceEncryption', 'Force Encryption'), @('ForceStrict', 'Force Strict Encryption'))
+        for ($i = 0; $i -lt 2; $i++) {
+            $now = 0
+            if ([string]$Current[$names[$i][0]] -eq '1') { $now = 1 }
+            if ($now -ne $flags[$i]) {
+                $state = @('off', 'on')[$flags[$i]]
+                $changes.Add(@{
+                        Key = 'NetLib'; Name = $names[$i][0]; Value = $flags[$i]; Kind = 'DWord'
+                        Description = "turn $($names[$i][1]) $state (encryption $($Desired.Encryption))"
+                    })
+            }
+        }
+    }
+    @{ Changes = $changes.ToArray(); Notices = $notices.ToArray() }
+}
+
+Function Get-MssqlCertificateProblem {
+    <#
+    .SYNOPSIS
+    Checks a certificate, as the module reads it from the computer's personal
+    store, against what SQL Server needs to load it (Microsoft's "Certificate
+    requirements for SQL Server"): valid now, for server authentication, with
+    a private key in a legacy CSP, in the computer's key store, as a key
+    exchange key (KeySpec 1, AT_KEYEXCHANGE). Returns the first problem, or
+    ''.
+    .PARAMETER Certificate
+    Thumbprint, Found, NotBefore, NotAfter, ServerAuth, HasPrivateKey,
+    KeyProvider ('csp' or 'ksp'), MachineKey and KeySpec.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Certificate, [datetime]$Now = (Get-Date))
+
+    $thumbprint = $Certificate.Thumbprint
+    if (-not $Certificate.Found) {
+        return "certificate $thumbprint isn't in the computer's personal store (Cert:\LocalMachine\My)"
+    }
+    if ($Now -lt $Certificate.NotBefore -or $Now -gt $Certificate.NotAfter) {
+        return ('certificate {0} is valid from {1:u} to {2:u}, not now' -f $thumbprint, $Certificate.NotBefore, $Certificate.NotAfter)
+    }
+    if (-not $Certificate.ServerAuth) {
+        return "certificate $thumbprint isn't for server authentication: its enhanced key usage lacks Server Authentication (1.3.6.1.5.5.7.3.1)"
+    }
+    if (-not $Certificate.HasPrivateKey) {
+        return "certificate $thumbprint has no private key on this host"
+    }
+    if ($Certificate.KeyProvider -ne 'csp') {
+        return ("certificate $thumbprint's private key is in a key storage provider (CNG), which SQL Server can't use: issue it " +
+            'with a legacy CSP, such as Microsoft RSA SChannel Cryptographic Provider, as a key exchange key')
+    }
+    if (-not $Certificate.MachineKey) {
+        return "certificate $thumbprint's private key is in a user's key store, not the computer's, so SQL Server's service can't read it"
+    }
+    if ([int]$Certificate.KeySpec -ne 1) {
+        return "certificate $thumbprint's private key has KeySpec $($Certificate.KeySpec); SQL Server needs a key exchange key (KeySpec 1, AT_KEYEXCHANGE)"
+    }
+    ''
+}
+
+Function Get-MssqlCertificateNameNotice {
+    <#
+    .SYNOPSIS
+    Returns a notice when none of a certificate's DNS names (its subject
+    alternative names, else its subject's CN) covers the host's name, which
+    clients that check the certificate connect by; '' when one does. A
+    wildcard covers one label.
+    #>
+    [CmdletBinding()]
+    param ([string[]]$DnsNames, [string]$HostName, [string]$Thumbprint)
+
+    $hostLower = ([string]$HostName).ToLowerInvariant()
+    foreach ($name in @($DnsNames | Where-Object { $_ })) {
+        $pattern = ([string]$name).ToLowerInvariant()
+        if ($pattern -eq $hostLower) { return '' }
+        $dot = $hostLower.IndexOf('.')
+        if ($pattern.StartsWith('*.') -and $dot -gt 0 -and $hostLower.Substring($dot) -eq $pattern.Substring(1)) { return '' }
+    }
+    $names = @($DnsNames | Where-Object { $_ }) -join ', '
+    if (-not $names) { $names = 'no DNS name' }
+    $notice = "certificate $Thumbprint names $names, not ${HostName}: clients that check the certificate (strict always does) "
+    $notice + 'connect only by a name it covers'
+}
+
+Function Test-MssqlReadRight {
+    <#
+    .SYNOPSIS
+    Whether an access rule's rights let its holder read a file: Read or more,
+    or the GENERIC_READ or GENERIC_ALL bits an ACE can hold instead.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ([long]$Rights)
+
+    $mask = $Rights -band 0xFFFFFFFFL
+    (($mask -band 0x20089L) -eq 0x20089L) -or (($mask -band 0x80000000L) -ne 0) -or (($mask -band 0x10000000L) -ne 0)
+}
+
+Function Get-MssqlErrorLogPath {
+    <#
+    .SYNOPSIS
+    Returns the errorlog's path from the engine's startup parameters (the
+    instance's MSSQLServer\Parameters values SQLArg0, SQLArg1, ...): the one
+    that starts with -e. '' without one.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Parameters)
+
+    if ($null -eq $Parameters) { return '' }
+    foreach ($name in @($Parameters.Keys | Where-Object { $_ -match '^SQLArg\d+$' } | Sort-Object)) {
+        $value = [string]$Parameters[$name]
+        if ($value -match '^-e(.+)$') { return $Matches[1] }
+    }
+    ''
+}
+
+Function Get-MssqlErrorLogFact {
+    <#
+    .SYNOPSIS
+    Reads what the current errorlog says about the engine's last start: its
+    process ID, the certificate it loaded for encryption (a thumbprint,
+    'self-generated', or '' before that line), the TCP ports it listens on
+    for every address, and whether it got as far as "ready for client
+    connections". Lines that mention strict encryption or TDS 8.0 are kept as
+    they are.
+    #>
+    [CmdletBinding()]
+    param ([string[]]$Lines)
+
+    $processId = 0
+    $certificate = ''
+    $ports = [System.Collections.Generic.List[int]]::new()
+    $strict = [System.Collections.Generic.List[string]]::new()
+    $ready = $false
+    foreach ($line in @($Lines)) {
+        if ($line -match 'Server process ID is (\d+)') {
+            $processId = [int]$Matches[1]
+        }
+        elseif ($line -match 'The certificate \[Cert Hash\(sha1\) "([0-9A-Fa-f]{40})"\] was successfully loaded for encryption') {
+            $certificate = $Matches[1].ToLowerInvariant()
+        }
+        elseif ($line -match 'A self-generated certificate was successfully loaded for encryption') {
+            $certificate = 'self-generated'
+        }
+        elseif ($line -match "Server is listening on \[ 'any' <ipv[46]> (\d+)\]") {
+            $port = [int]$Matches[1]
+            if (-not $ports.Contains($port)) { $ports.Add($port) }
+        }
+        elseif ($line -match 'SQL Server is now ready for client connections') {
+            $ready = $true
+        }
+        if ($line -match '(?i)strict|TDS 8') { $strict.Add($line.Trim()) }
+    }
+    @{ ProcessId = $processId; Certificate = $certificate; Ports = $ports.ToArray(); Ready = $ready; StrictLines = $strict.ToArray() }
+}
+
+Function Get-MssqlFirewallRuleSpec {
+    <#
+    .SYNOPSIS
+    The inbound firewall rules an instance needs: its TCP ports, and for a
+    named instance SQL Server Browser's UDP 1434, which clients ask for a
+    named instance's port. Each rule has the Name (its ID) the module finds it
+    by.
+    #>
+    [CmdletBinding()]
+    param ([string]$InstanceName, [string[]]$Ports)
+
+    $group = 'SQL Server (git_cgallagher.windows)'
+    $rules = [System.Collections.Generic.List[object]]::new()
+    $rules.Add(@{
+            Name = "mssql-iac-$InstanceName-tcp"
+            DisplayName = "SQL Server ($InstanceName) TCP $($Ports -join ', ')"
+            Group = $group
+            Protocol = 'TCP'
+            LocalPort = @($Ports)
+        })
+    if ($InstanceName -ne 'MSSQLSERVER') {
+        $rules.Add(@{
+                Name = 'mssql-iac-browser-udp'
+                DisplayName = 'SQL Server Browser UDP 1434'
+                Group = $group
+                Protocol = 'UDP'
+                LocalPort = @('1434')
+            })
+    }
+    $rules.ToArray()
+}
+
+Function Get-MssqlFirewallRuleDifference {
+    <#
+    .SYNOPSIS
+    Returns what an existing firewall rule has that its spec doesn't (an
+    enabled inbound allow rule for every profile, with the spec's display
+    name, protocol and ports), as text, or '' when it matches.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Spec, [hashtable]$Rule)
+
+    $differences = [System.Collections.Generic.List[string]]::new()
+    $expected = [ordered]@{
+        DisplayName = $Spec.DisplayName
+        Enabled = 'True'
+        Direction = 'Inbound'
+        Action = 'Allow'
+        Profile = 'Any'
+        Protocol = $Spec.Protocol
+    }
+    foreach ($name in $expected.Keys) {
+        if ([string]$Rule[$name] -ne [string]$expected[$name]) { $differences.Add(("{0} '{1}'" -f $name, $Rule[$name])) }
+    }
+    $have = @($Rule.LocalPort | ForEach-Object { [string]$_ } | Sort-Object)
+    $want = @($Spec.LocalPort | ForEach-Object { [string]$_ } | Sort-Object)
+    if (($have -join ',') -ne ($want -join ',')) { $differences.Add(("ports '{0}'" -f ($have -join ', '))) }
+    $differences -join ', '
+}
+
+Function Get-MssqlServiceSidName {
+    <#
+    .SYNOPSIS
+    Returns the engine's per-service SID as an account name (NT
+    SERVICE\MSSQLSERVER, NT SERVICE\MSSQL$INST1), which SQL Server's service
+    carries whatever account it logs on as.
+    #>
+    [CmdletBinding()]
+    param ([string]$InstanceName)
+
+    'NT SERVICE\' + (Get-MssqlServiceName -InstanceName $InstanceName -Service 'engine')
+}
+
+Function Test-MssqlRestartPending {
+    <#
+    .SYNOPSIS
+    Whether settings written without a restart are still waiting for one: the
+    time they were written is after the running engine's start. No time, or
+    an engine that isn't running, means nothing waits.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ([object]$ChangedAt, [object]$StartedAt)
+
+    if ($null -eq $ChangedAt -or $null -eq $StartedAt) { return $false }
+    [datetime]$ChangedAt -gt [datetime]$StartedAt
+}
+
 Function Invoke-MssqlQuery {
     <#
     .SYNOPSIS
@@ -910,34 +1275,48 @@ Function Invoke-MssqlQuery {
 
 $exportFunctions = @(
     'ConvertTo-MssqlEditionId'
+    'ConvertTo-MssqlEncryptionMode'
     'ConvertTo-MssqlFeatureName'
     'ConvertTo-MssqlInstanceFact'
     'ConvertTo-MssqlStartMode'
+    'ConvertTo-MssqlThumbprint'
     'ConvertTo-MssqlVersionName'
     'Format-MssqlSetupArgument'
     'Get-MssqlAccountProblem'
+    'Get-MssqlCertificateNameNotice'
+    'Get-MssqlCertificateProblem'
     'Get-MssqlChecksumHash'
     'Get-MssqlConnectionString'
     'Get-MssqlEditionPlan'
+    'Get-MssqlErrorLogFact'
+    'Get-MssqlErrorLogPath'
+    'Get-MssqlFirewallRuleDifference'
+    'Get-MssqlFirewallRuleSpec'
     'Get-MssqlInstalledFeature'
     'Get-MssqlInstanceNameProblem'
     'Get-MssqlInstancePlan'
     'Get-MssqlInstanceRegistry'
     'Get-MssqlMediaInfo'
     'Get-MssqlMediaSource'
+    'Get-MssqlNetworkPlan'
     'Get-MssqlPidEdition'
     'Get-MssqlRebootPendingReason'
     'Get-MssqlRebootState'
     'Get-MssqlRegistryValue'
     'Get-MssqlServiceName'
+    'Get-MssqlServiceSidName'
     'Get-MssqlServiceState'
     'Get-MssqlSetupArgument'
     'Get-MssqlSetupArgumentProblem'
     'Get-MssqlSetupBootstrap'
     'Get-MssqlSetupHint'
     'Get-MssqlSetupSummary'
+    'Get-MssqlStrictNotice'
+    'Get-MssqlThumbprintProblem'
     'Get-MssqlVersionInfo'
     'Invoke-MssqlQuery'
     'ConvertTo-MssqlSetupArgument'
+    'Test-MssqlReadRight'
+    'Test-MssqlRestartPending'
 )
 Export-ModuleMember -Function $exportFunctions

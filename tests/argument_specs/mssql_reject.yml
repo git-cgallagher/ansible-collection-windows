@@ -19,6 +19,9 @@
         mssql_engine_password: "{{ plan_case.vars.engine_password | default('') }}"
         mssql_agent_account: "{{ plan_case.vars.agent_account | default('') }}"
         mssql_agent_password: "{{ plan_case.vars.agent_password | default('') }}"
+        mssql_encryption: "{{ plan_case.vars.encryption | default('optional') }}"
+        mssql_certificate_thumbprint: "{{ plan_case.vars.certificate_thumbprint | default('') }}"
+        mssql_tcp_port: "{{ plan_case.vars.tcp_port | default(1433) }}"
 
     - name: Fail because the plan accepted it
       ansible.builtin.fail:

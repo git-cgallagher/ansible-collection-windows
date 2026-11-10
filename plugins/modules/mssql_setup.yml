@@ -307,11 +307,13 @@ RETURN:
       edition: enterprise_developer
   setup:
     description:
-      - Setup's run, when it ran. C(command) is its command line with the passwords and product key as C(********);
-        C(summary_path) its C(Summary.txt); C(log_dir) this run's log folder. Null when setup didn't run.
+      - Setup's run, when it ran. C(action) is what it ran for (V(Install), V(AddFeatures) or V(Uninstall), since
+        0.23.0); C(command) its command line with the passwords and product key as C(********); C(summary_path) its
+        C(Summary.txt); C(log_dir) this run's log folder. Null when setup didn't run.
     returned: always
     type: dict
     sample:
+      action: Install
       command: '"E:\setup.exe" /Q /ACTION="Install" /IACCEPTSQLSERVERLICENSETERMS /FEATURES="SQLENGINE" /PID="********" ...'
       exit_code: 0
       summary_path: C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\Summary.txt

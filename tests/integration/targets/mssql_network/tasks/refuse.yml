@@ -1,0 +1,22 @@
+---
+# Included by main.yml once per case (net_case): runs mssql_network for real
+# with the case's options and expects a failure whose message matches the
+# case's expect. main.yml checks afterwards that the refusals wrote nothing.
+- name: "Refuse {{ net_case.case }}"
+  git_cgallagher.windows.mssql_network:
+    instance_name: "{{ net_case.instance_name | default(net_instance) }}"
+    tcp_port: "{{ net_case.tcp_port | default(omit) }}"
+    encryption: "{{ net_case.encryption | default(omit) }}"
+    certificate_thumbprint: "{{ net_case.certificate | default(omit) }}"
+    restart_timeout: "{{ net_case.restart_timeout | default(omit) }}"
+    restart: true
+  register: net_refusal
+  ignore_errors: true
+
+- name: "Check it refused {{ net_case.case }}"
+  ansible.builtin.assert:
+    that:
+      - net_refusal is failed
+      - net_refusal.msg is search(net_case.expect)
+      - net_refusal.actions | default([]) | length == 0
+    fail_msg: "{{ net_case.case }}: expected a failure matching '{{ net_case.expect }}', got {{ net_refusal | to_json }}"

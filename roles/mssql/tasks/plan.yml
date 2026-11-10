@@ -27,6 +27,20 @@
     fail_msg: mssql_sysadmins must name at least one account or group
     quiet: true
 
+- name: Require a certificate for mandatory and strict encryption
+  ansible.builtin.assert:
+    that: mssql_encryption == 'optional' or mssql_certificate_thumbprint | length > 0
+    fail_msg: mssql_encryption {{ mssql_encryption }} needs mssql_certificate_thumbprint, the certificate the instance encrypts with
+    quiet: true
+
+# The thumbprint's form is mssql_network's to check: it also drops the
+# invisible marks a thumbprint copied from the certificate dialog carries.
+- name: Check the TCP port
+  ansible.builtin.assert:
+    that: mssql_tcp_port | int >= 1 and mssql_tcp_port | int <= 65535
+    fail_msg: mssql_tcp_port must be 1 to 65535, got {{ mssql_tcp_port }}
+    quiet: true
+
 - name: Check the media is an ISO pinned by its SHA-256
   ansible.builtin.assert:
     that:
