@@ -917,6 +917,26 @@ Function ConvertTo-MssqlEncryptionMode {
     'optional'
 }
 
+Function Get-MssqlStrictNotice {
+    <#
+    .SYNOPSIS
+    What turning strict encryption on costs, as the mssql lab showed on SQL
+    Server 2022 RTM: every client without TDS 8.0 is refused, over shared
+    memory as well as TCP, .NET Framework's System.Data.SqlClient among them,
+    and on 2022 SQL Server Agent too, which then stops (2025's Agent speaks
+    TDS 8.0).
+    #>
+    [CmdletBinding()]
+    param ([string]$Version)
+
+    $notice = ('Strict encryption refuses every client without TDS 8.0, over shared memory as well as TCP: .NET ' +
+        "Framework's System.Data.SqlClient among them, so this collection's modules can't connect to the instance")
+    if ($Version -eq '2022') {
+        $notice += ", and SQL Server 2022's SQL Server Agent, which stops (2025's Agent supports strict)"
+    }
+    $notice
+}
+
 Function Get-MssqlNetworkPlan {
     <#
     .SYNOPSIS
@@ -1291,6 +1311,7 @@ $exportFunctions = @(
     'Get-MssqlSetupBootstrap'
     'Get-MssqlSetupHint'
     'Get-MssqlSetupSummary'
+    'Get-MssqlStrictNotice'
     'Get-MssqlThumbprintProblem'
     'Get-MssqlVersionInfo'
     'Invoke-MssqlQuery'

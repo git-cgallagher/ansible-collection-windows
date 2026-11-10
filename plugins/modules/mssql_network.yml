@@ -73,8 +73,12 @@ DOCUMENTATION:
       type: int
       default: 300
   notes:
-    - SQL Server 2022 supports strict encryption on standalone instances only. Its SQL Server Agent doesn't speak
-      TDS 8.0, so under strict it can't connect and stops; SQL Server 2025's Agent can.
+    - Strict encryption refuses every client without TDS 8.0, over shared memory as well as TCP, .NET Framework's
+      System.Data.SqlClient among them, so this collection's modules can't connect to an instance under it. The
+      module warns when it turns strict on.
+    - SQL Server 2022 supports strict encryption on standalone instances only. Its SQL Server Agent has no TDS 8.0,
+      so under strict it retries for about 16 seconds and stops; the module watches it for 40 seconds after a
+      restart under strict and reports it. SQL Server 2025's Agent supports strict.
     - This module doesn't configure failover cluster instances yet.
   seealso:
     - module: git_cgallagher.windows.mssql_info

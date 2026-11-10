@@ -150,7 +150,10 @@ their phases and the owner's decisions of 2026-11-01). Its roles:
   when allowed, configures the network (restarting when it installed the
   instance in the run, from `mssql_setup`'s `setup.action`, or with
   `mssql_allow_restart`), reads the instance back and requires a sysadmin
-  connection. `mssql_network` never connects to SQL Server: it writes
+  connection, except under `mssql_encryption: strict` (Chris, 2026-11-10):
+  strict refuses .NET Framework's SqlClient over shared memory too, so the
+  role reads the instance without connecting and only requires it running
+  (`mssql_instance.server` is null). `mssql_network` never connects to SQL Server: it writes
   `SuperSocketNetLib` as SQL Server Configuration Manager does (values
   `ForceEncryption`, `ForceStrict`, `Certificate` lowercase without spaces;
   `Tcp\IPAll` `TcpPort` and `TcpDynamicPorts`), reuses each value's kind,
@@ -255,10 +258,12 @@ role):
   the firewall rule, the key's readers), searches setup's
   `ConfigurationFile.ini` files for the engine's password, probes the
   instance from dc01 (`client.ps1`: Kerberos, a checked certificate, forced
-  encryption, a TDS PRELOGIN), turns strict on and logs what it does to the
-  Agent, to SqlClient and to dc01's probes, turns mandatory back on, runs
-  the role report-only, then the `mssql_info`, `mssql_network` and
-  `mssql_setup` integration targets through `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
+  encryption, a TDS PRELOGIN), runs the role with strict (it skips its SQL
+  Server checks; checks the Agent stopped, SqlClient refused over shared
+  memory, and from dc01 only a TLS-first client getting in) and with
+  mandatory again, runs the role report-only, then the `mssql_info`,
+  `mssql_network` and `mssql_setup` integration targets through
+  `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
   extends and uninstalls a named instance of its own (ITEST) from a UNC path
   (an SMB share of the role's cache on sql01 itself) and reboots first
   whenever Windows has a reboot pending (once in the first green run, before
@@ -390,6 +395,10 @@ Not covered by the lab yet (issue #16 unless noted):
   through probes that need none), `mssql_network` on a named instance (the
   SQL Server Browser rule), and the role's `validate` entry point from the
   plan (a Kerberos and encryption check from a client), not built yet.
+  **A TDS 8.0 client for the modules** (ODBC Driver 18, which 2025's setup
+  installs, or OLE DB 19.2+): without one, under strict nothing in this
+  collection can connect to the instance, so 3c's `sp_configure` and the AG
+  modules won't work on a strict instance.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
@@ -780,6 +789,18 @@ ansible-galaxy collection build --force
   writes the script block's properties instead. `mssql_network` loops over
   `$write`, and its Pester wiring test fails on either name inside an
   `Invoke-Change` call (caught in review, 0.23.0).
+- **Force Strict Encryption on SQL Server 2022 shuts out every client
+  without TDS 8.0, over shared memory as well as TCP** (PR #73's lab,
+  2026-11-07, 2022 RTM). `mssql_info`'s System.Data.SqlClient connection over
+  `lpc:` failed "during the pre-login handshake (provider: Shared Memory
+  Provider, error: 0 - No process is on the other end of the pipe.)", and the
+  errorlog logged "configured to accept only strict (TDS 8.0 and above)
+  connections" for each try. SQL Server Agent (2022's has no TDS 8.0) retried
+  for about 16 seconds, then stopped; a 10-second watch after its start still
+  saw it running, so `mssql_network` watches 40 seconds under strict. From
+  dc01 a TDS 7.x PRELOGIN got no answer at all. A TLS-first handshake (what a
+  TDS 8.0 client sends) succeeded under mandatory as well as strict, so a
+  successful TLS handshake doesn't prove strict; the unanswered PRELOGIN does.
 - **`Set-NetFirewallRule -DisplayName` selects the rules to change; it
   doesn't rename.** With `-Name` as well it fails to resolve a parameter set.
   Rename with `-NewDisplayName` (`mssql_network`, 0.23.0).

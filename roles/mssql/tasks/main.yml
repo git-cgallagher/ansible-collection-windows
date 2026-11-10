@@ -98,9 +98,13 @@
   register: mssql__network
   when: not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))
 
+# Under strict encryption SQL Server takes only TDS 8.0 clients, over shared
+# memory too, and mssql_info's .NET Framework SqlClient isn't one: the role
+# reads the instance from the registry and its services only.
 - name: Read the instance
   git_cgallagher.windows.mssql_info:
     instance_name: "{{ mssql_instance_name }}"
+    connect: "{{ mssql_encryption != 'strict' }}"
   register: mssql__info
   vars: *mssql_become_vars
   become: "{{ mssql_become_user | length > 0 }}"
@@ -126,6 +130,31 @@
       {{ 'not installed' if mssql_instance is none else
          'not running' if mssql_instance.server is none else
          ('no connection: ' ~ mssql_instance.server.connection_error) if not mssql_instance.server.connected else
-         (mssql_instance.server.login ~ ' is not a sysadmin') }}
+         (mssql_instance.server.login ~ ' is not a sysadmin') }}{{
+         ' (its network settings wait for a restart, so it may still run with the earlier ones)'
+         if mssql__network.restart_required | default(false) else '' }}
     quiet: true
-  when: not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))
+  when:
+    - mssql_encryption != 'strict'
+    - not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))
+
+- name: Say the role skips its SQL Server checks under strict encryption
+  ansible.builtin.debug:
+    msg: >-
+      mssql_encryption is strict, so the role doesn't connect to instance {{ mssql_instance_name }}: .NET Framework's
+      System.Data.SqlClient has no TDS 8.0. It checks only that the instance runs, and mssql_instance.server is null.
+  when: mssql_encryption == 'strict'
+
+- name: Require the instance running (strict encryption)
+  ansible.builtin.assert:
+    that:
+      - mssql_instance is not none
+      - mssql_instance.services.engine is not none
+      - mssql_instance.services.engine.state == 'running'
+    fail_msg: >-
+      Instance {{ mssql_instance_name }} on {{ inventory_hostname }}:
+      {{ 'not installed' if mssql_instance is none else 'its engine is ' ~ (mssql_instance.services.engine.state | default('missing')) }}
+    quiet: true
+  when:
+    - mssql_encryption == 'strict'
+    - not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))

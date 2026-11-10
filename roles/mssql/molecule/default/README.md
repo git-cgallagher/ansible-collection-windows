@@ -28,8 +28,8 @@ the owner's agreement (2026-11-06), and the ISO is never uploaded or published.
 | | Search setup's `ConfigurationFile.ini` files | None holds the engine's password |
 | | Read the instance's network | Force Encryption on, Force Strict off, the certificate bound and loaded (errorlog), port 1433 static and listening, the firewall rule, read access to the key for `NT SERVICE\MSSQLSERVER` and the engine's account |
 | | From `dc01`, as a domain account, `client.ps1` | A SqlClient connection over TCP uses Kerberos and is encrypted, with the certificate checked; one that doesn't ask for encryption is encrypted too; a TDS PRELOGIN gets a TDS answer |
-| | Turn strict encryption on with `mssql_network`, read the instance with `mssql_info`, probe from `dc01` again | `mssql_network`'s own claims (restarted, strict set, the certificate loaded); what strict does to SQL Server Agent, to `mssql_info`'s SqlClient connection and to `dc01`'s probes is logged, not asserted, until a lab has shown it |
-| | Turn mandatory back on | SQL Server Agent runs again |
+| | Run the role with strict encryption (`mssql_allow_restart`), read the instance with `mssql_info`, probe from `dc01` again | The role sets strict, restarts, skips its SQL Server checks (`mssql_instance.server` null); `mssql_network` warns about strict and SQL Server 2022's Agent; the Agent is stopped; `mssql_info`'s SqlClient connection fails in the pre-login handshake over shared memory; from `dc01` a TLS-first handshake gets the certificate, while a TDS 7.x PRELOGIN gets no answer and SqlClient is refused |
+| | Run the role with mandatory again (`mssql_allow_restart`) | The role connects again; SQL Server Agent runs again |
 | | Run the role report-only | It plans nothing (setup or network), and reads the features asked for |
 | | The `mssql_info` target | Its result's shape and values against the instance (encryption included); the instance and connection options; a local account that is no login gets a reported, not raised, failure |
 | | The `mssql_network` target | Nine refusals, which write nothing; a port moved without a restart (pending, on a second run too) and then restarted into; encryption through optional, mandatory (with a certificate the target makes) and strict, each in check mode, for real and again; the instance put back as it was |
@@ -39,4 +39,4 @@ Not covered: SQL Server 2025 (whose Agent supports strict), Standard and
 Enterprise media, a cumulative update folder, an Evaluation install, setup on
 a host without `become`, and a client with a TDS 8.0 driver (Windows Server
 2022 has none in the box, so strict is checked from what `dc01` can see
-without one).
+without one: a raw TLS handshake and a TDS 7.x PRELOGIN).

@@ -763,3 +763,15 @@ Describe 'Restarts and the engine''s identity' {
         Get-MssqlServiceSidName 'INST1' | Should -Be 'NT SERVICE\MSSQL$INST1'
     }
 }
+
+Describe 'Get-MssqlStrictNotice' {
+    It 'names SQL Server Agent only on 2022' {
+        $notice2022 = Get-MssqlStrictNotice -Version '2022'
+        $notice2022 | Should -Match 'System\.Data\.SqlClient'
+        $notice2022 | Should -Match 'shared memory'
+        $notice2022 | Should -Match "2022's SQL Server Agent"
+        $notice2025 = Get-MssqlStrictNotice -Version '2025'
+        $notice2025 | Should -Match 'System\.Data\.SqlClient'
+        $notice2025 | Should -Not -Match 'Agent'
+    }
+}

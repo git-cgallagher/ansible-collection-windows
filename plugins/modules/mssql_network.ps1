@@ -329,9 +329,11 @@ function Get-ServiceStateText {
 # Restarts the engine, waits for "ready for client connections" in its new
 # errorlog, then starts the services that stopped with it (SQL Server Agent
 # depends on the engine) and an Agent set to start automatically. An Agent
-# that won't start is reported, not raised: the network change is done.
+# that won't start, or stops again, is reported, not raised: the network
+# change is done. Under strict, SQL Server 2022's Agent retries for about 16
+# seconds before it stops, so the watch is longer then.
 function Restart-Engine {
-    param([string]$EngineName, [string]$AgentName, [string]$ErrorLogPath)
+    param([string]$EngineName, [string]$AgentName, [string]$ErrorLogPath, [bool]$Strict)
     $engineService = Get-Service -Name $EngineName
     $dependents = @($engineService.DependentServices | Where-Object { [string]$_.Status -eq 'Running' } | ForEach-Object { $_.Name })
     $agent = (Get-MssqlServiceState -Name $AgentName)[$AgentName]
@@ -371,8 +373,13 @@ function Restart-Engine {
             continue
         }
         # A service that can't reach SQL Server can start and then stop.
-        Start-Sleep -Seconds 10
-        $state = Get-ServiceStateText $name
+        $window = 10
+        if ($Strict) { $window = 40 }
+        $watchEnd = (Get-Date).AddSeconds($window)
+        do {
+            Start-Sleep -Seconds 2
+            $state = Get-ServiceStateText $name
+        } until ($state -ne 'running' -or (Get-Date) -gt $watchEnd)
         if ($state -ne 'running') { Add-Notice "$name stopped again after it started (state: $state); its log says why" }
     }
 }
@@ -448,6 +455,11 @@ function Invoke-Main {
     }
     $registryChanged = @($plan.Changes).Count -gt 0
     if ($registryChanged -and -not $checkMode) { $script:registry = (Read-NetworkRegistry $base).Current }
+    # Turning strict on shuts out more than clients without TDS 8.0 expect.
+    $turnsStrictOn = @($plan.Changes | Where-Object { $_.Name -eq 'ForceStrict' -and $_.Value -eq 1 }).Count -gt 0
+    if ($turnsStrictOn) { Add-Notice (Get-MssqlStrictNotice -Version $version) }
+    $modeBefore = ConvertTo-MssqlEncryptionMode -ForceEncryption $registry.Current.ForceEncryption -ForceStrict $registry.Current.ForceStrict
+    $strictAfter = $encryption -eq 'strict' -or (-not $encryption -and $modeBefore -eq 'strict')
 
     # The firewall: the instance's static ports, as they are after the writes.
     if ($firewall) {
@@ -468,7 +480,7 @@ function Invoke-Main {
     if ($null -ne $startedAt -and ($registryChanged -or $pending)) {
         if ($restart) {
             Invoke-Change "restart $engineName so the network settings take effect" {
-                Restart-Engine -EngineName $engineName -AgentName $agentName -ErrorLogPath $errorLogPath
+                Restart-Engine -EngineName $engineName -AgentName $agentName -ErrorLogPath $errorLogPath -Strict $strictAfter
                 if (Test-Path -LiteralPath $markerPath) { Remove-Item -LiteralPath $markerPath -Force }
             }
         }

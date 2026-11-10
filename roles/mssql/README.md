@@ -114,12 +114,20 @@ The module grants read access to the private key to the engine's per-service
 SID (`NT SERVICE\MSSQLSERVER`), which the service has whatever account it runs
 as, and to that account.
 
+**Strict refuses every client without TDS 8.0**, over shared memory as well
+as TCP (the lab showed both). That includes .NET Framework's
+System.Data.SqlClient, which this collection's modules connect with. So under
+`strict` the role doesn't connect to the instance: it checks only that the
+instance runs, and `mssql_instance.server` is null. Later SQL Server steps
+that need a connection (`sp_configure`, availability groups) can't run under
+strict until the modules have a TDS 8.0 client. Clients need a current driver
+(Microsoft.Data.SqlClient 5.1, ODBC 18.1.2.1, OLE DB 19.2, JDBC 11.2 or
+later).
+
 **Strict on SQL Server 2022.** 2022 supports strict on standalone instances
-only, and its SQL Server Agent doesn't speak TDS 8.0, so under strict the
-Agent can't connect and stops. Every other TDS 7.x client is refused too,
-among them .NET Framework's System.Data.SqlClient, which this role's own
-reads use. 2025's Agent supports strict. Clients need a current driver
-(Microsoft.Data.SqlClient 5.1, ODBC 18.1.2.1, OLE DB 19.2, JDBC 11.2 or later).
+only, and its SQL Server Agent has no TDS 8.0: under strict it retries for
+about 16 seconds, then stops (`mssql_network` warns when it turns strict on,
+and reports the Agent stopping). 2025's Agent supports strict.
 
 ## Running setup over WinRM
 

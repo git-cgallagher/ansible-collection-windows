@@ -26,7 +26,15 @@ A standalone instance's network: phase 3b of issue #48.
   and restarts the engine when it installed the instance in the same run or
   `mssql_allow_restart` is set; otherwise it warns that a restart is
   pending. `tasks/plan.yml` refuses `mandatory` or `strict` without a
-  certificate, and a port out of range.
+  certificate, and a port out of range. Under `strict` the role doesn't
+  connect to the instance (strict refuses .NET Framework's SqlClient, over
+  shared memory too): it checks only that the instance runs, and
+  `mssql_instance.server` is null (Chris, 2026-11-10).
+- Strict encryption on SQL Server 2022, as the lab showed: SQL Server Agent
+  can't connect and stops after about 16 seconds of retries, and every TDS
+  7.x client is refused over shared memory as well as TCP. `mssql_network`
+  warns when it turns strict on, and after a restart under strict watches
+  the Agent for 40 seconds and reports it stopping.
 - `mssql_info`: `encryption` adds `mode` and `force_strict`, and the
   certificate thumbprint comes back lowercase without spaces.
 - `mssql_setup`: `setup` adds `action` (`Install`, `AddFeatures` or
@@ -37,7 +45,10 @@ A standalone instance's network: phase 3b of issue #48.
   strict with certificates it makes); the `mssql` scenario issues sql01 a
   certificate from a lab root CA, installs with mandatory encryption, and
   checks from dc01 that a TCP connection uses Kerberos, trusts the
-  certificate and is encrypted even when the client doesn't ask.
+  certificate and is encrypted even when the client doesn't ask. It then
+  runs the role with strict (the role skips its SQL Server checks; the
+  Agent stops; from dc01 only a TLS-first client gets in) and with mandatory
+  again.
 
 ## 0.22.0 — 2026-11-06
 

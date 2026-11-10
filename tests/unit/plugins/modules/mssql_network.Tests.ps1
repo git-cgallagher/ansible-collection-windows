@@ -37,6 +37,11 @@ Describe 'mssql_network''s wiring' {
         $plan | Should -BeGreaterThan $check
     }
 
+    It 'warns when it turns strict on, and watches the Agent longer under strict' {
+        $script:text | Should -Match 'if \(\$turnsStrictOn\) \{ Add-Notice \(Get-MssqlStrictNotice -Version \$version\) \}'
+        $script:text | Should -Match '-Strict \$strictAfter'
+    }
+
     It 'requires a certificate for mandatory and strict' {
         $script:text | Should -Match "@\('encryption', 'mandatory', @\('certificate_thumbprint'\)\)"
         $script:text | Should -Match "@\('encryption', 'strict', @\('certificate_thumbprint'\)\)"
