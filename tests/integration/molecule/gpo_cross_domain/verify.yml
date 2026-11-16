@@ -95,7 +95,7 @@
       SourceJson: "{{ lab_xd_src | to_json }}"
       TargetJson: "{{ lab_xd_dst | to_json }}"
     # The matrix the lab observed (run 42293538842, 2026-11-06; the local-admins
-    # and deny-logon rows since 0.23.0), which docs/gpo-cross-domain.md explains
+    # and deny-logon rows since 0.24.0), which docs/gpo-cross-domain.md explains
     # row by row.
     lab_xd_expected:
       XD - Admin Templates: pass

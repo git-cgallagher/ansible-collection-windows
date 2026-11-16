@@ -351,7 +351,7 @@ forests (`src.example.test`/SRCDC01, `dst.example.test`/DSTDC01) with no
 trust, DNS forwarding or network between them. prepare authors 19 GPOs on
 src, one per kind of setting (Admin Templates, security settings with and
 without principals, local admins through Restricted Groups' Member Of and
-deny-logon rights (0.23.0), scripts, folder redirection, four GPP kinds, a
+deny-logon rights (0.24.0), scripts, folder redirection, four GPP kinds, a
 custom ADMX, a firewall rule, a hard-coded server, a WMI filter, security
 filtering), checks each in src's own report and SYSVOL, and builds a GPMC
 migration table (groups mapped by relative name, UNC paths to dst's server),
@@ -1103,6 +1103,18 @@ ansible-galaxy collection build --force
   main's), so `gh release create` fails with HTTP 403 "Resource not
   accessible by integration": Galaxy still gets the version, but the GitHub
   release is lost. Learned on ansible-collection-isc 1.3.1 (2026-10-28).
+- **When another PR takes your version, merge `main` in and bump before
+  merging.** The `version-bump` check doesn't run again when `main` moves,
+  and "main protection" doesn't require a branch to be up to date, so a PR
+  whose version another merge took still shows it green. `galaxy.yml` merges
+  cleanly when both PRs made the same one-line change: the CHANGELOG
+  conflict is the only warning, and resolving it without a bump is the trap.
+  A PR merged at a version Galaxy already has reaches `main` unreleased:
+  `release.yml` finds the version on Galaxy and its `v<version>` release
+  already made, publishes nothing and still ends green. Merge `main` into the
+  branch, then move the PR to the next version: `galaxy.yml`, its CHANGELOG
+  heading (above the other PR's), any `version_added` it introduces, and the
+  PR title (PR #72, after PR #73 took 0.23.0, 2026-11-16).
 - **The VM comes from the `molecule-git-cgallagher` driver**
   (`git-cgallagher/ansible-collection-molecule`, which started as this lab's
   `create.yml`/`destroy.yml`; the lab moved onto it on 2026-11-01). The base
