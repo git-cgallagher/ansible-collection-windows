@@ -128,9 +128,13 @@ RETURN:
         type: dict
         sample: {enabled: true, port: '1433', dynamic_ports: ''}
       encryption:
-        description: Whether C(force_encryption) is on, and the C(certificate) thumbprint bound to the instance.
+        description:
+          - The encryption C(mode) the registry sets (V(optional); V(mandatory), Force Encryption; V(strict), Force
+            Strict Encryption), whether C(force_encryption) and C(force_strict) are on, and the C(certificate)
+            thumbprint bound to the instance (lowercase, no spaces).
+          - C(mode) and C(force_strict) since 0.23.0.
         type: dict
-        sample: {force_encryption: false, certificate: ''}
+        sample: {mode: optional, force_encryption: false, force_strict: false, certificate: ''}
       services:
         description:
           - The instance's C(engine), C(agent) and C(fulltext) services, each with its C(name), C(state) (V(running),

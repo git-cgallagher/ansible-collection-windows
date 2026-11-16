@@ -1,18 +1,22 @@
 # git_cgallagher.windows.mssql
 
 Installs a **standalone SQL Server 2022 or 2025 instance** from an ISO, on
-each host in the play in parallel, and reads it back. It's the second role of
-this collection's SQL Server area, after
+each host in the play in parallel, configures its network (a static TCP port,
+a certificate, an encryption mode, firewall rules) and reads it back. It's the
+second role of this collection's SQL Server area, after
 [`mssql_prereqs`](../mssql_prereqs/README.md), which creates the service
 accounts and SPNs this role installs SQL Server under. The plan for the rest
-(static ports, certificates and encryption; `sp_configure`; failover cluster
-instances; `mssql_ag` for availability groups) is tracked in
+(`sp_configure`; failover cluster instances; `mssql_ag` for availability
+groups) is tracked in
 [issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48).
 
-The work happens in two modules, which you can use on their own:
+The work happens in three modules, which you can use on their own:
 
 - [`mssql_setup`](../../plugins/modules/mssql_setup.yml) stages and mounts the
   ISO, checks it's the version and edition asked for, and runs `setup.exe`;
+- [`mssql_network`](../../plugins/modules/mssql_network.yml) sets the port,
+  the certificate, the encryption mode and the firewall rules, and restarts
+  the engine when allowed;
 - [`mssql_info`](../../plugins/modules/mssql_info.yml) reads the instances
   back, from the registry and services and from SQL Server itself.
 
@@ -34,7 +38,14 @@ The work happens in two modules, which you can use on their own:
    the copy while its checksum matches.
 4. **Reboot** when setup asks for one (exit code 3010), if
    `mssql_allow_reboot` lets it; otherwise fail and say so.
-5. **Read the instance back** with `mssql_info`, publish it as the
+5. **Configure the network** with `mssql_network`: the port, the certificate
+   and its key's read access, the encryption mode, the firewall rules. It
+   refuses a certificate SQL Server can't load before it writes anything. The
+   settings take effect when the engine restarts: the role restarts it when
+   it installed the instance in the same run, or with `mssql_allow_restart`;
+   otherwise it warns that a restart is pending, and keeps warning on later
+   runs until the engine has restarted.
+6. **Read the instance back** with `mssql_info`, publish it as the
    `mssql_instance` fact, and fail unless it runs and the role's account is a
    `sysadmin` there: the account later steps manage it as.
 
@@ -77,6 +88,47 @@ Setup runs with `/UpdateEnabled=False` unless `mssql_update_source` names a
 folder of cumulative updates to slipstream: it never reaches Microsoft Update.
 TCP/IP is always enabled (the Developer editions install with it off).
 
+## Certificates and encryption
+
+| `mssql_encryption` | SQL Server's setting | Clients |
+|---|---|---|
+| `optional` (default) | neither flag | may ask for encryption |
+| `mandatory` | Force Encryption | every connection is encrypted (TDS 7.x over TLS), even a client's that doesn't ask |
+| `strict` | Force Strict Encryption | TDS 8.0 only: TLS before any TDS traffic, and the client always checks the certificate |
+
+`mandatory` and `strict` need `mssql_certificate_thumbprint`, a certificate in
+the computer's personal store (`Cert:\LocalMachine\My`) that SQL Server can
+load, which the module checks before it writes anything (Microsoft's
+[certificate requirements](https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/certificate-requirements)):
+
+- valid now, with Server Authentication (1.3.6.1.5.5.7.3.1) in its enhanced
+  key usage;
+- its private key in a **legacy CSP** (for example *Microsoft RSA SChannel
+  Cryptographic Provider*) as a **key exchange key** (KeySpec 1). A key in a
+  CNG key storage provider, the default for many templates and for
+  `New-SelfSignedCertificate`, won't load;
+- subject alternative names that cover every name clients connect by (the
+  module warns when none covers the host's FQDN).
+
+The module grants read access to the private key to the engine's per-service
+SID (`NT SERVICE\MSSQLSERVER`), which the service has whatever account it runs
+as, and to that account.
+
+**Strict refuses every client without TDS 8.0**, over shared memory as well
+as TCP (the lab showed both). That includes .NET Framework's
+System.Data.SqlClient, which this collection's modules connect with. So under
+`strict` the role doesn't connect to the instance: it checks only that the
+instance runs, and `mssql_instance.server` is null. Later SQL Server steps
+that need a connection (`sp_configure`, availability groups) can't run under
+strict until the modules have a TDS 8.0 client. Clients need a current driver
+(Microsoft.Data.SqlClient 5.1, ODBC 18.1.2.1, OLE DB 19.2, JDBC 11.2 or
+later).
+
+**Strict on SQL Server 2022.** 2022 supports strict on standalone instances
+only, and its SQL Server Agent has no TDS 8.0: under strict it retries for
+about 16 seconds, then stops (`mssql_network` warns when it turns strict on,
+and reports the Agent stopping). 2025's Agent supports strict.
+
 ## Running setup over WinRM
 
 Set `mssql_become_user` (with `mssql_become_password`). Setup then runs
@@ -107,6 +159,11 @@ Every variable is documented in `meta/argument_specs.yml`
 | `mssql_instant_file_init` | `true` | instant file initialization for the engine's account |
 | `mssql_paths` | `{}` | `instance_dir`, `data_root`, `data`, `log`, `backup`, `tempdb_data`, `tempdb_log` |
 | `mssql_tempdb` | `{}` | `file_count`, `file_size_mb`, `file_growth_mb`, `log_size_mb`, `log_growth_mb` |
+| `mssql_tcp_port` | `1433` | the static TCP port; dynamic ports off |
+| `mssql_encryption` | `optional` | `optional`, `mandatory` or `strict` (see above) |
+| `mssql_certificate_thumbprint` | `''` | the certificate `mandatory` and `strict` need; `''` leaves the binding as it is |
+| `mssql_firewall` | `true` | inbound rules for the port (and SQL Server Browser for a named instance) |
+| `mssql_allow_restart` | `false` | restart an instance the role didn't install in the same run, for a network change |
 | `mssql_become_user` / `_password` | `''` | the `runas` account setup and the reads run as |
 | `mssql_allow_reboot` | `false` | reboot before or after setup when needed |
 | `mssql_report_only` | `false` | plan only |
@@ -146,6 +203,8 @@ Every variable is documented in `meta/argument_specs.yml`
         mssql_sysadmins: [EXAMPLE\GG-SQL-Admins]
         mssql_paths: {data: 'D:\MSSQL\Data', log: 'L:\MSSQL\Log', backup: 'B:\MSSQL\Backup', tempdb_data: 'T:\MSSQL\TempDB'}
         mssql_tempdb: {file_count: 8, file_size_mb: 1024}
+        mssql_encryption: mandatory
+        mssql_certificate_thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
         mssql_become_user: EXAMPLE\svc-ansible
         mssql_become_password: "{{ vault_svc_ansible }}"
         mssql_allow_reboot: true
@@ -155,6 +214,8 @@ Every variable is documented in `meta/argument_specs.yml`
 
 The Molecule scenario `molecule/default` (see its README) boots a domain
 controller and a SQL Server host, creates the accounts with `mssql_prereqs`,
-installs SQL Server 2022 Developer from Microsoft's ISO with this role, and
-runs the modules' integration targets. CI runs it in the `domain-lab`
+issues the host a certificate from a lab root CA, installs SQL Server 2022
+Developer from Microsoft's ISO with this role (encryption mandatory), checks
+from the domain controller that a connection uses Kerberos and trusts the
+certificate, and runs the modules' integration targets. CI runs it in the `domain-lab`
 workflow. SQL Server 2025, Standard and Enterprise media aren't lab-tested yet.

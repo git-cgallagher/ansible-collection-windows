@@ -1,0 +1,63 @@
+---
+# Included by main.yml once per change (net_step): reads the instance, runs
+# mssql_network with the step's options in check mode, reads it again, runs
+# it for real, reads it, and runs it once more. Check mode must predict the
+# change and write nothing; the run must make it; the repeat must find
+# nothing to do. main.yml checks what the run made.
+- name: "Read the instance before: {{ net_step.name }}"
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters: {InstanceName: "{{ net_instance }}", Query: false}
+    depth: 5
+  register: net_step_before
+
+- name: "Run mssql_network in check mode: {{ net_step.name }}"
+  git_cgallagher.windows.mssql_network: &net_step_options
+    instance_name: "{{ net_instance }}"
+    tcp_port: "{{ net_step.tcp_port | default(omit) }}"
+    encryption: "{{ net_step.encryption | default(omit) }}"
+    certificate_thumbprint: "{{ net_step.certificate | default(omit) }}"
+    firewall: "{{ net_step.firewall | default(omit) }}"
+    restart: "{{ net_step.restart | default(true) }}"
+  check_mode: true
+  register: net_check
+
+- name: "Read the instance after check mode: {{ net_step.name }}"
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters: {InstanceName: "{{ net_instance }}", Query: false}
+    depth: 5
+  register: net_check_state
+
+- name: "{{ net_step.name }}"
+  git_cgallagher.windows.mssql_network: *net_step_options
+  register: net_real
+
+- name: "Read the instance after: {{ net_step.name }}"
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters: {InstanceName: "{{ net_instance }}", Query: false, Thumbprint: "{{ net_step.certificate | default('') }}"}
+    depth: 5
+  register: net_state
+
+- name: "Run mssql_network again: {{ net_step.name }}"
+  git_cgallagher.windows.mssql_network: *net_step_options
+  register: net_again
+
+- name: "Check check mode predicted without a write, the run made it, the repeat did nothing: {{ net_step.name }}"
+  ansible.builtin.assert:
+    that:
+      - net_check is changed
+      - net_check.actions | length == net_real.actions | length
+      - not net_check.restarted
+      - net_check_state.output[0].netlib == net_step_before.output[0].netlib
+      - net_check_state.output[0].tcp_all == net_step_before.output[0].tcp_all
+      - net_check_state.output[0].tcp == net_step_before.output[0].tcp
+      - net_check_state.output[0].firewall == net_step_before.output[0].firewall
+      - net_check_state.output[0].errorlog.process_id == net_step_before.output[0].errorlog.process_id
+      - net_real is changed
+      - net_real.restarted == (net_step.restart | default(true))
+      - net_again is not changed
+      - not net_again.restarted
+      - net_state.output[0].services.engine.state == 'Running'
+    fail_msg: "check mode {{ net_check | to_json }}; run {{ net_real | to_json }}; again {{ net_again | to_json }}"

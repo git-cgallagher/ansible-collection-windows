@@ -311,8 +311,9 @@ function Read-TextFile {
 # is success with a reboot required. On failure, setup's Summary.txt says
 # why.
 function Invoke-Setup {
-    param([string]$SetupPath, [object[]]$Arguments, [string]$LogRoot)
+    param([string]$SetupPath, [object[]]$Arguments, [string]$LogRoot, [string]$Action)
     $script:setup = @{
+        action = $Action
         command = '"{0}" {1}' -f $SetupPath, (Format-MssqlSetupArgument -Arguments $Arguments -Redact)
         exit_code = $null
         summary_path = $LogRoot + '\Summary.txt'
@@ -400,7 +401,7 @@ function Invoke-Install {
         $argumentProblem = Get-MssqlSetupArgumentProblem -Arguments $arguments
         if ($argumentProblem) { throw $argumentProblem }
         $logRoot = (Get-MssqlSetupBootstrap -Version $params.version -ProgramFiles $env:ProgramFiles).Log
-        Invoke-Setup -SetupPath ($mount.Root + 'setup.exe') -Arguments $arguments -LogRoot $logRoot
+        Invoke-Setup -SetupPath ($mount.Root + 'setup.exe') -Arguments $arguments -LogRoot $logRoot -Action $Action
     }
     finally {
         if ($mount.Mounted) { $null = Dismount-DiskImage -ImagePath $iso }
@@ -429,7 +430,7 @@ function Invoke-Uninstall {
     $installedFeatures = @($Installed.features)
     Invoke-Change "uninstall instance $instanceName (features $($installedFeatures -join ', '))" {
         $arguments = Get-MssqlSetupArgument -Action 'Uninstall' -Options @{ InstanceName = $instanceName; Features = $installedFeatures }
-        Invoke-Setup -SetupPath $bootstrap.Setup -Arguments $arguments -LogRoot $bootstrap.Log
+        Invoke-Setup -SetupPath $bootstrap.Setup -Arguments $arguments -LogRoot $bootstrap.Log -Action 'Uninstall'
         if ($null -ne (Get-InstanceFact)) { throw "Setup exited with $($script:setup.exit_code), but instance $instanceName is still installed" }
     }
 }

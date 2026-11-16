@@ -1,9 +1,10 @@
 ---
 # Installs a standalone SQL Server instance on each host in the play, in
-# parallel, then reads it back. plan.yml checks the variables first without
-# touching a host; the mssql_setup module plans and runs setup (checking the
-# host and the media first); mssql_info reads the instance and publishes it as
-# mssql_instance.
+# parallel, configures its network, then reads it back. plan.yml checks the
+# variables first without touching a host; the mssql_setup module plans and
+# runs setup (checking the host and the media first); mssql_network sets the
+# port, encryption, certificate and firewall rules; mssql_info reads the
+# instance and publishes it as mssql_instance.
 - name: Check the variables
   ansible.builtin.import_tasks: plan.yml
 
@@ -80,9 +81,30 @@
     - mssql__setup.reboot_required | default(false)
     - not mssql_allow_reboot | bool
 
+# The settings take effect when the engine restarts. The role restarts it when
+# it installed the instance in this run, or with mssql_allow_restart;
+# otherwise the module warns that a restart is pending (and keeps saying so on
+# later runs until the engine has restarted). A check-mode run that would
+# install the instance has nothing to configure yet.
+- name: Configure the network (TCP port, encryption and its certificate, firewall)
+  git_cgallagher.windows.mssql_network:
+    instance_name: "{{ mssql_instance_name }}"
+    tcp_port: "{{ mssql_tcp_port | int }}"
+    encryption: "{{ mssql_encryption }}"
+    certificate_thumbprint: "{{ mssql_certificate_thumbprint | default(omit, true) }}"
+    firewall: "{{ mssql_firewall | bool }}"
+    restart: "{{ (mssql__setup.setup | default({}, true)).action | default('') == 'Install' or mssql_allow_restart | bool }}"
+  check_mode: "{{ mssql_report_only | bool or ansible_check_mode }}"
+  register: mssql__network
+  when: not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))
+
+# Under strict encryption SQL Server takes only TDS 8.0 clients, over shared
+# memory too, and mssql_info's .NET Framework SqlClient isn't one: the role
+# reads the instance from the registry and its services only.
 - name: Read the instance
   git_cgallagher.windows.mssql_info:
     instance_name: "{{ mssql_instance_name }}"
+    connect: "{{ mssql_encryption != 'strict' }}"
   register: mssql__info
   vars: *mssql_become_vars
   become: "{{ mssql_become_user | length > 0 }}"
@@ -108,6 +130,31 @@
       {{ 'not installed' if mssql_instance is none else
          'not running' if mssql_instance.server is none else
          ('no connection: ' ~ mssql_instance.server.connection_error) if not mssql_instance.server.connected else
-         (mssql_instance.server.login ~ ' is not a sysadmin') }}
+         (mssql_instance.server.login ~ ' is not a sysadmin') }}{{
+         ' (its network settings wait for a restart, so it may still run with the earlier ones)'
+         if mssql__network.restart_required | default(false) else '' }}
     quiet: true
-  when: not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))
+  when:
+    - mssql_encryption != 'strict'
+    - not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))
+
+- name: Say the role skips its SQL Server checks under strict encryption
+  ansible.builtin.debug:
+    msg: >-
+      mssql_encryption is strict, so the role doesn't connect to instance {{ mssql_instance_name }}: .NET Framework's
+      System.Data.SqlClient has no TDS 8.0. It checks only that the instance runs, and mssql_instance.server is null.
+  when: mssql_encryption == 'strict'
+
+- name: Require the instance running (strict encryption)
+  ansible.builtin.assert:
+    that:
+      - mssql_instance is not none
+      - mssql_instance.services.engine is not none
+      - mssql_instance.services.engine.state == 'running'
+    fail_msg: >-
+      Instance {{ mssql_instance_name }} on {{ inventory_hostname }}:
+      {{ 'not installed' if mssql_instance is none else 'its engine is ' ~ (mssql_instance.services.engine.state | default('missing')) }}
+    quiet: true
+  when:
+    - mssql_encryption == 'strict'
+    - not (mssql__setup is changed and (mssql_report_only | bool or ansible_check_mode))

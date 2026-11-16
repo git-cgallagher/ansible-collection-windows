@@ -44,6 +44,10 @@ provisioner:
         # box's vagrant account became a domain admin when dc01 was promoted.
         lab_admin_user: "vagrant@{{ lab_domain }}"
         lab_admin_password: vagrant
+        # prepare.yml issues sql01's server certificate from a lab root CA
+        # that sql01 and dc01 trust; converge.yml and verify.yml find its
+        # thumbprint, new every lab, by this friendly name.
+        lab_cert_name: mssql lab server
         lab_mssql:
           # Throwaway lab password (the VMs are reachable only on the
           # runner's loopback); it meets the default domain password policy.
@@ -87,6 +91,8 @@ provisioner:
         mssql_agent_account: "{{ lab_netbios }}\\{{ lab_mssql.agent_gmsa }}$$"
         mssql_sysadmins: ["{{ lab_netbios }}\\{{ lab_mssql.admins_group }}"]
         mssql_tempdb: {file_count: 2, file_size_mb: 64, file_growth_mb: 64, log_size_mb: 64, log_growth_mb: 64}
+        # mssql_certificate_thumbprint comes from converge.yml's lookup.
+        mssql_encryption: mandatory
         mssql_become_user: "{{ lab_admin_user }}"
         mssql_become_password: "{{ lab_admin_password }}"
         mssql_allow_reboot: true

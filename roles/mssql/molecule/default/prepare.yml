@@ -181,3 +181,108 @@
       ansible.builtin.assert:
         that: lab_dpapi_after.output[0].dpapi == 'ok'
         fail_msg: "Before the pin: {{ lab_dpapi_before.output[0] | to_json }}; after it: {{ lab_dpapi_after.output[0] | to_json }}"
+
+# The certificate SQL Server encrypts with, as Microsoft's "Certificate
+# requirements" asks: a legacy CSP key (Microsoft RSA SChannel Cryptographic
+# Provider) as a key exchange key (KeySpec 1), for server authentication,
+# naming the host. A lab root CA issues it, so a client that trusts the root
+# can check it the way strict encryption always does; sql01 and dc01 trust
+# the root, whose private key is deleted once it has signed.
+- name: Issue sql01's server certificate
+  hosts: lab_sql
+  gather_facts: false
+  tasks:
+    - name: Issue the certificate from a lab root CA
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name, [string[]]$DnsNames)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $my = 'Cert:\LocalMachine\My'
+          $rootSubject = 'CN=mssql lab root'
+          $leaf = @(Get-ChildItem -LiteralPath $my | Where-Object { $_.FriendlyName -eq $Name -and $_.NotAfter -gt (Get-Date).AddDays(1) })
+          if ($leaf.Count -eq 0) {
+              # Microsoft's Point-to-Site VPN root, as its docs make one.
+              $root = New-SelfSignedCertificate -Type Custom -Subject $rootSubject -CertStoreLocation $my -KeySpec Signature -KeyUsage CertSign `
+                  -KeyUsageProperty Sign -NotAfter (Get-Date).AddDays(30) -KeyLength 2048 -HashAlgorithm SHA256
+              $null = New-SelfSignedCertificate -Type Custom -Subject "CN=$($DnsNames[0])" -DnsName $DnsNames -Signer $root -CertStoreLocation $my `
+                  -FriendlyName $Name -Provider 'Microsoft RSA SChannel Cryptographic Provider' -KeySpec KeyExchange -KeyAlgorithm RSA -KeyLength 2048 `
+                  -HashAlgorithm SHA256 -KeyUsage KeyEncipherment, DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1') `
+                  -NotAfter (Get-Date).AddDays(30)
+              $store = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Store -ArgumentList @('Root', 'LocalMachine')
+              $store.Open('ReadWrite')
+              $store.Add((New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(, $root.RawData)))
+              $store.Close()
+              Remove-Item -LiteralPath ('{0}\{1}' -f $my, $root.Thumbprint) -DeleteKey
+              $Ansible.Changed = $true
+              $leaf = @(Get-ChildItem -LiteralPath $my | Where-Object { $_.FriendlyName -eq $Name })
+          }
+          $rootCert = @(Get-ChildItem -LiteralPath Cert:\LocalMachine\Root | Where-Object { $_.Subject -eq $rootSubject })[0]
+          $chain = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Chain
+          $chain.ChainPolicy.RevocationMode = 'NoCheck'
+          @{
+              thumbprint = $leaf[0].Thumbprint
+              root = [Convert]::ToBase64String($rootCert.RawData)
+              chain_ok = $chain.Build($leaf[0])
+              certutil = @(certutil -v -store My $leaf[0].Thumbprint |
+                      Where-Object { $_ -match 'KeySpec|Provider =|Key Usage|1\.3\.6\.1\.5\.5\.7\.3\.1|DNS Name' } | ForEach-Object { $_.Trim() })
+          }
+        parameters:
+          Name: "{{ lab_cert_name }}"
+          DnsNames: ["sql01.{{ lab_domain }}", sql01]
+      register: lab_cert
+
+    - name: Show the certificate as certutil reads it
+      ansible.builtin.debug:
+        var: lab_cert.output[0].certutil
+
+    - name: Require a key exchange key in a legacy CSP, and a chain to the lab root
+      ansible.builtin.assert:
+        that:
+          - lab_cert.output[0].chain_ok
+          - lab_cert.output[0].certutil | select('search', 'KeySpec = 1') | list | length > 0
+          - lab_cert.output[0].certutil | select('search', 'Microsoft RSA SChannel Cryptographic Provider') | list | length > 0
+        fail_msg: "{{ lab_cert.output[0] | to_json }}"
+
+# dc01 is the scenario's client (verify.yml): it reaches sql01 over the lab
+# network, by name, and checks sql01's certificate.
+- name: Let dc01 reach sql01 by name and trust its certificate
+  hosts: lab_dc
+  gather_facts: false
+  tasks:
+    - name: Trust the lab root CA
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Root)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $cert = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList @(, [Convert]::FromBase64String($Root))
+          if (-not (Test-Path -LiteralPath ('Cert:\LocalMachine\Root\' + $cert.Thumbprint))) {
+              $store = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Store -ArgumentList @('Root', 'LocalMachine')
+              $store.Open('ReadWrite')
+              $store.Add($cert)
+              $store.Close()
+              $Ansible.Changed = $true
+          }
+        parameters:
+          Root: "{{ hostvars[groups['lab_sql'][0]].lab_cert.output[0].root }}"
+
+    # sql01 registers its management address (10.0.2.15, every VM's) in DNS
+    # beside its lab address, as dc01 does (see prepare's DPAPI play): pin
+    # the lab one.
+    - name: Pin sql01's names to its lab address
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Address, [string[]]$Names)
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          $hostsFile = "$env:SystemRoot\System32\drivers\etc\hosts"
+          $entry = '{0} {1}' -f $Address, ($Names -join ' ')
+          if (@(Get-Content -LiteralPath $hostsFile) -notcontains $entry) {
+              Add-Content -LiteralPath $hostsFile -Value $entry
+              $Ansible.Changed = $true
+          }
+          Clear-DnsClientCache
+        parameters:
+          Address: "{{ hostvars[groups['lab_sql'][0]].lab_address }}"
+          Names: ["sql01.{{ lab_domain }}", sql01]

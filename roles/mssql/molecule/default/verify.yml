@@ -1,10 +1,15 @@
 ---
 # Checks the instance the role installed through setup_mssql's
-# instance_state.ps1 (the registry, the services and SqlClient, never the
-# modules), that setup kept the passwords out of its logs, and that a
-# report-only run of the role plans nothing; then runs the modules'
-# integration targets (tests/integration/targets) as roles.
-- name: Verify
+# instance_state.ps1 (the registry, the services, the errorlog, the firewall
+# and SqlClient, never the modules), that setup kept the passwords out of its
+# logs, and the network the role configured: from sql01 itself, and from dc01
+# over the lab network (client.ps1: Kerberos, the certificate dc01 trusts,
+# forced encryption). Then the role with strict encryption, which skips its
+# SQL Server checks, and what strict does on SQL Server 2022 (its Agent stops,
+# TDS 7.x clients are refused); the role with mandatory again; a report-only
+# run of the role that must plan nothing; and the modules' integration
+# targets (tests/integration/targets) as roles.
+- name: Verify the instance on sql01
   hosts: lab_sql
   gather_facts: false
   vars:
@@ -88,27 +93,252 @@
         fail_msg: "{{ lab_config_files.output[0].found }} of {{ lab_config_files.output[0].files }} ConfigurationFile.ini hold the password"
         quiet: true
 
+    - name: Find the lab's server certificate
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name)
+          $Ansible.Changed = $false
+          @(Get-ChildItem -LiteralPath Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq $Name })[0].Thumbprint.ToLowerInvariant()
+        parameters:
+          Name: "{{ lab_cert_name }}"
+      register: lab_cert_lookup
+
+    - name: Remember its thumbprint
+      ansible.builtin.set_fact:
+        lab_thumbprint: "{{ lab_cert_lookup.output[0] }}"
+
+    - name: Read the instance's network
+      ansible.windows.win_powershell:
+        script: "{{ lab_state_script }}"
+        parameters: {InstanceName: MSSQLSERVER, Query: false, Thumbprint: "{{ lab_thumbprint }}"}
+        depth: 5
+      register: lab_network
+
+    - name: Show the network settings, the errorlog's start and who may read the key
+      ansible.builtin.debug:
+        msg:
+          tcp: "{{ lab_network.output[0].tcp }}"
+          tcp_all: "{{ lab_network.output[0].tcp_all }}"
+          netlib: "{{ lab_network.output[0].netlib }}"
+          netlib_kinds: "{{ lab_network.output[0].netlib_kinds }}"
+          errorlog: "{{ lab_network.output[0].errorlog }}"
+          firewall: "{{ lab_network.output[0].firewall }}"
+          key_readers: "{{ lab_network.output[0].key_readers }}"
+
+    - name: Check the network the role configured
+      ansible.builtin.assert:
+        that:
+          - net.netlib.ForceEncryption == '1'
+          - net.netlib.ForceStrict | default('0') == '0'
+          - net.netlib.Certificate | lower == lab_thumbprint
+          - net.tcp_all.TcpPort == mssql_tcp_port | default(1433) | string
+          - net.tcp_all.TcpDynamicPorts == ''
+          - net.errorlog.certificate == lab_thumbprint
+          - net.errorlog.ports == [mssql_tcp_port | default(1433) | int]
+          - net.errorlog.ready
+          - net.firewall.enabled == 'True'
+          - net.firewall.direction == 'Inbound'
+          - net.firewall.action == 'Allow'
+          - net.firewall.protocol == 'TCP'
+          - net.firewall.ports == [mssql_tcp_port | default(1433) | string]
+          - "'nt service\\mssqlserver' in net.key_readers | map('lower') | list"
+          - mssql_engine_account | lower in net.key_readers | map('lower') | list
+        fail_msg: "{{ net | to_json }}"
+      vars:
+        net: "{{ lab_network.output[0] }}"
+
+# What a client on another host sees: Kerberos (the SPNs mssql_prereqs set on
+# the engine's account), the certificate it trusts for sql01's name, and
+# encryption forced even when the client doesn't ask.
+- name: Connect to sql01 from dc01, as a domain account
+  hosts: lab_dc
+  gather_facts: false
+  vars:
+    lab_client_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/client.ps1') }}"
+  tasks:
+    - name: Probe sql01's instance over TCP (encryption mandatory)
+      ansible.windows.win_powershell:
+        script: "{{ lab_client_script }}"
+        parameters:
+          Server: "sql01.{{ lab_domain }}"
+          Port: "{{ hostvars[groups['lab_sql'][0]].mssql_tcp_port | default(1433) | int }}"
+        depth: 5
+      register: lab_client_mandatory
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+
+    - name: Show what dc01 saw
+      ansible.builtin.debug:
+        var: lab_client_mandatory.output[0]
+
+    - name: Check Kerberos, a certificate dc01 trusts, and encryption forced
+      ansible.builtin.assert:
+        that:
+          - client.sql.encrypt.connected
+          - client.sql.encrypt.auth_scheme == 'KERBEROS'
+          - client.sql.encrypt.encrypt_option == 'TRUE'
+          - client.sql.encrypt.net_transport == 'TCP'
+          - client.sql.plain.connected
+          - client.sql.plain.encrypt_option == 'TRUE'
+          - client.prelogin.answered
+          - client.prelogin.first_bytes is match('04 01')
+        fail_msg: "{{ client | to_json }}"
+      vars:
+        client: "{{ lab_client_mandatory.output[0] }}"
+
+# Strict encryption, through the role. On SQL Server 2022 (the 2026-11-07
+# lab showed it) strict refuses every TDS 7.x client, over shared memory as
+# well as TCP, so the role skips its SQL Server checks; SQL Server Agent
+# can't connect either, and stops; dc01's TDS 7.x PRELOGIN gets no answer,
+# while a TLS-first (TDS 8.0) handshake succeeds.
+- name: Run the role with strict encryption
+  hosts: lab_sql
+  gather_facts: false
+  vars:
+    lab_state_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../../../tests/integration/targets/setup_mssql/files/instance_state.ps1') }}"
+  tasks:
+    - name: Run the role with strict encryption, letting it restart the instance
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql
+      vars:
+        mssql_encryption: strict
+        mssql_certificate_thumbprint: "{{ lab_thumbprint }}"
+        mssql_allow_restart: true
+
+    - name: Read the instance through mssql_info, connecting
+      git_cgallagher.windows.mssql_info:
+        instance_name: MSSQLSERVER
+      register: lab_strict_info
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+
+    - name: Read the instance under strict encryption
+      ansible.windows.win_powershell:
+        script: "{{ lab_state_script }}"
+        parameters: {InstanceName: MSSQLSERVER, Query: false}
+        depth: 5
+      register: lab_strict_state
+
+    - name: Show what strict encryption did
+      ansible.builtin.debug:
+        msg:
+          network: "{{ mssql__network }}"
+          agent: "{{ lab_strict_state.output[0].services.agent }}"
+          errorlog: "{{ lab_strict_state.output[0].errorlog }}"
+          mssql_info_server: "{{ (lab_strict_info.instances | first).server }}"
+
+    - name: Check the role set strict, skipped its SQL Server checks, and what strict did on 2022
+      ansible.builtin.assert:
+        that:
+          - mssql__network is changed
+          - mssql__network.restarted
+          - mssql__network.encryption.mode == 'strict'
+          - mssql__network.running.certificate == lab_thumbprint
+          - mssql__network.notices | select('search', 'Strict encryption refuses every client without TDS 8.0') | list | length == 1
+          - mssql__network.notices | select('search', "2022's SQL Server Agent") | list | length == 1
+          - mssql_instance.encryption.mode == 'strict'
+          - mssql_instance.server is none
+          - lab_strict_state.output[0].netlib.ForceStrict == '1'
+          - lab_strict_state.output[0].services.engine.state == 'Running'
+          - lab_strict_state.output[0].services.agent.state == 'Stopped'
+          - not (lab_strict_info.instances | first).server.connected
+          - (lab_strict_info.instances | first).server.connection_error is search('pre-login handshake')
+        fail_msg: "network {{ mssql__network | to_json }}; instance {{ lab_strict_state.output[0] | to_json }}"
+
+- name: Connect to sql01 from dc01 under strict encryption
+  hosts: lab_dc
+  gather_facts: false
+  vars:
+    lab_client_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/client.ps1') }}"
+  tasks:
+    - name: Probe sql01's instance over TCP (encryption strict)
+      ansible.windows.win_powershell:
+        script: "{{ lab_client_script }}"
+        parameters:
+          Server: "sql01.{{ lab_domain }}"
+          Port: "{{ hostvars[groups['lab_sql'][0]].mssql_tcp_port | default(1433) | int }}"
+        depth: 5
+      register: lab_client_strict
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+
+    - name: Show what dc01 saw under strict encryption
+      ansible.builtin.debug:
+        var: lab_client_strict.output[0]
+
+    - name: Check only a TLS-first client gets in
+      ansible.builtin.assert:
+        that:
+          - client.tls.handshake
+          - client.tls.thumbprint == hostvars[groups['lab_sql'][0]].lab_thumbprint
+          - not client.prelogin.answered
+          - not client.sql.encrypt.connected
+          - not client.sql.plain.connected
+        fail_msg: "{{ client | to_json }}"
+      vars:
+        client: "{{ lab_client_strict.output[0] }}"
+
+- name: Back to mandatory, then the role report-only and the integration targets
+  hosts: lab_sql
+  gather_facts: false
+  tasks:
+    - name: Run the role with mandatory encryption again, letting it restart the instance
+      ansible.builtin.include_role:
+        name: git_cgallagher.windows.mssql
+      vars:
+        mssql_certificate_thumbprint: "{{ lab_thumbprint }}"
+        mssql_allow_restart: true
+
+    - name: Check the role connected again, and SQL Server Agent runs again
+      ansible.builtin.assert:
+        that:
+          - mssql__network.restarted
+          - mssql__network.services.engine == 'running'
+          - mssql__network.services.agent == 'running'
+          - mssql_instance.encryption.mode == 'mandatory'
+          - mssql_instance.server.connected
+          - mssql_instance.services.agent.state == 'running'
+        fail_msg: "network {{ mssql__network | to_json }}; instance {{ mssql_instance | to_json }}"
+
     - name: Run the role report-only
       ansible.builtin.include_role:
         name: git_cgallagher.windows.mssql
       vars:
         mssql_report_only: true
+        mssql_certificate_thumbprint: "{{ lab_thumbprint }}"
 
     - name: Check it planned nothing, and read the features the role asked for
       ansible.builtin.assert:
         that:
           - mssql__setup is not changed
           - mssql__setup.notices | length == 0
+          - mssql__network is not changed
+          - not mssql__network.restart_required
+          - mssql__network.notices | length == 0
           - mssql_instance.features_known
           - mssql_instance.features == mssql_features
+          - mssql_instance.encryption.mode == 'mandatory'
           - mssql_instance.server.is_sysadmin
-        fail_msg: "setup {{ mssql__setup | to_json }}; instance {{ mssql_instance | to_json }}"
+        fail_msg: "setup {{ mssql__setup | to_json }}; network {{ mssql__network | to_json }}; instance {{ mssql_instance | to_json }}"
 
     # The modules' integration targets, which need the instance and the cached
     # ISO the role left (setup_mssql checks they're there).
     - name: Run mssql_info's integration target
       ansible.builtin.include_role:
         name: mssql_info
+
+    - name: Run mssql_network's integration target
+      ansible.builtin.include_role:
+        name: mssql_network
 
     - name: Run mssql_setup's integration target
       ansible.builtin.include_role:

@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Install a standalone SQL Server instance from an ISO
+    short_description: Install a standalone SQL Server instance from an ISO, and configure its network
     description:
       - Installs a standalone SQL Server 2022 or 2025 instance, Enterprise, Standard, a Developer edition or
         Evaluation, from an ISO on each host in the play, in parallel, and reads it back. An installed instance gets the
@@ -14,10 +14,17 @@ argument_specs:
         setup itself over WinRM need. That account (or one of its groups) must be in O(mssql_sysadmins).
       - A pending reboot stops setup. With O(mssql_allow_reboot) the role reboots first when setup has work, and again
         when setup asks for it (exit code 3010); without it, the role fails and says why.
+      - Then M(git_cgallagher.windows.mssql_network) gives the instance a static TCP port (O(mssql_tcp_port)), its
+        encryption mode (O(mssql_encryption)) with the certificate it needs (O(mssql_certificate_thumbprint)), and
+        inbound firewall rules (O(mssql_firewall)). These take effect when the engine restarts. The role restarts it
+        when it installed the instance in the same run, or with O(mssql_allow_restart); otherwise it warns that a
+        restart is pending, and says so again on every run until the engine has restarted.
       - Afterwards the role connects to the instance and fails unless its account is C(sysadmin) there. It publishes
-        what M(git_cgallagher.windows.mssql_info) reports about the instance as the C(mssql_instance) fact.
-      - The service accounts and their SPNs come from the P(git_cgallagher.windows.mssql_prereqs#role) role. Static
-        ports, certificates, encryption and C(sp_configure) are not this version's.
+        what M(git_cgallagher.windows.mssql_info) reports about the instance as the C(mssql_instance) fact. It
+        connects through .NET Framework's System.Data.SqlClient, which has no TDS 8.0, so with O(mssql_encryption)
+        V(strict) it doesn't connect, and checks only that the instance runs (C(mssql_instance.server) is null).
+      - The service accounts and their SPNs come from the P(git_cgallagher.windows.mssql_prereqs#role) role.
+        C(sp_configure) is not this version's.
       - Supports check mode; check mode and O(mssql_report_only) report what setup would do without changing anything.
     author:
       - Chris Gallagher (@git-cgallagher)
@@ -177,6 +184,46 @@ argument_specs:
           log_growth_mb:
             type: int
             description: The log file's growth.
+      mssql_tcp_port:
+        type: int
+        default: 1433
+        description:
+          - The static TCP port the instance listens on, on every address. Dynamic ports are turned off. Give each
+            instance on a host its own.
+      mssql_encryption:
+        type: str
+        choices: [optional, mandatory, strict]
+        default: optional
+        description:
+          - The encryption clients get. V(optional) lets them ask for it. V(mandatory) is Force Encryption, so every
+            connection is encrypted. V(strict) is Force Strict Encryption (TDS 8.0), which refuses every client and
+            feature that doesn't speak TDS 8.0.
+          - V(mandatory) and V(strict) need O(mssql_certificate_thumbprint).
+          - V(strict) refuses every client without TDS 8.0, over shared memory as well as TCP, so the role skips its
+            SQL Server checks under it (see the description). SQL Server 2022 supports V(strict) on standalone
+            instances only, and its SQL Server Agent can't connect under it and stops; 2025's Agent can.
+      mssql_certificate_thumbprint:
+        type: str
+        default: ''
+        description:
+          - The SHA-1 thumbprint of the certificate the instance binds, from the computer's personal store
+            (C(Cert:\\LocalMachine\\My)). Its private key must be in a legacy CSP, as a key exchange key, and its
+            subject alternative names should cover every name clients use. The role grants the engine read access to
+            the key.
+          - Empty leaves the binding as it is.
+      mssql_firewall:
+        type: bool
+        default: true
+        description:
+          - Adds or updates an inbound firewall rule for O(mssql_tcp_port), and for a named instance one for SQL Server
+            Browser (UDP 1434). V(false) leaves the firewall as it is.
+      mssql_allow_restart:
+        type: bool
+        default: false
+        description:
+          - Lets the role restart an instance it didn't install in the same run when a network setting changed (or
+            one changed earlier still waits for a restart). Restarting stops every connection to the instance.
+            Without it, the role warns that a restart is pending.
       mssql_become_user:
         type: str
         default: ''
