@@ -1107,14 +1107,16 @@ ansible-galaxy collection build --force
   merging.** The `version-bump` check doesn't run again when `main` moves,
   and "main protection" doesn't require a branch to be up to date, so a PR
   whose version another merge took still shows it green. `galaxy.yml` merges
-  cleanly when both PRs made the same one-line change: the CHANGELOG
-  conflict is the only warning, and resolving it without a bump is the trap.
-  A PR merged at a version Galaxy already has reaches `main` unreleased:
+  cleanly when both PRs made the same one-line change, so the CHANGELOG
+  conflict is the only warning. Merge `main` into the branch, then move the
+  PR to the next version: `galaxy.yml`, its CHANGELOG heading (above the
+  other PR's), any `version_added` it introduces, and the PR title. The push
+  runs the check again against `main`'s current version (PR #72's log read
+  `OK: 0.23.0 -> 0.24.0`), so merging `main` in without the bump fails it.
+  A PR merged at a version Galaxy already has would reach `main` unreleased:
   `release.yml` finds the version on Galaxy and its `v<version>` release
-  already made, publishes nothing and still ends green. Merge `main` into the
-  branch, then move the PR to the next version: `galaxy.yml`, its CHANGELOG
-  heading (above the other PR's), any `version_added` it introduces, and the
-  PR title (PR #72, after PR #73 took 0.23.0, 2026-11-16).
+  already made, publishes nothing and still ends green (PR #72, after PR #73
+  took 0.23.0, 2026-11-16).
 - **The VM comes from the `molecule-git-cgallagher` driver**
   (`git-cgallagher/ansible-collection-molecule`, which started as this lab's
   `create.yml`/`destroy.yml`; the lab moved onto it on 2026-11-01). The base
