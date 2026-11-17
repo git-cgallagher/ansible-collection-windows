@@ -1454,7 +1454,10 @@ Function Get-MssqlConfigurationPlan {
             $text = "put '$($row.name)' = $value in use with RECONFIGURE (in use: $inUse)"
         }
         if ($text) {
-            $found.Add(@{ Name = [string]$row.name; Value = $value; Was = $configured; Dynamic = $dynamic; Advanced = [bool]$row.is_advanced; Description = $text })
+            $found.Add(@{
+                    Name = [string]$row.name; Value = $value; Was = $configured; Dynamic = $dynamic; Advanced = [bool]$row.is_advanced
+                    Description = $text
+                })
         }
         if (-not $dynamic -and $inUse -ne $value) { $restart.Add([string]$row.name) }
     }

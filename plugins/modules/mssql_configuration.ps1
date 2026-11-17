@@ -260,7 +260,8 @@ function Invoke-Main {
         if ($restart) {
             $errorLogPath = Get-MssqlErrorLogPath (Get-MssqlRegistryValue "$base\Parameters")
             foreach ($other in @($configurationPlan.Pending | Where-Object { -not $_.Dynamic })) {
-                Add-Notice ("The restart also puts in use '{0}' = {1}, which was set earlier and waited for one (in use: {2})" -f $other.Name, $other.Value, $other.InUse)
+                $text = "The restart also puts in use '{0}' = {1}, which was set earlier and waited for one (in use: {2})"
+                Add-Notice ($text -f $other.Name, $other.Value, $other.InUse)
             }
             Invoke-Change "restart $engineName so these options take effect: $names" {
                 $restartResult = Restart-MssqlEngine -EngineName $engineName -AgentName $agentName -ErrorLogPath $errorLogPath `

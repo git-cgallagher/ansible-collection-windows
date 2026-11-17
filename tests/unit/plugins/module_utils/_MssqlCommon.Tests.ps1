@@ -930,7 +930,8 @@ Describe 'Get-MssqlConfigurationPlan' {
             @{ name = 'max server memory (MB)'; value = 4096; value_in_use = 4096 }
             @{ name = 'min server memory (MB)'; value = 1024; value_in_use = 1024 }
         )
-        $falling = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'max server memory (MB)' = 2048; 'min server memory (MB)' = 512; 'backup compression default' = 1 }
+        $desired = @{ 'max server memory (MB)' = 2048; 'min server memory (MB)' = 512; 'backup compression default' = 1 }
+        $falling = Get-MssqlConfigurationPlan -Current $rows -Desired $desired
         @($falling.Changes | ForEach-Object { $_.Name }) | Should -Be @('backup compression default', 'min server memory (MB)', 'max server memory (MB)')
         $rising = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'max server memory (MB)' = 8192; 'min server memory (MB)' = 6144 }
         @($rising.Changes | ForEach-Object { $_.Name }) | Should -Be @('max server memory (MB)', 'min server memory (MB)')
@@ -1031,7 +1032,10 @@ Describe 'Get-MssqlTempdbPlan' {
         # (the size tempdb starts with) and tempdb.sys.database_files' size.
         function script:New-TempdbFile {
             param([int]$Id, [string]$Name, [string]$Type = 'ROWS', [string]$Path, [long]$Size = 64, [long]$Current = $Size, $Growth = 64, $Percent = $null)
-            @{ file_id = $Id; name = $Name; type = $Type; path = $Path; size_mb = $Size; current_size_mb = $Current; growth_mb = $Growth; growth_percent = $Percent }
+            @{
+                file_id = $Id; name = $Name; type = $Type; path = $Path; size_mb = $Size; current_size_mb = $Current
+                growth_mb = $Growth; growth_percent = $Percent
+            }
         }
         $script:dir = 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\'
         function script:Get-TempdbFile {
@@ -1048,7 +1052,8 @@ Describe 'Get-MssqlTempdbPlan' {
     }
 
     It 'changes nothing that matches' {
-        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired (New-TempdbDesired -FileCount 2 -FileSizeMb 64 -FileGrowthMb 64 -LogSizeMb 64 -LogGrowthMb 64)
+        $desired = New-TempdbDesired -FileCount 2 -FileSizeMb 64 -FileGrowthMb 64 -LogSizeMb 64 -LogGrowthMb 64
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired $desired
         @($plan.Changes).Count | Should -Be 0
         @($plan.Notices).Count | Should -Be 0
     }
@@ -1085,7 +1090,8 @@ Describe 'Get-MssqlTempdbPlan' {
         $files = @(New-TempdbFile -Id 1 -Name 'tempdev' -Path ($script:dir + 'tempdb.mdf') -Size 64 -Current 128)
         $plan = Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileSizeMb 96)
         @($plan.Changes).Count | Should -Be 0
-        $plan.Notices[0] | Should -Match "^tempdb data file 'tempdev' has grown to 128 MB, so SQL Server won't set its size to file_size_mb's 96 MB: it stays at 64 MB"
+        $expected = "^tempdb data file 'tempdev' has grown to 128 MB, so SQL Server won't set its size to file_size_mb's 96 MB: it stays at 64 MB"
+        $plan.Notices[0] | Should -Match $expected
     }
 
     It 'adds data files beside the first, named as setup names them' {

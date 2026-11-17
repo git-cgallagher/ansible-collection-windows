@@ -190,7 +190,8 @@ foreach ($name in @($Options.Keys)) {
         continue
     }
     if ([long]$row.value -ne [long]$start['value'] -or [long]$row.value_in_use -ne [long]$start['value_in_use']) {
-        $differences.Add(("option '{0}' is {1} (in use {2}), was {3} (in use {4})" -f $name, $row.value, $row.value_in_use, $start['value'], $start['value_in_use']))
+        $text = "option '{0}' is {1} (in use {2}), was {3} (in use {4})"
+        $differences.Add(($text -f $name, $row.value, $row.value_in_use, $start['value'], $start['value_in_use']))
     }
 }
 $files = @(Get-TempdbFile)
