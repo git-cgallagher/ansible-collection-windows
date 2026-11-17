@@ -16,9 +16,10 @@
 # (plugins/module_utils/_MssqlCommon.psm1) decides the registry writes.
 #
 # Every registry change takes effect when the engine restarts. With restart,
-# the module restarts it, starts the services that stopped with it, and
-# checks the errorlog for the certificate and port it asked for. Without, it
-# reports restart_required, and records when it wrote the settings
+# the module restarts it (the util's Restart-MssqlEngine, which also starts
+# the services that stopped with it), and checks the errorlog for the
+# certificate and port it asked for. Without, it reports restart_required,
+# and records when it wrote the settings
 # (C:\ProgramData\mssql-iac\network\<instance id>.restart), so later runs
 # keep reporting it until the engine has restarted.
 #
@@ -268,37 +269,6 @@ function Set-FirewallRule {
     $rules.ToArray()
 }
 
-# The errorlog, read while SQL Server holds it open.
-function Read-ErrorLog {
-    param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
-    $stream = New-Object -TypeName System.IO.FileStream -ArgumentList @(
-        $Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-    try {
-        $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList @($stream, [System.Text.Encoding]::Unicode, $true)
-        $text = $reader.ReadToEnd()
-    }
-    finally {
-        $stream.Dispose()
-    }
-    @($text -split "`r?`n")
-}
-
-function Get-ErrorLogTail {
-    param([string]$Path)
-    (@(Read-ErrorLog $Path | Where-Object { $_.Trim() }) | Select-Object -Last 12) -join ' | '
-}
-
-function Get-EngineStartTime {
-    param([string]$ServiceName)
-    $filter = "Name='{0}'" -f ($ServiceName -replace "'", "''")
-    $service = Get-CimInstance -ClassName Win32_Service -Filter $filter -ErrorAction SilentlyContinue
-    if ($null -eq $service -or [string]$service.State -ne 'Running' -or -not $service.ProcessId) { return $null }
-    $process = Get-Process -Id $service.ProcessId -ErrorAction SilentlyContinue
-    if ($null -eq $process) { return $null }
-    $process.StartTime.ToUniversalTime()
-}
-
 function Read-RestartMarker {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
@@ -317,71 +287,6 @@ function Write-RestartMarker {
     param([string]$Path)
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force
     [System.IO.File]::WriteAllText($Path, (Get-Date).ToUniversalTime().ToString('o'))
-}
-
-function Get-ServiceStateText {
-    param([string]$Name)
-    $state = (Get-MssqlServiceState -Name $Name)[$Name]
-    if ($null -eq $state) { return '' }
-    ([string]$state.State).ToLowerInvariant()
-}
-
-# Restarts the engine, waits for "ready for client connections" in its new
-# errorlog, then starts the services that stopped with it (SQL Server Agent
-# depends on the engine) and an Agent set to start automatically. An Agent
-# that won't start, or stops again, is reported, not raised: the network
-# change is done. Under strict, SQL Server 2022's Agent retries for about 16
-# seconds before it stops, so the watch is longer then.
-function Restart-Engine {
-    param([string]$EngineName, [string]$AgentName, [string]$ErrorLogPath, [bool]$Strict)
-    $engineService = Get-Service -Name $EngineName
-    $dependents = @($engineService.DependentServices | Where-Object { [string]$_.Status -eq 'Running' } | ForEach-Object { $_.Name })
-    $agent = (Get-MssqlServiceState -Name $AgentName)[$AgentName]
-    $toStart = [System.Collections.Generic.List[string]]::new()
-    foreach ($name in $dependents) { $toStart.Add($name) }
-    if ($null -ne $agent -and [string]$agent.StartMode -eq 'Auto' -and -not $toStart.Contains($AgentName)) { $toStart.Add($AgentName) }
-
-    Restart-Service -Name $EngineName -Force
-    # The new process's own errorlog: SQL Server starts a new one, and names
-    # its process ID near the top.
-    $filter = "Name='{0}'" -f ($EngineName -replace "'", "''")
-    $deadline = (Get-Date).AddSeconds($params.restart_timeout)
-    $log = $null
-    $processId = 0
-    do {
-        Start-Sleep -Seconds 2
-        $service = Get-CimInstance -ClassName Win32_Service -Filter $filter
-        $processId = [int]$service.ProcessId
-        $log = Get-MssqlErrorLogFact -Lines (Read-ErrorLog $ErrorLogPath)
-        $current = $processId -ne 0 -and $log.ProcessId -eq $processId
-    } until (($current -and $log.Ready) -or [string]$service.State -eq 'Stopped' -or (Get-Date) -gt $deadline)
-    if ((Get-ServiceStateText $EngineName) -ne 'running') {
-        throw "SQL Server ($EngineName) didn't start again after the change. Its errorlog ends: $(Get-ErrorLogTail $ErrorLogPath)"
-    }
-    if (-not ($current -and $log.Ready)) {
-        throw ("SQL Server ($EngineName) didn't get to ""ready for client connections"" within $($params.restart_timeout) seconds of " +
-            "its restart. Its errorlog ends: $(Get-ErrorLogTail $ErrorLogPath)")
-    }
-    $script:restarted = $true
-
-    foreach ($name in $toStart) {
-        try {
-            Start-Service -Name $name
-        }
-        catch {
-            Add-Notice ("$name didn't start again after $EngineName restarted: $($_.Exception.Message)")
-            continue
-        }
-        # A service that can't reach SQL Server can start and then stop.
-        $window = 10
-        if ($Strict) { $window = 40 }
-        $watchEnd = (Get-Date).AddSeconds($window)
-        do {
-            Start-Sleep -Seconds 2
-            $state = Get-ServiceStateText $name
-        } until ($state -ne 'running' -or (Get-Date) -gt $watchEnd)
-        if ($state -ne 'running') { Add-Notice "$name stopped again after it started (state: $state); its log says why" }
-    }
 }
 
 function Get-NetworkFact {
@@ -474,13 +379,16 @@ function Invoke-Main {
 
     # The restart, now or later.
     $markerPath = Join-Path $env:ProgramData ("mssql-iac\network\{0}.restart" -f $entry.Id)
-    $startedAt = Get-EngineStartTime $engineName
+    $startedAt = Get-MssqlEngineStartTime $engineName
     $changedAt = Read-RestartMarker $markerPath
     $pending = Test-MssqlRestartPending -ChangedAt $changedAt -StartedAt $startedAt
     if ($null -ne $startedAt -and ($registryChanged -or $pending)) {
         if ($restart) {
             Invoke-Change "restart $engineName so the network settings take effect" {
-                Restart-Engine -EngineName $engineName -AgentName $agentName -ErrorLogPath $errorLogPath -Strict $strictAfter
+                $restartResult = Restart-MssqlEngine -EngineName $engineName -AgentName $agentName -ErrorLogPath $errorLogPath `
+                    -Strict $strictAfter -Timeout $params.restart_timeout
+                $script:restarted = $true
+                foreach ($restartNotice in $restartResult.Notices) { Add-Notice $restartNotice }
                 if (Test-Path -LiteralPath $markerPath) { Remove-Item -LiteralPath $markerPath -Force }
             }
         }
@@ -498,7 +406,7 @@ function Invoke-Main {
     # What the engine runs with, from its errorlog; after a restart, checked
     # against what was asked.
     $script:running = $null
-    $log = Get-MssqlErrorLogFact -Lines (Read-ErrorLog $errorLogPath)
+    $log = Get-MssqlErrorLogFact -Lines (Read-MssqlErrorLog $errorLogPath)
     if ($errorLogPath) {
         $script:running = @{
             certificate = $log.Certificate; ports = @($log.Ports); ready = $log.Ready; strict_lines = @($log.StrictLines); errorlog = $errorLogPath
@@ -519,7 +427,7 @@ function Invoke-Main {
             throw "$engineName restarted, but its errorlog says it listens on TCP port(s) '$(@($log.Ports) -join ', ')', not $tcpPort"
         }
     }
-    $script:services = @{ engine = Get-ServiceStateText $engineName; agent = Get-ServiceStateText $agentName }
+    $script:services = @{ engine = Get-MssqlServiceStateText $engineName; agent = Get-MssqlServiceStateText $agentName }
 }
 
 function Set-ModuleResult {

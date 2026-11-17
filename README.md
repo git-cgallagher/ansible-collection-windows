@@ -7,7 +7,7 @@ Each area's roles and modules carry its prefix.
 |---|---|---|
 | [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import`; modules `gpo_export`, `gpo_import`, `gpo_sync_export`, `gpo_sync_import` | Back up named GPOs' settings to a directory and import them into a domain; or mirror a whole domain's GPOs, with their links, precedence, filtering and WMI filters, into Git and converge the same domain or a different one on it |
 | [Failover clustering](#failover-clustering) | roles `wsfc`, `wsfc_fileserver`; modules `wsfc_cluster`, `wsfc_group` | Build a Windows Server Failover Cluster and converge its networks, sites, node votes, properties, shared disks and quorum, as the base for file servers, SQL Server FCIs and availability groups; converge its groups' owners, failback and resource properties, and test failover; run a clustered file server on it, fail it over between nodes and validate it from a client |
-| [SQL Server](#sql-server) | roles `mssql_prereqs`, `mssql`; modules `mssql_setup`, `mssql_network`, `mssql_info` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under; install a standalone SQL Server 2022 or 2025 instance from an ISO (a local path, a share or a URL, pinned by its SHA-256), add features to it, give it a static port, a certificate, an encryption mode (optional, mandatory or strict) and firewall rules, and report the instances on a host |
+| [SQL Server](#sql-server) | roles `mssql_prereqs`, `mssql`; modules `mssql_setup`, `mssql_network`, `mssql_configuration`, `mssql_info` (more planned, issue #48) | Create the Active Directory accounts (domain users or gMSAs) and Kerberos SPNs SQL Server runs under; install a standalone SQL Server 2022 or 2025 instance from an ISO (a local path, a share or a URL, pinned by its SHA-256), add features to it, give it a static port, a certificate, an encryption mode (optional, mandatory or strict) and firewall rules, set its `sp_configure` options and tempdb's files, and report the instances on a host |
 | [IIS](#iis) | modules `iis_mime_type`, `iis_mime_type_info` | Manage the MIME types IIS serves file extensions as, at the server, site or application level, and read them |
 
 > **Status: early (0.x).** Every role is tested end to end against a real
@@ -435,13 +435,18 @@ Encryption, TDS 8.0, which SQL Server 2022 supports only on standalone
 instances and its Agent can't use). Those settings take effect when the
 engine restarts, which the role does when it installed the instance in the
 same run, or with `mssql_allow_restart`; otherwise it warns that a restart is
-pending. The work is in three modules: `mssql_setup` (stage, mount, check,
-run setup, or uninstall), `mssql_network` (port, certificate, encryption,
-firewall, restart) and `mssql_info` (the instances, from the registry, their
-services and SQL Server itself). The [role README](roles/mssql/README.md)
-covers editions and media, secrets, running setup over WinRM, and
-certificates and encryption. `sp_configure`, failover cluster instances and
-availability groups are planned in
+pending. Next it sets the `sp_configure` values `mssql_configuration` lists
+(checked against each option's range first; a static option waits for a
+restart under the same rule) and brings tempdb's files to `mssql_tempdb`: it
+grows them, sets their growth and adds data files, never shrinking or
+removing one. Under strict encryption it can't connect, so it skips that
+step. The work is in four modules: `mssql_setup` (stage, mount, check, run
+setup, or uninstall), `mssql_network` (port, certificate, encryption,
+firewall, restart), `mssql_configuration` (`sp_configure` and tempdb) and
+`mssql_info` (the instances, from the registry, their services and SQL Server
+itself). The [role README](roles/mssql/README.md) covers editions and media,
+secrets, running setup over WinRM, and certificates and encryption. Failover
+cluster instances and availability groups are planned in
 [issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48).
 
 ```yaml

@@ -1,16 +1,21 @@
 # Copyright: (c) 2026, Chris Gallagher (@git-cgallagher)
 # MIT License (see LICENSE or https://opensource.org/licenses/MIT)
 
-# Shared by the SQL Server modules (mssql_setup, mssql_info and
-# mssql_network). Most of it is pure logic, with no Ansible.Basic, registry,
-# setup or SQL Server calls, so Pester tests it on any platform
+# Shared by the SQL Server modules (mssql_setup, mssql_info, mssql_network
+# and mssql_configuration). Most of it is pure logic, with no Ansible.Basic,
+# registry, setup or SQL Server calls, so Pester tests it on any platform
 # (tests/unit/plugins/module_utils/_MssqlCommon.Tests.ps1): versions and
 # editions, the media and its checksum, the features, the plan for an
-# instance, setup's command line and its Summary.txt, and the network plan,
-# certificate checks, errorlog lines and firewall rules. A few functions read
-# the host for every module: the instances the registry lists
-# (Get-MssqlInstanceRegistry), their services (Get-MssqlServiceState) and a
-# query through SqlClient (Invoke-MssqlQuery).
+# instance, setup's command line and its Summary.txt, the network plan,
+# certificate checks, errorlog lines and firewall rules, and the sp_configure
+# and tempdb plans with the T-SQL they run. A few functions read the host for
+# every module: the instances the registry lists (Get-MssqlInstanceRegistry),
+# their services (Get-MssqlServiceState), the errorlog (Read-MssqlErrorLog)
+# and queries through SqlClient (Invoke-MssqlQuery, Invoke-MssqlNonQuery,
+# which also writes). One changes it: Restart-MssqlEngine, which
+# mssql_network and mssql_configuration restart an instance with.
+# Script modules don't see the calling module's $ErrorActionPreference, so
+# every call here that must stop on an error says -ErrorAction Stop.
 # Private to this collection, with no compatibility promise. Windows
 # PowerShell 5.1 syntax only.
 
@@ -1273,12 +1278,564 @@ Function Invoke-MssqlQuery {
     }
 }
 
+Function Invoke-MssqlNonQuery {
+    <#
+    .SYNOPSIS
+    Runs a batch that returns no rows (sp_configure, RECONFIGURE, ALTER
+    DATABASE) through System.Data.SqlClient. Parameters become @name query
+    parameters, never text in the batch. An error anywhere in the batch
+    throws.
+    #>
+    [CmdletBinding()]
+    param ([string]$ConnectionString, [string]$Query, [hashtable]$Parameters = @{}, [int]$Timeout = 30)
+
+    Add-Type -AssemblyName System.Data
+    $connection = New-Object -TypeName System.Data.SqlClient.SqlConnection -ArgumentList $ConnectionString
+    try {
+        $connection.Open()
+        $command = $connection.CreateCommand()
+        $command.CommandText = $Query
+        $command.CommandTimeout = $Timeout
+        foreach ($key in $Parameters.Keys) { $null = $command.Parameters.AddWithValue('@' + $key, $Parameters[$key]) }
+        $null = $command.ExecuteNonQuery()
+    }
+    finally {
+        $connection.Dispose()
+    }
+}
+
+Function ConvertTo-MssqlStringLiteral {
+    <#
+    .SYNOPSIS
+    Returns a value as a T-SQL Unicode string literal, N'...' with each
+    single quote doubled, for the statements that take no parameters (ALTER
+    DATABASE's file names and paths).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param ([string]$Value)
+
+    "N'" + ([string]$Value).Replace("'", "''") + "'"
+}
+
+Function ConvertTo-MssqlConfigValue {
+    <#
+    .SYNOPSIS
+    Returns an sp_configure value as a whole number: an integer, a string of
+    one, a float without a fraction, or a boolean (true is 1, false 0).
+    $null for anything else, which the caller refuses.
+    #>
+    [CmdletBinding()]
+    param ([object]$Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [bool]) { return [long][int]$Value }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [int16] -or $Value -is [byte] -or $Value -is [uint32]) { return [long]$Value }
+    if ($Value -is [double] -or $Value -is [single] -or $Value -is [decimal]) {
+        $number = [double]$Value
+        if ([math]::Floor($number) -eq $number -and [math]::Abs($number) -lt 1e15) { return [long]$number }
+        return $null
+    }
+    if ($Value -is [string] -and $Value.Trim() -match '^[+-]?\d{1,18}$') { return [long]$Value.Trim() }
+    $null
+}
+
+Function Get-MssqlConfigurationPlan {
+    <#
+    .SYNOPSIS
+    Compares the sp_configure values asked for with sys.configurations and
+    decides the changes. An option is matched by its whole name, ignoring
+    case.
+    .DESCRIPTION
+    Returns a hashtable:
+    - Problems: refusals (an option the instance doesn't have, one listed
+      twice, a value that isn't a whole number or is outside the option's
+      range, min server memory above max server memory).
+    - Changes: Name (as the instance spells it), Value, Was, Dynamic,
+      Advanced and Description, for each option whose value differs, and
+      each dynamic one whose value in use differs (set without RECONFIGURE).
+      By name, then max and min server memory in the order that never puts
+      min above max on the way. 'show advanced options' is among them when
+      it's asked for and differs, but the batch sets it through AdvancedOn
+      and AdvancedOff.
+    - AdvancedOn: turn 'show advanced options' on before the changes (an
+      advanced option is among them, or it's asked for on).
+    - AdvancedOff: turn it off after them (it must end off, and the batch
+      turned it on, or it's asked for off).
+    - ShowAdvancedWas: its value before, which a failed batch puts back.
+    - Restart: the static options asked for whose value in use won't be the
+      one asked for until the engine restarts (changed now, or before and
+      still waiting).
+    - Pending: options not asked for whose value differs from the one in
+      use: Name, Value, InUse, Dynamic.
+    - Notices: max server memory at or above the host's memory.
+    .PARAMETER Current
+    sys.configurations' rows: name, value, value_in_use, minimum, maximum,
+    is_dynamic, is_advanced.
+    .PARAMETER Desired
+    Option name to value, as the module's sp_configure option holds them.
+    .PARAMETER PhysicalMemoryMb
+    The host's memory, for the max server memory notice; 0 skips it.
+    #>
+    [CmdletBinding()]
+    param ([object[]]$Current, [System.Collections.IDictionary]$Desired, [long]$PhysicalMemoryMb = 0)
+
+    $problems = [System.Collections.Generic.List[string]]::new()
+    $notices = [System.Collections.Generic.List[string]]::new()
+    $plan = @{
+        Problems = @(); Changes = @(); AdvancedOn = $false; AdvancedOff = $false; ShowAdvancedWas = 0
+        Restart = @(); Pending = @(); Notices = @()
+    }
+    $rows = @{}
+    foreach ($row in @($Current)) { $rows[([string]$row.name).ToLowerInvariant()] = $row }
+
+    # The options asked for, by lower-case name: the row and the value.
+    $wanted = @{}
+    $seen = @{}
+    if ($null -ne $Desired) {
+        foreach ($key in @($Desired.Keys | Sort-Object)) {
+            $name = [string]$key
+            $row = $rows[$name.ToLowerInvariant()]
+            if ($null -eq $row) {
+                $problems.Add("sp_configure has no option '$name' on this instance")
+                continue
+            }
+            $lower = ([string]$row.name).ToLowerInvariant()
+            if ($seen.ContainsKey($lower)) {
+                $problems.Add("sp_configure option '$($row.name)' is listed twice")
+                continue
+            }
+            $seen[$lower] = $true
+            $value = ConvertTo-MssqlConfigValue $Desired[$key]
+            if ($null -eq $value) {
+                $problems.Add(("sp_configure option '{0}' takes a whole number, got '{1}'" -f $row.name, $Desired[$key]))
+                continue
+            }
+            if ($value -lt [long]$row.minimum -or $value -gt [long]$row.maximum) {
+                $problems.Add(("sp_configure option '{0}' takes {1} to {2}, got {3}" -f $row.name, $row.minimum, $row.maximum, $value))
+                continue
+            }
+            $wanted[$lower] = @{ Row = $row; Value = $value }
+        }
+    }
+
+    # Min server memory can't end above max server memory.
+    $minKey = 'min server memory (mb)'
+    $maxKey = 'max server memory (mb)'
+    if (($wanted.ContainsKey($minKey) -or $wanted.ContainsKey($maxKey)) -and $rows.ContainsKey($minKey) -and $rows.ContainsKey($maxKey)) {
+        $min = [long]$rows[$minKey].value
+        $max = [long]$rows[$maxKey].value
+        if ($wanted.ContainsKey($minKey)) { $min = $wanted[$minKey].Value }
+        if ($wanted.ContainsKey($maxKey)) { $max = $wanted[$maxKey].Value }
+        if ($min -gt $max) { $problems.Add("min server memory (MB) would be $min, above max server memory (MB)'s $max") }
+    }
+    if ($PhysicalMemoryMb -gt 0 -and $wanted.ContainsKey($maxKey) -and $wanted[$maxKey].Value -ge $PhysicalMemoryMb) {
+        $notice = 'max server memory (MB) is {0}, at least the host''s {1} MB of memory, so SQL Server may leave Windows none'
+        $notices.Add(($notice -f $wanted[$maxKey].Value, $PhysicalMemoryMb))
+    }
+    $plan.Notices = $notices.ToArray()
+    $plan.Problems = $problems.ToArray()
+    if ($problems.Count -gt 0) { return $plan }
+
+    $found = [System.Collections.Generic.List[object]]::new()
+    $restart = [System.Collections.Generic.List[string]]::new()
+    foreach ($lower in @($wanted.Keys | Sort-Object)) {
+        $row = $wanted[$lower].Row
+        $value = $wanted[$lower].Value
+        $configured = [long]$row.value
+        $inUse = [long]$row.value_in_use
+        $dynamic = [bool]$row.is_dynamic
+        $text = ''
+        if ($configured -ne $value) {
+            $text = "set '$($row.name)' to $value (was $configured)"
+            if (-not $dynamic) { $text += ', which takes effect when the engine restarts' }
+        }
+        elseif ($dynamic -and $inUse -ne $value) {
+            $text = "put '$($row.name)' = $value in use with RECONFIGURE (in use: $inUse)"
+        }
+        if ($text) {
+            $found.Add(@{ Name = [string]$row.name; Value = $value; Was = $configured; Dynamic = $dynamic; Advanced = [bool]$row.is_advanced; Description = $text })
+        }
+        if (-not $dynamic -and $inUse -ne $value) { $restart.Add([string]$row.name) }
+    }
+
+    # Max server memory first when it rises, min first when max falls.
+    $memoryNames = @('max server memory (MB)', 'min server memory (MB)')
+    $ordered = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in @($found | Where-Object { $memoryNames -notcontains $_.Name })) { $ordered.Add($item) }
+    $maxItems = @($found | Where-Object { $_.Name -eq 'max server memory (MB)' })
+    $minItems = @($found | Where-Object { $_.Name -eq 'min server memory (MB)' })
+    $memoryItems = @($maxItems) + @($minItems)
+    if ($maxItems.Count -gt 0 -and $maxItems[0].Value -lt $maxItems[0].Was) { $memoryItems = @($minItems) + @($maxItems) }
+    foreach ($item in $memoryItems) { $ordered.Add($item) }
+
+    # 'show advanced options': on for the advanced changes (or when asked
+    # for), and off again at the end when it must end off.
+    $showKey = 'show advanced options'
+    $showValue = 0
+    $showInUse = 0
+    if ($rows.ContainsKey($showKey)) {
+        $showValue = [long]$rows[$showKey].value
+        $showInUse = [long]$rows[$showKey].value_in_use
+    }
+    $showAsked = $wanted.ContainsKey($showKey)
+    $showFinal = $showValue
+    if ($showAsked) { $showFinal = $wanted[$showKey].Value }
+    $showOn = $showValue -eq 1 -and $showInUse -eq 1
+    $showOff = $showValue -eq 0 -and $showInUse -eq 0
+    $needAdvanced = @($ordered | Where-Object { $_.Advanced -and $_.Name -ne $showKey }).Count -gt 0
+    $plan.AdvancedOn = (-not $showOn) -and ($needAdvanced -or ($showAsked -and $showFinal -eq 1))
+    $plan.AdvancedOff = $showFinal -eq 0 -and ($plan.AdvancedOn -or ($showAsked -and -not $showOff))
+    $plan.ShowAdvancedWas = $showValue
+
+    $pending = [System.Collections.Generic.List[object]]::new()
+    foreach ($lower in @($rows.Keys | Sort-Object)) {
+        if ($wanted.ContainsKey($lower)) { continue }
+        $row = $rows[$lower]
+        if ([long]$row.value -ne [long]$row.value_in_use) {
+            $pending.Add(@{ Name = [string]$row.name; Value = [long]$row.value; InUse = [long]$row.value_in_use; Dynamic = [bool]$row.is_dynamic })
+        }
+    }
+    $plan.Changes = $ordered.ToArray()
+    $plan.Restart = $restart.ToArray()
+    $plan.Pending = $pending.ToArray()
+    $plan
+}
+
+Function Get-MssqlConfigurationBatch {
+    <#
+    .SYNOPSIS
+    Builds the T-SQL batch that makes a configuration plan's changes
+    (Get-MssqlConfigurationPlan): 'show advanced options' on when AdvancedOn
+    says so, each change through sp_configure followed by RECONFIGURE, then
+    'show advanced options' off when AdvancedOff says so. When a statement
+    fails, the batch puts back the option it was setting and 'show advanced
+    options', then fails with the option's name and SQL Server's message.
+    Names and values go in as parameters (@name0, @value0, @was0, ...,
+    @show_was), never as text. Returns Text and Parameters, or $null when the
+    plan changes nothing.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Plan)
+
+    $items = @($Plan.Changes | Where-Object { $_.Name -ne 'show advanced options' })
+    if ($items.Count -eq 0 -and -not $Plan.AdvancedOn -and -not $Plan.AdvancedOff) { return $null }
+    $parameters = @{ show_was = [int]$Plan.ShowAdvancedWas }
+    $show = "EXEC sys.sp_configure @configname = N'show advanced options', @configvalue = {0};"
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('SET NOCOUNT ON;')
+    $lines.Add('DECLARE @step int = -1;')
+    $lines.Add('BEGIN TRY')
+    if ($Plan.AdvancedOn) {
+        $lines.Add('    ' + ($show -f 1))
+        $lines.Add('    RECONFIGURE;')
+    }
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $parameters["name$i"] = [string]$items[$i].Name
+        $parameters["value$i"] = [int]$items[$i].Value
+        $parameters["was$i"] = [int]$items[$i].Was
+        $lines.Add("    SET @step = $i;")
+        $lines.Add("    EXEC sys.sp_configure @configname = @name$i, @configvalue = @value$i;")
+        $lines.Add('    RECONFIGURE;')
+    }
+    $lines.Add('    SET @step = -1;')
+    if ($Plan.AdvancedOff) {
+        $lines.Add('    ' + ($show -f 0))
+        $lines.Add('    RECONFIGURE;')
+    }
+    $lines.Add('END TRY')
+    $lines.Add('BEGIN CATCH')
+    $lines.Add('    DECLARE @message nvarchar(2048) = ERROR_MESSAGE();')
+    $lines.Add("    DECLARE @failed nvarchar(128) = N'';")
+    $lines.Add('    BEGIN TRY')
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $lines.Add("        IF @step = $i")
+        $lines.Add('        BEGIN')
+        $lines.Add("            SET @failed = @name$i;")
+        $lines.Add("            EXEC sys.sp_configure @configname = @name$i, @configvalue = @was$i;")
+        $lines.Add('            RECONFIGURE;')
+        $lines.Add('        END;')
+    }
+    if ($Plan.AdvancedOn -or $Plan.AdvancedOff) {
+        $lines.Add("        EXEC sys.sp_configure @configname = N'show advanced options', @configvalue = @show_was;")
+        $lines.Add('        RECONFIGURE;')
+    }
+    $lines.Add('    END TRY')
+    $lines.Add('    BEGIN CATCH')
+    $lines.Add('        SET @step = -1;')
+    $lines.Add('    END CATCH;')
+    $lines.Add("    IF @failed <> N'' SET @message = N'sp_configure option ''' + @failed + N''': ' + @message;")
+    $lines.Add('    THROW 50000, @message, 1;')
+    $lines.Add('END CATCH;')
+    @{ Text = $lines -join "`r`n"; Parameters = $parameters }
+}
+
+Function Get-MssqlTempdbProblem {
+    <#
+    .SYNOPSIS
+    Returns what's wrong with the tempdb values asked for ('' when nothing
+    is): file_count and the sizes start at 1, the growth at 0 (no growth).
+    Desired holds FileCount, FileSizeMb, FileGrowthMb, LogSizeMb and
+    LogGrowthMb, each $null when not asked for.
+    #>
+    [CmdletBinding()]
+    param ([hashtable]$Desired)
+
+    $least = [ordered]@{ FileCount = 1; FileSizeMb = 1; LogSizeMb = 1; FileGrowthMb = 0; LogGrowthMb = 0 }
+    $options = @{
+        FileCount = 'file_count'; FileSizeMb = 'file_size_mb'; LogSizeMb = 'log_size_mb'; FileGrowthMb = 'file_growth_mb'; LogGrowthMb = 'log_growth_mb'
+    }
+    foreach ($key in $least.Keys) {
+        $value = $Desired[$key]
+        if ($null -ne $value -and [long]$value -lt $least[$key]) {
+            return ('tempdb.{0} must be {1} or more, got {2}' -f $options[$key], $least[$key], $value)
+        }
+    }
+    ''
+}
+
+Function Get-MssqlTempdbPlan {
+    <#
+    .SYNOPSIS
+    Compares tempdb's files with the sizes, growth and number of data files
+    asked for. Returns Changes (each an ALTER DATABASE Statement and its
+    Description, in order) and Notices for what it leaves alone. It grows a
+    file below the size asked for but never shrinks one, sets each file's
+    growth in MB, and adds data files (temp<N> in tempdb_mssql_<N>.ndf
+    beside the first data file, as setup names them) but never removes one.
+    SQL Server grows a file only past its current size, so a file that has
+    grown past the size asked for keeps the size tempdb starts with until a
+    restart shrinks it back.
+    .PARAMETER Files
+    tempdb's files from sys.master_files (database_id 2): file_id, name, type
+    (ROWS or LOG), path, size_mb (the size tempdb starts with),
+    current_size_mb (from tempdb.sys.database_files), growth_mb ($null when
+    it grows by a percentage) and growth_percent.
+    .PARAMETER Desired
+    FileCount, FileSizeMb, FileGrowthMb, LogSizeMb and LogGrowthMb; one that
+    is $null is left alone.
+    #>
+    [CmdletBinding()]
+    param ([object[]]$Files, [hashtable]$Desired)
+
+    $changes = [System.Collections.Generic.List[object]]::new()
+    $notices = [System.Collections.Generic.List[string]]::new()
+    $data = @($Files | Where-Object { [string]$_.type -eq 'ROWS' } | Sort-Object -Property { [int]$_.file_id })
+    $logs = @($Files | Where-Object { [string]$_.type -eq 'LOG' } | Sort-Object -Property { [int]$_.file_id })
+    $groups = @(
+        @{ Files = $data; Kind = 'data'; Size = $Desired.FileSizeMb; Growth = $Desired.FileGrowthMb; Option = 'file_size_mb' }
+        @{ Files = $logs; Kind = 'log'; Size = $Desired.LogSizeMb; Growth = $Desired.LogGrowthMb; Option = 'log_size_mb' }
+    )
+    foreach ($group in $groups) {
+        foreach ($file in $group.Files) {
+            $nameLiteral = ConvertTo-MssqlStringLiteral $file.name
+            $label = "tempdb $($group.Kind) file '$($file.name)'"
+            if ($null -ne $group.Size) {
+                $size = [long]$group.Size
+                $startSize = [long]$file.size_mb
+                $currentSize = [long]$file.current_size_mb
+                if ($startSize -gt $size) {
+                    $notices.Add(('{0} is set to {1} MB, more than {2}''s {3} MB: the module never shrinks tempdb' -f $label, $startSize, $group.Option, $size))
+                }
+                elseif ($startSize -lt $size -and $currentSize -ge $size) {
+                    $notice = ("{0} has grown to {1} MB, so SQL Server won't set its size to {2}'s {3} MB: it stays at {4} MB, " +
+                        'the size a restart brings it back to; run again after one') -f $label, $currentSize, $group.Option, $size, $startSize
+                    $notices.Add($notice)
+                }
+                elseif ($startSize -lt $size) {
+                    $changes.Add(@{
+                            Statement = "ALTER DATABASE [tempdb] MODIFY FILE (NAME = $nameLiteral, SIZE = ${size}MB);"
+                            Description = "grow $label to $size MB (was $startSize MB)"
+                        })
+                }
+            }
+            if ($null -ne $group.Growth) {
+                $growth = [long]$group.Growth
+                $was = '{0} MB' -f $file.growth_mb
+                if ($null -eq $file.growth_mb) { $was = '{0}%' -f $file.growth_percent }
+                if ($null -eq $file.growth_mb -or [long]$file.growth_mb -ne $growth) {
+                    $changes.Add(@{
+                            Statement = "ALTER DATABASE [tempdb] MODIFY FILE (NAME = $nameLiteral, FILEGROWTH = ${growth}MB);"
+                            Description = "set the growth of $label to $growth MB (was $was)"
+                        })
+                }
+            }
+        }
+    }
+
+    if ($null -ne $Desired.FileCount -and $data.Count -gt 0) {
+        $count = [long]$Desired.FileCount
+        if ($data.Count -gt $count) {
+            $notices.Add(('tempdb has {0} data files, more than file_count''s {1}: the module never removes one' -f $data.Count, $count))
+        }
+        elseif ($data.Count -lt $count) {
+            $first = $data[0]
+            $firstPath = [string]$first.path
+            $directory = $firstPath.Substring(0, $firstPath.LastIndexOf('\') + 1)
+            $size = [long]$first.size_mb
+            if ($null -ne $Desired.FileSizeMb) { $size = [long]$Desired.FileSizeMb }
+            $growth = '{0}MB' -f $first.growth_mb
+            if ($null -eq $first.growth_mb) { $growth = '{0}%' -f $first.growth_percent }
+            if ($null -ne $Desired.FileGrowthMb) { $growth = '{0}MB' -f $Desired.FileGrowthMb }
+            $names = @($Files | ForEach-Object { [string]$_.name })
+            $paths = @($Files | ForEach-Object { [string]$_.path })
+            $number = 2
+            for ($added = $data.Count; $added -lt $count; $added++) {
+                while ($names -contains "temp$number" -or $paths -contains ('{0}tempdb_mssql_{1}.ndf' -f $directory, $number)) { $number++ }
+                $fileName = "temp$number"
+                $filePath = '{0}tempdb_mssql_{1}.ndf' -f $directory, $number
+                $fileLiteral = ConvertTo-MssqlStringLiteral $fileName
+                $pathLiteral = ConvertTo-MssqlStringLiteral $filePath
+                $changes.Add(@{
+                        Statement = "ALTER DATABASE [tempdb] ADD FILE (NAME = $fileLiteral, FILENAME = $pathLiteral, SIZE = ${size}MB, FILEGROWTH = $growth);"
+                        Description = "add tempdb data file '$fileName' ($filePath, $size MB)"
+                    })
+                $number++
+            }
+        }
+    }
+    @{ Changes = $changes.ToArray(); Notices = $notices.ToArray() }
+}
+
+Function Read-MssqlErrorLog {
+    <#
+    .SYNOPSIS
+    Reads an errorlog, which SQL Server holds open, as its lines; none when
+    there's no such file. Reads only.
+    #>
+    [CmdletBinding()]
+    param ([string]$Path)
+
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    $stream = New-Object -TypeName System.IO.FileStream -ArgumentList @(
+        $Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+        $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList @($stream, [System.Text.Encoding]::Unicode, $true)
+        $text = $reader.ReadToEnd()
+    }
+    finally {
+        $stream.Dispose()
+    }
+    @($text -split "`r?`n")
+}
+
+Function Get-MssqlErrorLogTail {
+    <#
+    .SYNOPSIS
+    Returns an errorlog's last lines that aren't blank, joined by ' | ', for
+    a failure message. Reads only.
+    #>
+    [CmdletBinding()]
+    param ([string]$Path, [int]$Count = 12)
+
+    (@(Read-MssqlErrorLog $Path | Where-Object { $_.Trim() }) | Select-Object -Last $Count) -join ' | '
+}
+
+Function Get-MssqlServiceStateText {
+    <#
+    .SYNOPSIS
+    Returns a service's state in lower case (running, stopped, ...), or ''
+    when there's no such service. Reads only.
+    #>
+    [CmdletBinding()]
+    param ([string]$Name)
+
+    $state = (Get-MssqlServiceState -Name $Name)[$Name]
+    if ($null -eq $state) { return '' }
+    ([string]$state.State).ToLowerInvariant()
+}
+
+Function Get-MssqlEngineStartTime {
+    <#
+    .SYNOPSIS
+    Returns when a running engine's process started (UTC), or $null when it
+    isn't running. Reads only.
+    #>
+    [CmdletBinding()]
+    param ([string]$ServiceName)
+
+    $filter = "Name='{0}'" -f ($ServiceName -replace "'", "''")
+    $service = Get-CimInstance -ClassName Win32_Service -Filter $filter -ErrorAction SilentlyContinue
+    if ($null -eq $service -or [string]$service.State -ne 'Running' -or -not $service.ProcessId) { return $null }
+    $process = Get-Process -Id $service.ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $process) { return $null }
+    $process.StartTime.ToUniversalTime()
+}
+
+Function Restart-MssqlEngine {
+    <#
+    .SYNOPSIS
+    Restarts an instance's engine and waits for "ready for client
+    connections" in the new process's errorlog, then starts the services
+    that stopped with it (SQL Server Agent depends on the engine) and an
+    Agent set to start automatically. Throws when the engine doesn't come
+    back within Timeout seconds. An Agent that won't start, or stops again,
+    comes back in Notices, since the change itself is done: under strict
+    encryption SQL Server 2022's Agent retries for about 16 seconds and then
+    stops, so Strict watches it longer.
+    #>
+    [CmdletBinding()]
+    param ([string]$EngineName, [string]$AgentName, [string]$ErrorLogPath, [bool]$Strict, [int]$Timeout = 300)
+
+    $notices = [System.Collections.Generic.List[string]]::new()
+    $engineService = Get-Service -Name $EngineName -ErrorAction Stop
+    $dependents = @($engineService.DependentServices | Where-Object { [string]$_.Status -eq 'Running' } | ForEach-Object { $_.Name })
+    $agent = (Get-MssqlServiceState -Name $AgentName)[$AgentName]
+    $toStart = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in $dependents) { $toStart.Add($name) }
+    if ($null -ne $agent -and [string]$agent.StartMode -eq 'Auto' -and -not $toStart.Contains($AgentName)) { $toStart.Add($AgentName) }
+
+    Restart-Service -Name $EngineName -Force -ErrorAction Stop
+    # The new process's own errorlog: SQL Server starts a new one, and names
+    # its process ID near the top.
+    $filter = "Name='{0}'" -f ($EngineName -replace "'", "''")
+    $deadline = (Get-Date).AddSeconds($Timeout)
+    $log = $null
+    $current = $false
+    do {
+        Start-Sleep -Seconds 2
+        $service = Get-CimInstance -ClassName Win32_Service -Filter $filter -ErrorAction Stop
+        $processId = [int]$service.ProcessId
+        $log = Get-MssqlErrorLogFact -Lines (Read-MssqlErrorLog $ErrorLogPath)
+        $current = $processId -ne 0 -and $log.ProcessId -eq $processId
+    } until (($current -and $log.Ready) -or [string]$service.State -eq 'Stopped' -or (Get-Date) -gt $deadline)
+    if ((Get-MssqlServiceStateText $EngineName) -ne 'running') {
+        throw "SQL Server ($EngineName) didn't start again after the change. Its errorlog ends: $(Get-MssqlErrorLogTail $ErrorLogPath)"
+    }
+    if (-not ($current -and $log.Ready)) {
+        throw ("SQL Server ($EngineName) didn't get to ""ready for client connections"" within $Timeout seconds of " +
+            "its restart. Its errorlog ends: $(Get-MssqlErrorLogTail $ErrorLogPath)")
+    }
+
+    foreach ($name in $toStart) {
+        try {
+            Start-Service -Name $name -ErrorAction Stop
+        }
+        catch {
+            $notices.Add("$name didn't start again after $EngineName restarted: $($_.Exception.Message)")
+            continue
+        }
+        # A service that can't reach SQL Server can start and then stop.
+        $window = 10
+        if ($Strict) { $window = 40 }
+        $watchEnd = (Get-Date).AddSeconds($window)
+        do {
+            Start-Sleep -Seconds 2
+            $state = Get-MssqlServiceStateText $name
+        } until ($state -ne 'running' -or (Get-Date) -gt $watchEnd)
+        if ($state -ne 'running') { $notices.Add("$name stopped again after it started (state: $state); its log says why") }
+    }
+    @{ Notices = $notices.ToArray() }
+}
+
 $exportFunctions = @(
+    'ConvertTo-MssqlConfigValue'
     'ConvertTo-MssqlEditionId'
     'ConvertTo-MssqlEncryptionMode'
     'ConvertTo-MssqlFeatureName'
     'ConvertTo-MssqlInstanceFact'
     'ConvertTo-MssqlStartMode'
+    'ConvertTo-MssqlStringLiteral'
     'ConvertTo-MssqlThumbprint'
     'ConvertTo-MssqlVersionName'
     'Format-MssqlSetupArgument'
@@ -1286,10 +1843,14 @@ $exportFunctions = @(
     'Get-MssqlCertificateNameNotice'
     'Get-MssqlCertificateProblem'
     'Get-MssqlChecksumHash'
+    'Get-MssqlConfigurationBatch'
+    'Get-MssqlConfigurationPlan'
     'Get-MssqlConnectionString'
     'Get-MssqlEditionPlan'
+    'Get-MssqlEngineStartTime'
     'Get-MssqlErrorLogFact'
     'Get-MssqlErrorLogPath'
+    'Get-MssqlErrorLogTail'
     'Get-MssqlFirewallRuleDifference'
     'Get-MssqlFirewallRuleSpec'
     'Get-MssqlInstalledFeature'
@@ -1306,16 +1867,22 @@ $exportFunctions = @(
     'Get-MssqlServiceName'
     'Get-MssqlServiceSidName'
     'Get-MssqlServiceState'
+    'Get-MssqlServiceStateText'
     'Get-MssqlSetupArgument'
     'Get-MssqlSetupArgumentProblem'
     'Get-MssqlSetupBootstrap'
     'Get-MssqlSetupHint'
     'Get-MssqlSetupSummary'
     'Get-MssqlStrictNotice'
+    'Get-MssqlTempdbPlan'
+    'Get-MssqlTempdbProblem'
     'Get-MssqlThumbprintProblem'
     'Get-MssqlVersionInfo'
+    'Invoke-MssqlNonQuery'
     'Invoke-MssqlQuery'
     'ConvertTo-MssqlSetupArgument'
+    'Read-MssqlErrorLog'
+    'Restart-MssqlEngine'
     'Test-MssqlReadRight'
     'Test-MssqlRestartPending'
 )

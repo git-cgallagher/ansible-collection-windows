@@ -1,13 +1,13 @@
 ---
 argument_specs:
   main:
-    short_description: Install a standalone SQL Server instance from an ISO, and configure its network
+    short_description: Install a standalone SQL Server instance from an ISO, and configure its network, sp_configure and tempdb
     description:
       - Installs a standalone SQL Server 2022 or 2025 instance, Enterprise, Standard, a Developer edition or
         Evaluation, from an ISO on each host in the play, in parallel, and reads it back. An installed instance gets the
         features O(mssql_features) lists and it lacks; settings fixed at install (version, edition, collation) that
-        differ are reported as warnings, never changed by reinstalling. O(mssql_paths) and O(mssql_tempdb) apply at
-        install only and aren't compared afterwards.
+        differ are reported as warnings, never changed by reinstalling. O(mssql_paths) applies at install only and
+        isn't compared afterwards.
       - The ISO comes from a local path, a UNC path or an http(s) URL, pinned by its SHA-256. A UNC path or URL is copied
         into O(mssql_media_cache_dir) first and kept there.
       - Setup and the role's reads run as O(mssql_become_user) (C(runas) become) when it's set, which a UNC path and
@@ -19,12 +19,16 @@ argument_specs:
         inbound firewall rules (O(mssql_firewall)). These take effect when the engine restarts. The role restarts it
         when it installed the instance in the same run, or with O(mssql_allow_restart); otherwise it warns that a
         restart is pending, and says so again on every run until the engine has restarted.
+      - Next M(git_cgallagher.windows.mssql_configuration) sets the C(sp_configure) values O(mssql_configuration) lists,
+        and brings tempdb's files to O(mssql_tempdb), which setup created them with. It grows them, sets their growth
+        and adds data files, but never shrinks or removes one. A static option takes effect when the engine restarts,
+        which the role does under the same rule as for the network.
       - Afterwards the role connects to the instance and fails unless its account is C(sysadmin) there. It publishes
-        what M(git_cgallagher.windows.mssql_info) reports about the instance as the C(mssql_instance) fact. It
+        what M(git_cgallagher.windows.mssql_info) reports about the instance as the C(mssql_instance) fact. The role
         connects through .NET Framework's System.Data.SqlClient, which has no TDS 8.0, so with O(mssql_encryption)
-        V(strict) it doesn't connect, and checks only that the instance runs (C(mssql_instance.server) is null).
+        V(strict) it doesn't connect. It skips O(mssql_configuration) and O(mssql_tempdb) after install, and checks
+        only that the instance runs (C(mssql_instance.server) is null).
       - The service accounts and their SPNs come from the P(git_cgallagher.windows.mssql_prereqs#role) role.
-        C(sp_configure) is not this version's.
       - Supports check mode; check mode and O(mssql_report_only) report what setup would do without changing anything.
     author:
       - Chris Gallagher (@git-cgallagher)
@@ -167,7 +171,10 @@ argument_specs:
         type: dict
         default: {}
         description:
-          - tempdb's files, at install only.
+          - tempdb's files. Setup creates them so at install. Afterwards M(git_cgallagher.windows.mssql_configuration)
+            grows a file below its size, sets each file's growth, and adds the data files missing; it never shrinks or
+            removes one, and reports it instead. Empty leaves them as setup made them.
+          - Skipped after install with O(mssql_encryption) V(strict) (see the description).
         options:
           file_count:
             type: int
@@ -184,6 +191,17 @@ argument_specs:
           log_growth_mb:
             type: int
             description: The log file's growth.
+      mssql_configuration:
+        type: dict
+        default: {}
+        description:
+          - The C(sp_configure) values to set, by option name as C(sys.configurations) lists it (case doesn't matter),
+            each a whole number (V(true) and V(false) are 1 and 0), for example V(28672) for
+            C(max server memory (MB\)) and V(4) for C(max degree of parallelism).
+          - M(git_cgallagher.windows.mssql_configuration) refuses an option the instance doesn't have and a value outside
+            its range before it changes anything, and turns C(show advanced options) on for an advanced option and off
+            again. A static option takes effect when the engine restarts (see O(mssql_allow_restart)).
+          - Skipped with O(mssql_encryption) V(strict) (see the description).
       mssql_tcp_port:
         type: int
         default: 1433
@@ -221,9 +239,9 @@ argument_specs:
         type: bool
         default: false
         description:
-          - Lets the role restart an instance it didn't install in the same run when a network setting changed (or
-            one changed earlier still waits for a restart). Restarting stops every connection to the instance.
-            Without it, the role warns that a restart is pending.
+          - Lets the role restart an instance it didn't install in the same run when a network setting or a static
+            C(sp_configure) option changed (or one changed earlier still waits for a restart). Restarting stops every
+            connection to the instance. Without it, the role warns that a restart is pending.
       mssql_become_user:
         type: str
         default: ''

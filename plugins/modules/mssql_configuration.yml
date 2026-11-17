@@ -1,0 +1,177 @@
+DOCUMENTATION:
+  module: mssql_configuration
+  short_description: Set a SQL Server instance's sp_configure options and tempdb's files
+  description:
+    - Configures a running SQL Server instance from inside (C(sp_configure) values, and tempdb's data and log files),
+      connected over shared memory as the account the module runs as. Run it as an account that is C(sysadmin) on the
+      instance, through C(runas) become for example.
+    - O(sp_configure) sets options by their name in C(sys.configurations), such as C(max server memory (MB\)) or
+      C(cost threshold for parallelism). The module checks every value against the option's range before it changes
+      anything. An advanced option needs C(show advanced options) on, which the module turns on for the change and off
+      again, unless O(sp_configure) sets it too. Each change runs C(sp_configure) and then C(RECONFIGURE), never
+      C(RECONFIGURE WITH OVERRIDE); a value SQL Server refuses is put back, and the module fails saying which option.
+    - A dynamic option takes effect at once. A static one (C(is_dynamic) 0 in C(sys.configurations)) takes effect when
+      the engine restarts. With O(restart), the module restarts the engine and starts again the services that stopped
+      with it (SQL Server Agent depends on the engine). Without, it reports RV(restart_required), and keeps reporting it
+      on later runs while the option's value in use differs from the one set, as SQL Server records it.
+    - O(tempdb) grows tempdb's files to the sizes asked for, sets their growth, and adds data files up to
+      O(tempdb.file_count), named C(temp<N>) in C(tempdb_mssql_<N>.ndf) beside the first data file, as setup names
+      them. These take effect at once. It never shrinks a file or removes one, and says so in RV(notices).
+    - Check mode connects and reads, runs every check, and changes nothing.
+  version_added: 0.25.0
+  author:
+    - Chris Gallagher (@git-cgallagher)
+  options:
+    instance_name:
+      description:
+        - The instance, V(MSSQLSERVER) for the default instance.
+      type: str
+      default: MSSQLSERVER
+    sp_configure:
+      description:
+        - The C(sp_configure) options to set, by their name in C(sys.configurations) (case doesn't matter), each to a
+          whole number. V(true) and V(false) are 1 and 0.
+        - The module refuses an option the instance doesn't have, an option listed twice, a value outside the option's
+          range, and a C(min server memory (MB\)) above C(max server memory (MB\)), before it changes anything. It
+          warns when C(max server memory (MB\)) is at least the host's memory.
+        - Options it doesn't list are left as they are.
+      type: dict
+    tempdb:
+      description:
+        - tempdb's files, with the keys M(git_cgallagher.windows.mssql_setup) installs them with. A key left out is left
+          as it is.
+      type: dict
+      suboptions:
+        file_count:
+          description:
+            - The number of data files. A missing one is added with O(tempdb.file_size_mb) and O(tempdb.file_growth_mb),
+              or the first data file's size and growth. A file beyond it is reported, never removed.
+          type: int
+        file_size_mb:
+          description:
+            - Each data file's size in MB, the size tempdb starts with. A smaller file grows to it. A file that has
+              grown past it since the engine started can't be set to it until a restart; a larger one is reported,
+              never shrunk.
+          type: int
+        file_growth_mb:
+          description:
+            - Each data file's growth in MB. V(0) turns growth off.
+          type: int
+        log_size_mb:
+          description:
+            - The log file's size in MB, like O(tempdb.file_size_mb).
+          type: int
+        log_growth_mb:
+          description:
+            - The log file's growth in MB. V(0) turns growth off.
+          type: int
+    restart:
+      description:
+        - Restart the engine when a static option asked for waits for a restart, set now or before.
+        - Restarting stops every connection to the instance. It also puts in use any other option that waited for a
+          restart, which the module warns about.
+      type: bool
+      default: false
+    restart_timeout:
+      description:
+        - How many seconds a restarted engine has to reach C(ready for client connections) in its errorlog.
+      type: int
+      default: 300
+  notes:
+    - The module connects through .NET Framework's System.Data.SqlClient, which strict encryption (Force Strict
+      Encryption, TDS 8.0) refuses over shared memory as well as TCP. It can't configure an instance under strict, and
+      fails saying so.
+    - The account needs C(ALTER SETTINGS) for C(sp_configure), which C(sysadmin) and C(serveradmin) have, and C(ALTER) on
+      tempdb for its files, which C(sysadmin) has. The module checks both before it changes anything, in check mode too.
+    - This module doesn't configure failover cluster instances yet.
+  seealso:
+    - module: git_cgallagher.windows.mssql_info
+    - module: git_cgallagher.windows.mssql_network
+    - module: git_cgallagher.windows.mssql_setup
+    - name: Server configuration options
+      link: https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/server-configuration-options-sql-server
+      description: Every sp_configure option, whether it's advanced, and whether it needs a restart.
+    - name: tempdb database
+      link: https://learn.microsoft.com/en-us/sql/relational-databases/databases/tempdb-database
+      description: tempdb's files, their sizes and their growth.
+
+EXAMPLES: |
+  - name: Cap SQL Server's memory and tune parallelism
+    git_cgallagher.windows.mssql_configuration:
+      sp_configure:
+        max server memory (MB): 28672
+        max degree of parallelism: 4
+        cost threshold for parallelism: 50
+        optimize for ad hoc workloads: true
+
+  - name: Eight tempdb data files of 1 GB, each growing by 512 MB
+    git_cgallagher.windows.mssql_configuration:
+      tempdb:
+        file_count: 8
+        file_size_mb: 1024
+        file_growth_mb: 512
+
+  - name: Turn a static option on for a named instance, restarting its engine for it
+    git_cgallagher.windows.mssql_configuration:
+      instance_name: INST1
+      sp_configure:
+        scan for startup procs: 1
+      restart: true
+
+RETURN:
+  instance:
+    description: The instance's C(name), C(id) (its registry key) and C(version).
+    returned: when the instance exists
+    type: dict
+    sample: {name: MSSQLSERVER, id: MSSQL16.MSSQLSERVER, version: '2022'}
+  sp_configure:
+    description:
+      - The options O(sp_configure) names, keyed by their name in C(sys.configurations), after the run (in check mode, as
+        they are). Each has C(value) (as set), C(value_in_use), C(minimum), C(maximum), C(dynamic) and C(advanced).
+    returned: when the module connected
+    type: dict
+    sample:
+      'max server memory (MB)': {value: 28672, value_in_use: 28672, minimum: 128, maximum: 2147483647, dynamic: true, advanced: true}
+  tempdb:
+    description:
+      - tempdb's files after the run (in check mode, as they are). Each has its C(name), C(type) (V(ROWS) or V(LOG)),
+        C(path), C(size_mb) (the size tempdb starts with), C(current_size_mb), and C(growth_mb), or C(growth_percent)
+        for a file that grows by a percentage.
+    returned: when the module connected
+    type: list
+    elements: dict
+    sample:
+      - name: tempdev
+        type: ROWS
+        path: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\tempdb.mdf'
+        size_mb: 1024
+        current_size_mb: 1024
+        growth_mb: 512
+        growth_percent: null
+  restart_required:
+    description: Whether a static option asked for waits for the engine to restart.
+    returned: always
+    type: bool
+    sample: false
+  restarted:
+    description: Whether the module restarted the engine.
+    returned: always
+    type: bool
+    sample: false
+  services:
+    description: The C(engine)'s and C(agent)'s states after the run (V(running), V(stopped)); empty for one that isn't installed.
+    returned: when the instance exists
+    type: dict
+    sample: {engine: running, agent: running}
+  notices:
+    description: What the module left alone or wants you to know, also given as warnings.
+    returned: always
+    type: list
+    elements: str
+    sample: ["tempdb has 8 data files, more than file_count's 4: the module never removes one"]
+  actions:
+    description: What the module did, or in check mode would do, in order.
+    returned: always
+    type: list
+    elements: str
+    sample: ["set 'max server memory (MB)' to 28672 (was 2147483647)", "add tempdb data file 'temp5' (T:\\MSSQL\\TempDB\\tempdb_mssql_5.ndf, 1024 MB)"]

@@ -33,8 +33,8 @@ platforms:
       - {name: lab, ipv4_address: 10.42.0.20}
 provisioner:
   env:
-    # verify.yml runs the mssql_info and mssql_setup integration targets
-    # (tests/integration/targets) as roles.
+    # verify.yml runs the mssql_info, mssql_network, mssql_configuration and
+    # mssql_setup integration targets (tests/integration/targets) as roles.
     ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/integration/targets
   inventory:
     group_vars:
@@ -91,6 +91,15 @@ provisioner:
         mssql_agent_account: "{{ lab_netbios }}\\{{ lab_mssql.agent_gmsa }}$$"
         mssql_sysadmins: ["{{ lab_netbios }}\\{{ lab_mssql.admins_group }}"]
         mssql_tempdb: {file_count: 2, file_size_mb: 64, file_growth_mb: 64, log_size_mb: 64, log_growth_mb: 64}
+        # Dynamic options only (three of them advanced), so converge and
+        # idempotence need no restart; the mssql_configuration target sets a
+        # static one. Max server memory leaves room for the mssql_setup
+        # target's second instance.
+        mssql_configuration:
+          max server memory (MB): 1536
+          cost threshold for parallelism: 50
+          optimize for ad hoc workloads: 1
+          backup compression default: 1
         # mssql_certificate_thumbprint comes from converge.yml's lookup.
         mssql_encryption: mandatory
         mssql_become_user: "{{ lab_admin_user }}"

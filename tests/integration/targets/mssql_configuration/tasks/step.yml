@@ -1,0 +1,66 @@
+---
+# Included by main.yml once per change (cfg_step): reads the instance, runs
+# mssql_configuration with the step's options in check mode, reads it again,
+# runs it for real, reads it, and runs it once more. Check mode must predict
+# the change and write nothing; the run must make it; the repeat must find
+# nothing to do. main.yml checks what the run made. tempdb's files are
+# compared by what's set (name, size tempdb starts with, growth): their
+# current sizes move with tempdb's use.
+- name: "Read the instance before: {{ cfg_step.name }}"
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters: {InstanceName: "{{ cfg_instance }}", ConfigNames: "{{ cfg_names }}"}
+    depth: 5
+  register: cfg_step_before
+
+- name: "Run mssql_configuration in check mode: {{ cfg_step.name }}"
+  git_cgallagher.windows.mssql_configuration: &cfg_step_options
+    instance_name: "{{ cfg_instance }}"
+    sp_configure: "{{ cfg_step.sp_configure | default(omit) }}"
+    tempdb: "{{ cfg_step.tempdb | default(omit) }}"
+    restart: "{{ cfg_step.restart | default(false) }}"
+  check_mode: true
+  register: cfg_check
+
+- name: "Read the instance after check mode: {{ cfg_step.name }}"
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters: {InstanceName: "{{ cfg_instance }}", ConfigNames: "{{ cfg_names }}"}
+    depth: 5
+  register: cfg_check_state
+
+- name: "{{ cfg_step.name }}"
+  git_cgallagher.windows.mssql_configuration: *cfg_step_options
+  register: cfg_real
+
+- name: "Read the instance after: {{ cfg_step.name }}"
+  ansible.windows.win_powershell:
+    script: "{{ setup_mssql_state_script }}"
+    parameters: {InstanceName: "{{ cfg_instance }}", ConfigNames: "{{ cfg_names }}"}
+    depth: 5
+  register: cfg_state
+
+- name: "Run mssql_configuration again: {{ cfg_step.name }}"
+  git_cgallagher.windows.mssql_configuration: *cfg_step_options
+  register: cfg_again
+
+- name: "Check check mode predicted without a write, the run made it, the repeat did nothing: {{ cfg_step.name }}"
+  ansible.builtin.assert:
+    that:
+      - cfg_check is changed
+      - cfg_check.actions | length == cfg_real.actions | length
+      - not cfg_check.restarted
+      - cfg_check_state.output[0].server.configuration == cfg_step_before.output[0].server.configuration
+      - cfg_check_files | map(attribute='name') | list == cfg_before_files | map(attribute='name') | list
+      - cfg_check_files | map(attribute='size_mb') | list == cfg_before_files | map(attribute='size_mb') | list
+      - cfg_check_files | map(attribute='growth_mb') | list == cfg_before_files | map(attribute='growth_mb') | list
+      - cfg_check_state.output[0].errorlog.process_id == cfg_step_before.output[0].errorlog.process_id
+      - cfg_real is changed
+      - cfg_real.restarted == (cfg_step.expect_restart | default(false))
+      - cfg_again is not changed
+      - not cfg_again.restarted
+      - cfg_state.output[0].services.engine.state == 'Running'
+    fail_msg: "check mode {{ cfg_check | to_json }}; run {{ cfg_real | to_json }}; again {{ cfg_again | to_json }}"
+  vars:
+    cfg_before_files: "{{ cfg_step_before.output[0].server.tempdb_files }}"
+    cfg_check_files: "{{ cfg_check_state.output[0].server.tempdb_files }}"

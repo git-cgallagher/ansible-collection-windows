@@ -1,0 +1,299 @@
+---
+# Integration tests for git_cgallagher.windows.mssql_configuration, on the
+# instance the mssql role installed (setup_mssql, meta/main.yml, checks it's
+# there). It reads the test options first and checks what the steps rely on
+# (which are dynamic, which advanced, nothing waiting), checks the refusals
+# change nothing, then sets four dynamic options (three of them advanced, so
+# 'show advanced options' goes on and off again), a static one (first without
+# a restart, which stays pending, then with one), and tempdb last, in the
+# fresh tempdb that restart left (a data file added, sizes grown, growth
+# changed). Each step runs in check mode, for real and again (step.yml), and
+# every check reads the instance through setup_mssql's instance_state.ps1,
+# never through the module. The always block puts the options and tempdb back
+# as the target found them, in plain T-SQL (files/restore.ps1).
+#
+# The module and the reads run as setup_mssql_become_user, a sysadmin. One
+# refusal runs as the connection's own account instead, with a login the
+# target gives it with no server role, to show the module refuses to change
+# an option without ALTER SETTINGS.
+- name: Test mssql_configuration, then put the instance back
+  vars:
+    ansible_become_password: "{{ setup_mssql_become_password }}"
+    cfg_instance: "{{ setup_mssql_instance }}"
+    cfg_engine: "{{ 'MSSQLSERVER' if setup_mssql_instance == 'MSSQLSERVER' else 'MSSQL$' ~ setup_mssql_instance }}"
+    cfg_names:
+      - show advanced options
+      - cost threshold for parallelism
+      - optimize for ad hoc workloads
+      - backup compression default
+      - max server memory (MB)
+      - min server memory (MB)
+      - max degree of parallelism
+      - scan for startup procs
+    cfg_start: "{{ cfg_before.output[0].server }}"
+    cfg_options: "{{ cfg_start.configuration }}"
+    cfg_data_files: "{{ cfg_start.tempdb_files | selectattr('type', 'equalto', 'ROWS') | list }}"
+    cfg_log_files: "{{ cfg_start.tempdb_files | selectattr('type', 'equalto', 'LOG') | list }}"
+    cfg_now: "{{ cfg_state.output[0].server.configuration }}"
+    # Four dynamic options, each moved off its value; three are advanced.
+    cfg_dynamic:
+      cost threshold for parallelism: "{{ cfg_options['cost threshold for parallelism'].value + 5 }}"
+      optimize for ad hoc workloads: "{{ 1 - cfg_options['optimize for ad hoc workloads'].value }}"
+      backup compression default: "{{ 1 - cfg_options['backup compression default'].value }}"
+      max server memory (MB): "{{ 1280 if cfg_options['max server memory (MB)'].value != 1280 else 1536 }}"
+    # A static option: SQL Server runs startup procedures only when it's on,
+    # and the lab has none.
+    cfg_static:
+      scan for startup procs: "{{ 1 - cfg_options['scan for startup procs'].value }}"
+    cfg_tempdb:
+      file_count: "{{ cfg_data_files | length + 1 }}"
+      file_size_mb: "{{ (cfg_data_files | map(attribute='size_mb') | max) + 8 }}"
+      file_growth_mb: "{{ 48 if (cfg_data_files[0].growth_mb | default(0, true)) == 32 else 32 }}"
+      log_size_mb: "{{ cfg_log_files[0].size_mb + 8 }}"
+      log_growth_mb: "{{ 48 if (cfg_log_files[0].growth_mb | default(0, true)) == 32 else 32 }}"
+    cfg_result_keys: [instance, sp_configure, tempdb, restart_required, restarted, services, notices, actions]
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: "{{ setup_mssql_become_user }}"
+  block:
+    - name: Read the instance before the tests
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: "{{ cfg_instance }}", ConfigNames: "{{ cfg_names }}"}
+        depth: 5
+      register: cfg_before
+
+    - name: Show the test options and tempdb's files as the instance describes them
+      ansible.builtin.debug:
+        msg:
+          configuration: "{{ cfg_options }}"
+          tempdb_files: "{{ cfg_start.tempdb_files }}"
+
+    # The steps rely on these; the lab is where they're settled.
+    - name: Check the test options are what the steps rely on
+      ansible.builtin.assert:
+        that:
+          - cfg_before.output[0].installed
+          - cfg_options | length == cfg_names | length
+          - cfg_options['cost threshold for parallelism'].is_dynamic
+          - cfg_options['cost threshold for parallelism'].is_advanced
+          - cfg_options['optimize for ad hoc workloads'].is_dynamic
+          - cfg_options['optimize for ad hoc workloads'].is_advanced
+          - cfg_options['backup compression default'].is_dynamic
+          - not cfg_options['backup compression default'].is_advanced
+          - cfg_options['max server memory (MB)'].is_dynamic
+          - cfg_options['max server memory (MB)'].is_advanced
+          - not cfg_options['scan for startup procs'].is_dynamic
+          - cfg_options['max degree of parallelism'].maximum == 32767
+          - cfg_options | dict2items | selectattr('value.pending') | list | length == 0
+          - cfg_data_files | length > 0
+          - cfg_log_files | length == 1
+        fail_msg: "{{ cfg_start | to_json }}"
+
+    - name: Refuse what the module can't do, before it changes anything
+      ansible.builtin.include_tasks: refuse.yml
+      loop:
+        - case: an instance that isn't installed
+          instance_name: NOSUCHINSTANCE
+          expect: isn't installed
+        - case: an option the instance doesn't have
+          sp_configure: {no such option: 1}
+          expect: has no option 'no such option'
+        - case: a value above the option's range
+          sp_configure: {max degree of parallelism: 40000}
+          expect: takes 0 to 32767, got 40000
+        - case: a value that isn't a whole number
+          sp_configure: {cost threshold for parallelism: lots}
+          expect: takes a whole number
+        - case: min server memory above max server memory
+          sp_configure: {min server memory (MB): 4096, max server memory (MB): 2048}
+          expect: above max server memory
+        - case: a tempdb without data files
+          tempdb: {file_count: 0}
+          expect: tempdb.file_count must be 1 or more
+        - case: a negative tempdb growth
+          tempdb: {log_growth_mb: -1}
+          expect: tempdb.log_growth_mb must be 0 or more
+        - case: a restart timeout too short to wait for SQL Server
+          restart_timeout: 10
+          expect: 30 seconds or more
+      loop_control:
+        loop_var: cfg_case
+        label: "{{ cfg_case.case }}"
+
+    # Without ALTER SETTINGS: the connection's own account (WinRM's), with a
+    # login of its own and no server role. On a host where that account can
+    # already change settings, the case is skipped.
+    - name: Read the account the connection runs as
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+      become: false
+      register: cfg_winrm_account
+
+    - name: Give that account a login with no server role, unless it has one
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/login.ps1') }}"
+        parameters: {InstanceName: "{{ cfg_instance }}", Login: "{{ cfg_winrm_account.output[0] }}", State: present}
+      register: cfg_login
+
+    - name: Refuse to change an option without ALTER SETTINGS
+      ansible.builtin.include_tasks: refuse.yml
+      vars:
+        cfg_case:
+          case: a login without ALTER SETTINGS
+          sp_configure: {cost threshold for parallelism: "{{ cfg_dynamic['cost threshold for parallelism'] }}"}
+          become: false
+          expect: lacks ALTER SETTINGS
+      when: not cfg_login.output[0].alter_settings
+
+    - name: Read the instance after the refusals
+      ansible.windows.win_powershell:
+        script: "{{ setup_mssql_state_script }}"
+        parameters: {InstanceName: "{{ cfg_instance }}", ConfigNames: "{{ cfg_names }}"}
+        depth: 5
+      register: cfg_refused
+
+    - name: Check the refusals changed nothing
+      ansible.builtin.assert:
+        that:
+          - cfg_refused.output[0].server.configuration == cfg_options
+          - cfg_refused.output[0].server.tempdb_files | map(attribute='name') | list == cfg_start.tempdb_files | map(attribute='name') | list
+          - cfg_refused.output[0].server.tempdb_files | map(attribute='size_mb') | list == cfg_start.tempdb_files | map(attribute='size_mb') | list
+          - cfg_refused.output[0].errorlog.process_id == cfg_before.output[0].errorlog.process_id
+        fail_msg: "before {{ cfg_start | to_json }}; after {{ cfg_refused.output[0].server | to_json }}"
+
+    # --- dynamic options --------------------------------------------------
+    - name: Set four dynamic options, three of them advanced
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        cfg_step: {name: set four dynamic options, sp_configure: "{{ cfg_dynamic }}"}
+
+    - name: Check each dynamic option is set and in use
+      ansible.builtin.assert:
+        that:
+          - cfg_now[item.key].value == item.value | int
+          - cfg_now[item.key].value_in_use == item.value | int
+        fail_msg: "{{ item.key }}: {{ cfg_now[item.key] | to_json }}"
+      loop: "{{ cfg_dynamic | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Check show advanced options is back as it was, nothing waits, and the result has every documented key
+      ansible.builtin.assert:
+        that:
+          - cfg_now['show advanced options'].value == cfg_options['show advanced options'].value
+          - cfg_now['show advanced options'].value_in_use == cfg_options['show advanced options'].value_in_use
+          - cfg_real.actions | length == 4
+          - not cfg_real.restart_required
+          - not cfg_again.restart_required
+          - cfg_real.sp_configure | length == 4
+          - cfg_real.sp_configure['max server memory (MB)'].value_in_use == cfg_dynamic['max server memory (MB)'] | int
+          - cfg_real.tempdb | length == cfg_start.tempdb_files | length
+          - cfg_result_keys | difference(cfg_real.keys() | list) | length == 0
+          - cfg_real.instance.id == cfg_before.output[0].id
+        fail_msg: "run {{ cfg_real | to_json }}; instance {{ cfg_now | to_json }}"
+
+    # --- a static option: pending until a restart -------------------------
+    - name: Set a static option without a restart
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        cfg_step: {name: set a static option without a restart, sp_configure: "{{ cfg_static }}"}
+
+    - name: Check it's set, waits for a restart, and every run says so
+      ansible.builtin.assert:
+        that:
+          - cfg_real.restart_required
+          - cfg_again.restart_required
+          - cfg_now['scan for startup procs'].value == cfg_static['scan for startup procs'] | int
+          - cfg_now['scan for startup procs'].value_in_use == cfg_options['scan for startup procs'].value_in_use
+          - cfg_state.output[0].errorlog.process_id == cfg_before.output[0].errorlog.process_id
+          - cfg_real.notices | select('search', 'take effect when') | list | length == 1
+          - cfg_again.notices | select('search', 'take effect when') | list | length == 1
+        fail_msg: "run {{ cfg_real | to_json }}; again {{ cfg_again | to_json }}; instance {{ cfg_now | to_json }}"
+
+    - name: Restart for the waiting option
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        cfg_step:
+          name: restart for the waiting option
+          sp_configure: "{{ cfg_static }}"
+          restart: true
+          expect_restart: true
+
+    - name: Check the option is in use after the restart
+      ansible.builtin.assert:
+        that:
+          - cfg_real.actions | length == 1
+          - cfg_real.actions[0] is search('^restart ')
+          - cfg_engine in cfg_real.actions[0]
+          - not cfg_real.restart_required
+          - cfg_now['scan for startup procs'].value_in_use == cfg_static['scan for startup procs'] | int
+          - cfg_state.output[0].errorlog.process_id != cfg_before.output[0].errorlog.process_id
+          - cfg_state.output[0].errorlog.ready
+          - cfg_real.services.engine == 'running'
+          - cfg_real.services.agent in ['running', '']
+        fail_msg: "run {{ cfg_real | to_json }}; instance {{ cfg_state.output[0] | to_json }}"
+
+    # --- tempdb, fresh from that restart ----------------------------------
+    - name: Add a tempdb data file, grow the files and change their growth
+      ansible.builtin.include_tasks: step.yml
+      vars:
+        cfg_step: {name: change tempdb, tempdb: "{{ cfg_tempdb }}"}
+
+    - name: Check tempdb has the new data file, the sizes and the growth
+      ansible.builtin.assert:
+        that:
+          - cfg_data_now | length == cfg_tempdb.file_count | int
+          - cfg_data_now | map(attribute='size_mb') | unique | list == [cfg_tempdb.file_size_mb | int]
+          - cfg_data_now | map(attribute='growth_mb') | unique | list == [cfg_tempdb.file_growth_mb | int]
+          - cfg_log_now | map(attribute='size_mb') | list == [cfg_tempdb.log_size_mb | int]
+          - cfg_log_now | map(attribute='growth_mb') | list == [cfg_tempdb.log_growth_mb | int]
+          - cfg_added.name is match('^temp[0-9]+$')
+          - cfg_added.path | win_basename == 'tempdb_mssql_' ~ cfg_added.name[4:] ~ '.ndf'
+          - cfg_added.path | win_dirname | lower == cfg_data_files[0].path | win_dirname | lower
+          - cfg_real.actions | select('search', '^add tempdb data file') | list | length == 1
+          - not cfg_real.restart_required
+        fail_msg: >-
+          asked {{ cfg_tempdb | to_json }}; start {{ cfg_start.tempdb_files | to_json }};
+          now {{ cfg_state.output[0].server.tempdb_files | to_json }}; run {{ cfg_real | to_json }}
+      vars:
+        cfg_data_now: "{{ cfg_state.output[0].server.tempdb_files | selectattr('type', 'equalto', 'ROWS') | list }}"
+        cfg_log_now: "{{ cfg_state.output[0].server.tempdb_files | selectattr('type', 'equalto', 'LOG') | list }}"
+        cfg_added: "{{ cfg_data_now | rejectattr('name', 'in', cfg_data_files | map(attribute='name') | list) | first }}"
+
+  always:
+    - name: Drop the login the target gave the connection's account
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/login.ps1') }}"
+        parameters: {InstanceName: "{{ cfg_instance }}", Login: "{{ cfg_winrm_account.output[0] }}", State: absent}
+      when:
+        - cfg_login is defined
+        - cfg_login is succeeded
+        - cfg_login.output[0].created
+
+    # Plain T-SQL, never the module: back to the options and tempdb files the
+    # target started with, restarting first when an option waits for a
+    # restart or tempdb has a file the target added.
+    - name: Put the options and tempdb back as the target found them
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/restore.ps1') }}"
+        parameters:
+          InstanceName: "{{ cfg_instance }}"
+          Options: "{{ cfg_options }}"
+          Tempdb: "{{ cfg_start.tempdb_files }}"
+        depth: 5
+      register: cfg_restored
+      when: cfg_before is succeeded
+
+    - name: Show what putting back did
+      ansible.builtin.debug:
+        var: cfg_restored.output[0]
+      when: cfg_restored is not skipped and cfg_restored is succeeded
+
+    - name: Check the options and tempdb are back as the target found them
+      ansible.builtin.assert:
+        that: cfg_restored.output[0].differences | length == 0
+        fail_msg: "{{ cfg_restored.output[0] | to_json }}"
+      when: cfg_restored is not skipped and cfg_restored is succeeded

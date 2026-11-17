@@ -30,6 +30,16 @@ Describe 'mssql_network''s wiring' {
         }
     }
 
+    # A util function the util doesn't export fails only on a real host.
+    It 'calls only util functions the util exports' {
+        $called = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+                ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -like '*-Mssql*' } | Sort-Object -Unique)
+        $called.Count | Should -BeGreaterThan 0
+        foreach ($name in $called) {
+            @($script:util.ExportedFunctions.Keys) | Should -Contain $name
+        }
+    }
+
     It 'plans the registry writes with the util, after checking the certificate' {
         $check = $script:text.IndexOf('Get-MssqlCertificateProblem -Certificate $certificate')
         $plan = $script:text.IndexOf('Get-MssqlNetworkPlan -Current $registry.Current')

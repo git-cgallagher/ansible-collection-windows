@@ -136,24 +136,30 @@ their phases and the owner's decisions of 2026-11-01). Its roles:
   `tests/argument_specs/validate.yml` runs on localhost with
   `tasks_from: plan` and `public: true`; `tasks/main.yml` imports it, then
   reads (KDS root keys, SPNs held elsewhere) before it writes anything.
-- `roles/mssql` (0.22.0, phase 3a; network in 0.23.0, phase 3b) — a
-  standalone SQL Server 2022 or 2025 instance from an ISO, on each host in
-  parallel, through the modules `mssql_setup` (stage the ISO from a local
-  path, UNC path or URL into a cache, mount it, check its version and
-  edition, run setup; or uninstall), `mssql_network` (static TCP port, a
-  certificate bound by thumbprint with read access to its key for the
-  engine's per-service SID and account, the encryption mode, firewall rules,
-  restart) and `mssql_info` (the instances from the registry, services and
-  SQL Server itself). `tasks/plan.yml` checks the variables on the
+- `roles/mssql` (0.22.0, phase 3a; network in 0.23.0, phase 3b;
+  `sp_configure` and tempdb in 0.25.0, phase 3c) — a standalone SQL Server
+  2022 or 2025 instance from an ISO, on each host in parallel, through the
+  modules `mssql_setup` (stage the ISO from a local path, UNC path or URL
+  into a cache, mount it, check its version and edition, run setup; or
+  uninstall), `mssql_network` (static TCP port, a certificate bound by
+  thumbprint with read access to its key for the engine's per-service SID and
+  account, the encryption mode, firewall rules, restart),
+  `mssql_configuration` (`sp_configure` values and tempdb's files, over
+  shared memory, with a restart for a static option when allowed) and
+  `mssql_info` (the instances from the registry, services and SQL Server
+  itself). `tasks/plan.yml` checks the variables on the
   controller (the argument-specs workflow runs it); `tasks/main.yml` plans
   setup in check mode when it may reboot first, installs, reboots after 3010
   when allowed, configures the network (restarting when it installed the
   instance in the run, from `mssql_setup`'s `setup.action`, or with
-  `mssql_allow_restart`), reads the instance back and requires a sysadmin
-  connection, except under `mssql_encryption: strict` (Chris, 2026-11-10):
-  strict refuses .NET Framework's SqlClient over shared memory too, so the
-  role reads the instance without connecting and only requires it running
-  (`mssql_instance.server` is null). `mssql_network` never connects to SQL Server: it writes
+  `mssql_allow_restart`), sets `mssql_configuration`'s `sp_configure` values
+  and brings tempdb to `mssql_tempdb` (grow, growth, add data files; never
+  shrink or remove), restarting for a static option under the same rule,
+  reads the instance back and requires a sysadmin connection, except under
+  `mssql_encryption: strict` (Chris, 2026-11-10): strict refuses .NET
+  Framework's SqlClient over shared memory too, so the role skips
+  `mssql_configuration`, reads the instance without connecting and only
+  requires it running (`mssql_instance.server` is null). `mssql_network` never connects to SQL Server: it writes
   `SuperSocketNetLib` as SQL Server Configuration Manager does (values
   `ForceEncryption`, `ForceStrict`, `Certificate` lowercase without spaces;
   `Tcp\IPAll` `TcpPort` and `TcpDynamicPorts`), reuses each value's kind,
@@ -163,9 +169,8 @@ their phases and the owner's decisions of 2026-11-01). Its roles:
   `C:\ProgramData\mssql-iac\network\<instance id>.restart`, so the next run
   still reports `restart_required`.
 
-Next, per issue #48: 3c (`mssql_configuration`: `sp_configure`), the
-FCI topology of `mssql` (phase 5) and `mssql_ag` (availability groups,
-phase 4). **Every cluster change is made by `wsfc` itself**
+Next, per issue #48: `mssql_ag` (availability groups, phase 4) and the FCI
+topology of `mssql` (phase 5). **Every cluster change is made by `wsfc` itself**
 (owner rule, 2026-11-01): amend `wsfc`/`wsfc_cluster`, never put cluster
 configuration into an `mssql` role. Service accounts and SPNs stay in
 `mssql_prereqs`, never in `mssql` or `mssql_ag`. The base role `mssql` must
@@ -241,7 +246,8 @@ role):
   nothing), plans a new account report-only (creating nothing), and checks
   that add mode keeps an out-of-band SPN while exclusive mode removes it and
   a repeat changes nothing.
-- `roles/mssql/molecule/default` (0.22.0; network checks 0.23.0): **two VMs**
+- `roles/mssql/molecule/default` (0.22.0; network checks 0.23.0;
+  configuration 0.25.0): **two VMs**
   on a lab network (dc01 = DC holding the accounts and the client, sql01
   joined). prepare runs `mssql_prereqs` (the engine's domain account with its
   SPNs, a gMSA sql01 may use for the Agent, the administrators' group) and
@@ -252,18 +258,22 @@ role):
   encryption, which sql01 downloads from Microsoft itself through the role's
   URL staging (pinned by SHA-256 in `molecule.yml`; Chris agreed to the
   Developer ISO in CI on 2026-11-06, and it's never uploaded or published).
-  verify reads the instance through `setup_mssql`'s `instance_state.ps1`
-  (edition, version, collation, service accounts, sysadmins, tempdb, instant
-  file initialization, TCP, the network registry, the errorlog's last start,
-  the firewall rule, the key's readers), searches setup's
+  converge also sets four dynamic `sp_configure` options (no static one, so
+  idempotence needs no restart). verify reads the instance through
+  `setup_mssql`'s `instance_state.ps1` (edition, version, collation, service
+  accounts, sysadmins, tempdb's files, instant file initialization, the
+  `sp_configure` values with `show advanced options` off again, TCP, the
+  network registry, the errorlog's last start, the firewall rule, the key's
+  readers), searches setup's
   `ConfigurationFile.ini` files for the engine's password, probes the
   instance from dc01 (`client.ps1`: Kerberos, a checked certificate, forced
   encryption, a TDS PRELOGIN), runs the role with strict (it skips its SQL
-  Server checks; checks the Agent stopped, SqlClient refused over shared
-  memory, and from dc01 only a TLS-first client getting in) and with
+  Server checks and `mssql_configuration`; checks the Agent stopped,
+  SqlClient refused over shared memory, `mssql_configuration` refusing and
+  naming strict, and from dc01 only a TLS-first client getting in) and with
   mandatory again, runs the role report-only, then the `mssql_info`,
-  `mssql_network` and `mssql_setup` integration targets through
-  `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
+  `mssql_network`, `mssql_configuration` and `mssql_setup` integration
+  targets through `ANSIBLE_ROLES_PATH`. `mssql_setup`'s target installs,
   extends and uninstalls a named instance of its own (ITEST) from a UNC path
   (an SMB share of the role's cache on sql01 itself) and reboots first
   whenever Windows has a reboot pending (once in the first green run, before
@@ -397,8 +407,13 @@ Not covered by the lab yet (issue #16 unless noted):
   plan (a Kerberos and encryption check from a client), not built yet.
   **A TDS 8.0 client for the modules** (ODBC Driver 18, which 2025's setup
   installs, or OLE DB 19.2+): without one, under strict nothing in this
-  collection can connect to the instance, so 3c's `sp_configure` and the AG
-  modules won't work on a strict instance.
+  collection can connect to the instance, so `mssql_configuration` (which
+  refuses, naming strict) and the AG modules won't work on a strict
+  instance. `mssql_configuration` never shrinks a tempdb file or removes
+  one; whether SQL Server 2022 takes `ALTER DATABASE tempdb MODIFY FILE`
+  with a size below the file's current one (Microsoft says no, Msg 5039;
+  some write-ups say it applies at the next restart) is unconfirmed, so the
+  module only grows.
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
@@ -483,11 +498,22 @@ lab to the scripts — and record the surprise below as a gotcha.
   install, add_features, uninstall or none, with notices for what's fixed
   at install), setup's command line (`Get-MssqlSetupArgument`,
   `Format-MssqlSetupArgument -Redact`) and its `Summary.txt`
-  (`Get-MssqlSetupSummary`). Three readers the modules share live there too
-  (`Get-MssqlInstanceRegistry`, `Get-MssqlServiceState`,
-  `Invoke-MssqlQuery`, plus `Get-MssqlRebootState`); Pester loads them but
-  doesn't call them. The targets' own reads (`setup_mssql`'s
-  `instance_state.ps1`) never use the util.
+  (`Get-MssqlSetupSummary`); 0.23.0 added the network plan, certificate
+  checks, errorlog and firewall rules, and 0.25.0 the `sp_configure` plan
+  and its batch (`Get-MssqlConfigurationPlan`, `Get-MssqlConfigurationBatch`:
+  names and values as parameters, `show advanced options` on and off around
+  advanced options, a refused value put back) and the tempdb plan
+  (`Get-MssqlTempdbPlan`: grow, growth, add files; never shrink or remove).
+  The readers and writers the modules share live there too
+  (`Get-MssqlInstanceRegistry`, `Get-MssqlServiceState`, `Invoke-MssqlQuery`,
+  `Invoke-MssqlNonQuery`, `Read-MssqlErrorLog`, `Get-MssqlRebootState`) and
+  the one function that changes the host, `Restart-MssqlEngine` (0.25.0,
+  moved out of `mssql_network`, which `mssql_configuration` shares); Pester
+  loads them but doesn't call them, so each module's wiring test checks every
+  util function it calls is exported. A script module doesn't see the
+  calling module's `$ErrorActionPreference`, so the util says
+  `-ErrorAction Stop` where it must stop. The targets' own reads
+  (`setup_mssql`'s `instance_state.ps1`) never use the util.
 - **Idempotency contract (owner rule, 2026-11-01):** a task reports
   `changed` only when it changed the target, and a second converge reports
   zero changes (Molecule's `idempotence` step). `--check` predicts without
@@ -656,8 +682,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   run, and provides `files/read_domain.ps1`, GPMC and AD, `read_export.ps1`,
   the zip and state file, and `new_migtable.ps1`; its `setup_gpo_lab_dir`,
   `C:\ProgramData\gpo-iac-test`, keeps the targets apart from the roles'
-  state under `C:\ProgramData\gpo-iac`), and `mssql_info`, `mssql_network`
-  then `mssql_setup` from `roles/mssql` (all need the instance the role
+  state under `C:\ProgramData\gpo-iac`), and `mssql_info`, `mssql_network`,
+  `mssql_configuration` then `mssql_setup` from `roles/mssql` (all need the
+  instance the role
   installed and the ISO it cached, which `setup_mssql` checks rather than
   installs; its `instance_state.ps1` reads the registry, services, errorlog,
   firewall, key ACL and SqlClient directly, and its `tasks/reboot.yml`
@@ -665,7 +692,10 @@ lab to the scripts — and record the surprise below as a gotcha.
   which marker; `mssql_setup`'s target keeps to `C:\ProgramData\mssql-iac-test`
   and an instance of its own, ITEST; `mssql_network`'s works on the role's
   instance with certificates it makes and puts the instance back in an
-  `always` block). The role scenarios keep role
+  `always` block; `mssql_configuration`'s works on the role's instance too,
+  with a login of its own for the connection's account to show the
+  `ALTER SETTINGS` refusal, and puts the options and tempdb back in plain
+  T-SQL, `files/restore.ps1`, after a restart). The role scenarios keep role
   behaviour (staging, fetch/unpack, variables, `*_report_only`, the
   converge/idempotence of the role) and leave the module's behaviour to the
   targets. `gpo_sync_import`'s target builds its source with `gpo_sync_export`
