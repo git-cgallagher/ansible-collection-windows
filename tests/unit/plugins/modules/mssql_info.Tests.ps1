@@ -29,6 +29,16 @@ Describe 'mssql_info''s wiring' {
         }
     }
 
+    # A util function the util doesn't export fails only on a real host.
+    It 'calls only util functions the util exports' {
+        $called = @($script:ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+                ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -like '*-Mssql*' } | Sort-Object -Unique)
+        $called.Count | Should -BeGreaterThan 0
+        foreach ($name in $called) {
+            @($script:util.ExportedFunctions.Keys) | Should -Contain $name
+        }
+    }
+
     It 'reads instances the way mssql_setup does' {
         $script:text | Should -Match 'Get-MssqlInstanceRegistry'
         $script:text | Should -Match 'ConvertTo-MssqlInstanceFact -Registry \$entry'

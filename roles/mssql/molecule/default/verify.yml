@@ -2,13 +2,15 @@
 # Checks the instance the role installed through setup_mssql's
 # instance_state.ps1 (the registry, the services, the errorlog, the firewall
 # and SqlClient, never the modules), that setup kept the passwords out of its
-# logs, and the network the role configured: from sql01 itself, and from dc01
-# over the lab network (client.ps1: Kerberos, the certificate dc01 trusts,
-# forced encryption). Then the role with strict encryption, which skips its
-# SQL Server checks, and what strict does on SQL Server 2022 (its Agent stops,
-# TDS 7.x clients are refused); the role with mandatory again; a report-only
-# run of the role that must plan nothing; and the modules' integration
-# targets (tests/integration/targets) as roles.
+# logs, the sp_configure values and tempdb's files the role set, and the
+# network the role configured: from sql01 itself, and from dc01 over the lab
+# network (client.ps1: Kerberos, the certificate dc01 trusts, forced
+# encryption). Then the role with strict encryption, which skips its SQL
+# Server checks and mssql_configuration, and what strict does on SQL Server
+# 2022 (its Agent stops, TDS 7.x clients are refused, and so is
+# mssql_configuration, which says why); the role with mandatory again; a
+# report-only run of the role that must plan nothing; and the modules'
+# integration targets (tests/integration/targets) as roles.
 - name: Verify the instance on sql01
   hosts: lab_sql
   gather_facts: false
@@ -22,6 +24,7 @@
         parameters:
           InstanceName: MSSQLSERVER
           ImagePaths: ["{{ lab_iso }}"]
+          ConfigNames: "{{ mssql_configuration.keys() | list + ['show advanced options'] }}"
         depth: 5
       register: lab_instance
       vars:
@@ -67,6 +70,37 @@
         fail_msg: "{{ lab_sql_instance | to_json }}"
       vars:
         lab_sql_instance: "{{ lab_instance.output[0] }}"
+
+    - name: Check each sp_configure value the role set is in use
+      ansible.builtin.assert:
+        that:
+          - lab_config[item.key].value == item.value | int
+          - lab_config[item.key].value_in_use == item.value | int
+        fail_msg: "{{ item.key }}: {{ lab_config[item.key] | default('not read') | to_json }}"
+        quiet: true
+      loop: "{{ mssql_configuration | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        lab_config: "{{ lab_instance.output[0].server.configuration }}"
+
+    # Three of the options are advanced, so the role turned show advanced
+    # options on for them and off again.
+    - name: Check show advanced options is off again, and tempdb's files are as mssql_tempdb says
+      ansible.builtin.assert:
+        that:
+          - lab_config['show advanced options'].value == 0
+          - lab_config['show advanced options'].value_in_use == 0
+          - lab_data | length == mssql_tempdb.file_count
+          - lab_data | map(attribute='size_mb') | unique | list == [mssql_tempdb.file_size_mb]
+          - lab_data | map(attribute='growth_mb') | unique | list == [mssql_tempdb.file_growth_mb]
+          - lab_log | map(attribute='size_mb') | list == [mssql_tempdb.log_size_mb]
+          - lab_log | map(attribute='growth_mb') | list == [mssql_tempdb.log_growth_mb]
+        fail_msg: "{{ lab_instance.output[0].server.configuration | to_json }}; tempdb {{ lab_instance.output[0].server.tempdb_files | to_json }}"
+      vars:
+        lab_config: "{{ lab_instance.output[0].server.configuration }}"
+        lab_data: "{{ lab_instance.output[0].server.tempdb_files | selectattr('type', 'equalto', 'ROWS') | list }}"
+        lab_log: "{{ lab_instance.output[0].server.tempdb_files | selectattr('type', 'equalto', 'LOG') | list }}"
 
     # Setup writes the settings it ran with to ConfigurationFile.ini in each
     # run's log folder; the engine's password must not be among them.
@@ -218,6 +252,18 @@
       become_method: ansible.builtin.runas
       become_user: "{{ lab_admin_user }}"
 
+    - name: Run mssql_configuration under strict encryption, which must refuse and say why
+      git_cgallagher.windows.mssql_configuration:
+        instance_name: MSSQLSERVER
+        sp_configure: "{{ mssql_configuration }}"
+      register: lab_strict_configuration
+      ignore_errors: true
+      vars:
+        ansible_become_password: "{{ lab_admin_password }}"
+      become: true
+      become_method: ansible.builtin.runas
+      become_user: "{{ lab_admin_user }}"
+
     - name: Read the instance under strict encryption
       ansible.windows.win_powershell:
         script: "{{ lab_state_script }}"
@@ -232,10 +278,15 @@
           agent: "{{ lab_strict_state.output[0].services.agent }}"
           errorlog: "{{ lab_strict_state.output[0].errorlog }}"
           mssql_info_server: "{{ (lab_strict_info.instances | first).server }}"
+          mssql_configuration: "{{ lab_strict_configuration.msg | default('') }}"
 
-    - name: Check the role set strict, skipped its SQL Server checks, and what strict did on 2022
+    - name: Check the role set strict, skipped its SQL Server checks and mssql_configuration, and what strict did on 2022
       ansible.builtin.assert:
         that:
+          - mssql__configuration is skipped
+          - lab_strict_configuration is failed
+          - lab_strict_configuration.msg is search('uses strict encryption')
+          - lab_strict_configuration.actions | length == 0
           - mssql__network is changed
           - mssql__network.restarted
           - mssql__network.encryption.mode == 'strict'
@@ -298,16 +349,19 @@
         mssql_certificate_thumbprint: "{{ lab_thumbprint }}"
         mssql_allow_restart: true
 
-    - name: Check the role connected again, and SQL Server Agent runs again
+    - name: Check the role connected again, SQL Server Agent runs again, and the configuration held
       ansible.builtin.assert:
         that:
           - mssql__network.restarted
           - mssql__network.services.engine == 'running'
           - mssql__network.services.agent == 'running'
+          - mssql__configuration is not changed
+          - not mssql__configuration.restart_required
+          - mssql__configuration.sp_configure | length == mssql_configuration | length
           - mssql_instance.encryption.mode == 'mandatory'
           - mssql_instance.server.connected
           - mssql_instance.services.agent.state == 'running'
-        fail_msg: "network {{ mssql__network | to_json }}; instance {{ mssql_instance | to_json }}"
+        fail_msg: "network {{ mssql__network | to_json }}; configuration {{ mssql__configuration | to_json }}; instance {{ mssql_instance | to_json }}"
 
     - name: Run the role report-only
       ansible.builtin.include_role:
@@ -324,6 +378,8 @@
           - mssql__network is not changed
           - not mssql__network.restart_required
           - mssql__network.notices | length == 0
+          - mssql__configuration is not changed
+          - mssql__configuration.notices | length == 0
           - mssql_instance.features_known
           - mssql_instance.features == mssql_features
           - mssql_instance.encryption.mode == 'mandatory'
@@ -339,6 +395,10 @@
     - name: Run mssql_network's integration target
       ansible.builtin.include_role:
         name: mssql_network
+
+    - name: Run mssql_configuration's integration target
+      ansible.builtin.include_role:
+        name: mssql_configuration
 
     - name: Run mssql_setup's integration target
       ansible.builtin.include_role:

@@ -1,6 +1,54 @@
 # Changelog
 
-## 0.24.0 — 2026-11-16
+## 0.25.0 — 2026-11-17
+
+A standalone instance's configuration: phase 3c of issue #48, which
+completes the standalone `mssql` role.
+
+- New module `mssql_configuration`: sets `sp_configure` values and tempdb's
+  files on a running instance, connected over shared memory as the account
+  it runs as. It matches an option by its name in `sys.configurations`
+  (ignoring case) and refuses, before it changes anything (in check mode
+  too): an option the instance doesn't have, one listed twice, a value that
+  isn't a whole number or is outside the option's range, `min server memory
+  (MB)` above `max server memory (MB)`, a login without `ALTER SETTINGS` (or
+  `ALTER` on tempdb for its files), and an instance under strict encryption,
+  whose refusal of .NET Framework's SqlClient it names. It turns `show
+  advanced options` on for an advanced option and off again, runs each
+  change as `sp_configure` then `RECONFIGURE` (never `WITH OVERRIDE`), and
+  puts back an option SQL Server refuses. A static option takes effect when
+  the engine restarts: with `restart` the module restarts it, otherwise it
+  reports `restart_required` on every run until the value is in use. Two
+  memory defaults show another value in use by design, as Microsoft
+  documents (`min server memory (MB)` 0 as 8 or 16, `max server memory
+  (MB)` 0 as 2147483647), and the module counts them as in use. For
+  tempdb it grows files below the size asked for, sets their growth, and
+  adds data files (`temp<N>` in `tempdb_mssql_<N>.ndf` beside the first, as
+  setup names them); it never shrinks or removes a file, and warns instead.
+  Failover cluster instances are refused for now.
+- Role `mssql`: new variable `mssql_configuration` (`{}`), the `sp_configure`
+  values to set. **`mssql_tempdb` now applies after install too**: the role
+  runs `mssql_configuration` after the network step, so an installed
+  instance's tempdb files grow to `mssql_tempdb`'s sizes, take its growth and
+  get the missing data files (it was install-only before). A static option
+  restarts the engine under the network step's rule (the role installed the
+  instance in the run, or `mssql_allow_restart`). Under `strict` the role
+  skips the step, as it skips its SQL Server checks.
+- `_MssqlCommon.psm1`: the sp_configure plan and batch, the tempdb plan, and
+  `Invoke-MssqlNonQuery`; `mssql_network`'s restart (wait for "ready for
+  client connections", start the Agent again, watch it) moved into the util
+  as `Restart-MssqlEngine`, which both modules use.
+- Tests: Pester tests for the plans and the batch, and a wiring test in each
+  SQL Server module's tests that every util function it calls is exported;
+  integration target `mssql_configuration` (nine refusals, one as a login
+  without `ALTER SETTINGS`; dynamic options, three of them advanced; a static
+  option, pending until a restart; tempdb, a data file added and the files
+  grown; then everything put back in plain T-SQL); the `mssql` scenario sets
+  four dynamic options and checks them, checks `show advanced options` is
+  off again and tempdb matches `mssql_tempdb`, and checks the module refuses
+  a strict instance and says why.
+
+## 0.24.0 — 2026-11-17
 
 Local administrators and logon restrictions, authored once and imported into
 other domains with `gpo_export` and `gpo_import` (issue #16). No module
@@ -26,7 +74,7 @@ changes.
     deny rights name dst's group. Imported without the table, the rights
     don't deny dst's group at all, and nothing fails.
 
-## 0.23.0 — 2026-11-07
+## 0.23.0 — 2026-11-16
 
 A standalone instance's network: phase 3b of issue #48.
 

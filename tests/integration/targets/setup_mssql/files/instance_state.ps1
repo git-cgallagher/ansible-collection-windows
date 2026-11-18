@@ -2,15 +2,17 @@
 # assertions: its registry keys (network settings included), its services,
 # its errorlog's last start, the firewall rule mssql_network names after it,
 # who may read Thumbprint's private key, and (with Query) what SQL Server says
-# about itself; plus which of ImagePaths are mounted. Read-only, and
-# independent of the modules under test and their util: the registry,
-# Win32_Service, the errorlog, NetSecurity, the certificate store and
-# System.Data.SqlClient, directly.
+# about itself, with the sp_configure options ConfigNames names and tempdb's
+# files; plus which of ImagePaths are mounted. Read-only, and independent of
+# the modules under test and their util: the registry, Win32_Service, the
+# errorlog, NetSecurity, the certificate store and System.Data.SqlClient,
+# directly.
 param(
     [string]$InstanceName = 'MSSQLSERVER',
     [bool]$Query = $true,
     [string[]]$ImagePaths = @(),
-    [string]$Thumbprint = ''
+    [string]$Thumbprint = '',
+    [string[]]$ConfigNames = @()
 )
 $ErrorActionPreference = 'Stop'
 $Ansible.Changed = $false
@@ -195,6 +197,64 @@ WHERE r.name = N'sysadmin'
                 ForEach-Object { '{0}|{1}|{2}' -f $_.servicename, $_.service_account, $_.instant_file_initialization_enabled })
         tempdb_data_files = @(Invoke-Sql $connection "SELECT name FROM tempdb.sys.database_files WHERE type_desc = 'ROWS'").Count
     }
+
+    # The sp_configure options asked for, by their name in sys.configurations.
+    $result.server.configuration = @{}
+    if ($ConfigNames.Count -gt 0) {
+        $rows = @(Invoke-Sql $connection @'
+SELECT name, CAST(value AS bigint) AS value, CAST(value_in_use AS bigint) AS value_in_use,
+    CAST(minimum AS bigint) AS minimum, CAST(maximum AS bigint) AS maximum, is_dynamic, is_advanced
+FROM sys.configurations
+'@)
+        foreach ($row in $rows) {
+            if ($ConfigNames -notcontains [string]$row.name) { continue }
+            $value = [long]$row.value
+            $inUse = [long]$row.value_in_use
+            # Two options show another value in use by design (Microsoft's
+            # "Server configuration options" page): min server memory (MB)
+            # set to 0 shows 8 or 16, max server memory (MB) set to 0 shows
+            # 2147483647. Neither waits for anything.
+            $byDesign = $false
+            if ($value -eq 0 -and [string]$row.name -eq 'min server memory (MB)') { $byDesign = $inUse -in @(8, 16) }
+            if ($value -eq 0 -and [string]$row.name -eq 'max server memory (MB)') { $byDesign = $inUse -eq 2147483647 }
+            $result.server.configuration[[string]$row.name] = @{
+                value = $value
+                value_in_use = $inUse
+                minimum = [long]$row.minimum
+                maximum = [long]$row.maximum
+                is_dynamic = [bool]$row.is_dynamic
+                is_advanced = [bool]$row.is_advanced
+                pending = $value -ne $inUse -and -not $byDesign
+            }
+        }
+    }
+
+    # tempdb's files: the size it starts with (sys.master_files), the size
+    # now (tempdb.sys.database_files), and the growth.
+    $result.server.tempdb_files = @(Invoke-Sql $connection @'
+SELECT m.file_id, m.name, m.type_desc, m.physical_name, CAST(m.size AS bigint) AS pages, CAST(d.size AS bigint) AS current_pages,
+    m.is_percent_growth, CAST(m.growth AS bigint) AS growth
+FROM sys.master_files AS m
+LEFT JOIN tempdb.sys.database_files AS d ON d.file_id = m.file_id
+WHERE m.database_id = DB_ID(N'tempdb')
+ORDER BY m.file_id
+'@ | ForEach-Object {
+            $growthMb = [long]$_.growth / 128
+            $growthPercent = $null
+            if ($_.is_percent_growth) {
+                $growthMb = $null
+                $growthPercent = [long]$_.growth
+            }
+            @{
+                name = [string]$_.name
+                type = [string]$_.type_desc
+                path = [string]$_.physical_name
+                size_mb = [long]$_.pages / 128
+                current_size_mb = [long]$_.current_pages / 128
+                growth_mb = $growthMb
+                growth_percent = $growthPercent
+            }
+        })
 }
 # The output, read as output[0] (win_powershell with depth 5).
 $result

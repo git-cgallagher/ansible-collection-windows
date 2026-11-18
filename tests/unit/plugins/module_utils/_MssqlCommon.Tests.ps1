@@ -1,5 +1,6 @@
 # Pester 5 unit tests for plugins/module_utils/_MssqlCommon.psm1, the logic
-# mssql_setup and mssql_info share. No SQL Server, no Ansible: run them with
+# the SQL Server modules share (mssql_setup, mssql_info, mssql_network and
+# mssql_configuration). No SQL Server, no Ansible: run them with
 #   Invoke-Pester -Path tests/unit
 # (the powershell CI job does). Windows PowerShell 5.1 or pwsh.
 
@@ -773,5 +774,400 @@ Describe 'Get-MssqlStrictNotice' {
         $notice2025 = Get-MssqlStrictNotice -Version '2025'
         $notice2025 | Should -Match 'System\.Data\.SqlClient'
         $notice2025 | Should -Not -Match 'Agent'
+    }
+}
+
+Describe 'ConvertTo-MssqlStringLiteral' {
+    It 'quotes a value as a Unicode literal, doubling single quotes' {
+        ConvertTo-MssqlStringLiteral 'tempdev' | Should -Be "N'tempdev'"
+        ConvertTo-MssqlStringLiteral "it's" | Should -Be "N'it''s'"
+        ConvertTo-MssqlStringLiteral 'C:\Temp DB\tempdb.mdf' | Should -Be "N'C:\Temp DB\tempdb.mdf'"
+    }
+}
+
+Describe 'ConvertTo-MssqlConfigValue' {
+    It 'takes whole numbers, strings of them and booleans' {
+        ConvertTo-MssqlConfigValue 4096 | Should -Be 4096
+        ConvertTo-MssqlConfigValue ([long]2147483647) | Should -Be 2147483647
+        ConvertTo-MssqlConfigValue '50' | Should -Be 50
+        ConvertTo-MssqlConfigValue ' -1 ' | Should -Be -1
+        ConvertTo-MssqlConfigValue 8.0 | Should -Be 8
+        ConvertTo-MssqlConfigValue $true | Should -Be 1
+        ConvertTo-MssqlConfigValue $false | Should -Be 0
+    }
+
+    It 'returns nothing for anything else' {
+        ConvertTo-MssqlConfigValue 'lots' | Should -BeNullOrEmpty
+        ConvertTo-MssqlConfigValue '' | Should -BeNullOrEmpty
+        ConvertTo-MssqlConfigValue 1.5 | Should -BeNullOrEmpty
+        ConvertTo-MssqlConfigValue $null | Should -BeNullOrEmpty
+        ConvertTo-MssqlConfigValue -Value @(1, 2) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-MssqlConfigValueInUse' {
+    It 'takes a value equal to the one in use as in use' {
+        Test-MssqlConfigValueInUse -Name 'cost threshold for parallelism' -Value 50 -InUse 50 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'cost threshold for parallelism' -Value 50 -InUse 5 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'scan for startup procs' -Value 1 -InUse 0 | Should -BeFalse
+    }
+
+    It 'takes the memory defaults Microsoft documents as in use, whatever the case' {
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 0 -InUse 16 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 0 -InUse 8 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'MIN SERVER MEMORY (MB)' -Value 0 -InUse 16 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'max server memory (MB)' -Value 0 -InUse 2147483647 | Should -BeTrue
+    }
+
+    It 'takes nothing else as in use' {
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 0 -InUse 32 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 1024 -InUse 16 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'max server memory (MB)' -Value 0 -InUse 4096 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'max degree of parallelism' -Value 0 -InUse 16 | Should -BeFalse
+    }
+}
+
+Describe 'Get-MssqlConfigurationPlan' {
+    BeforeAll {
+        # sys.configurations' rows, as the module reads them.
+        function script:New-ConfigRow {
+            param([string]$Name, [long]$Value, [long]$InUse = $Value, [long]$Minimum = 0, [long]$Maximum = 2147483647,
+                [bool]$Dynamic = $true, [bool]$Advanced = $false)
+            @{ name = $Name; value = $Value; value_in_use = $InUse; minimum = $Minimum; maximum = $Maximum; is_dynamic = $Dynamic; is_advanced = $Advanced }
+        }
+        # As SQL Server 2022 shows them: min server memory (MB)'s default of 0
+        # is in use as 16 (PR #74's lab; Microsoft documents 8 or 16).
+        function script:Get-ConfigRow {
+            param([hashtable[]]$Change = @())
+            $rows = @(
+                New-ConfigRow -Name 'show advanced options' -Value 0 -Maximum 1
+                New-ConfigRow -Name 'max server memory (MB)' -Value 2147483647 -Minimum 128 -Advanced $true
+                New-ConfigRow -Name 'min server memory (MB)' -Value 0 -InUse 16 -Advanced $true
+                New-ConfigRow -Name 'max degree of parallelism' -Value 0 -Maximum 32767 -Advanced $true
+                New-ConfigRow -Name 'backup compression default' -Value 0 -Maximum 1
+                New-ConfigRow -Name 'scan for startup procs' -Value 0 -Maximum 1 -Dynamic $false -Advanced $true
+                New-ConfigRow -Name 'remote access' -Value 1 -Maximum 1 -Dynamic $false
+            )
+            foreach ($override in $Change) {
+                $row = @($rows | Where-Object { $_.name -eq $override.name })[0]
+                foreach ($key in $override.Keys) { $row[$key] = $override[$key] }
+            }
+            $rows
+        }
+    }
+
+    It 'changes only what differs, by the instance''s spelling, whatever the case asked' {
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'MAX DEGREE OF PARALLELISM' = 4; 'backup compression default' = 0 }
+        @($plan.Problems).Count | Should -Be 0
+        @($plan.Changes).Count | Should -Be 1
+        $plan.Changes[0].Name | Should -Be 'max degree of parallelism'
+        $plan.Changes[0].Value | Should -Be 4
+        $plan.Changes[0].Was | Should -Be 0
+        $plan.Changes[0].Description | Should -Be "set 'max degree of parallelism' to 4 (was 0)"
+        @($plan.Restart).Count | Should -Be 0
+    }
+
+    It 'changes nothing when nothing is asked for' {
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired $null
+        @($plan.Changes).Count | Should -Be 0
+        $plan.AdvancedOn | Should -BeFalse
+        $plan.AdvancedOff | Should -BeFalse
+    }
+
+    It 'refuses an unknown option, a value out of range or not a whole number, and min server memory above max' {
+        $problems = (Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'no such option' = 1 }).Problems
+        $problems[0] | Should -Be "sp_configure has no option 'no such option' on this instance"
+        $problems = (Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'max degree of parallelism' = 40000 }).Problems
+        $problems[0] | Should -Be "sp_configure option 'max degree of parallelism' takes 0 to 32767, got 40000"
+        $problems = (Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'max server memory (MB)' = 64 }).Problems
+        $problems[0] | Should -Be "sp_configure option 'max server memory (MB)' takes 128 to 2147483647, got 64"
+        $problems = (Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'max degree of parallelism' = 'lots' }).Problems
+        $problems[0] | Should -Be "sp_configure option 'max degree of parallelism' takes a whole number, got 'lots'"
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'min server memory (MB)' = 4096; 'max server memory (MB)' = 2048 }
+        $plan.Problems[0] | Should -Be "min server memory (MB) would be 4096, above max server memory (MB)'s 2048"
+        @($plan.Changes).Count | Should -Be 0
+        # Against the instance's own max server memory too.
+        $rows = Get-ConfigRow -Change @(@{ name = 'max server memory (MB)'; value = 2048; value_in_use = 2048 })
+        (Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'min server memory (MB)' = 4096 }).Problems[0] |
+            Should -Be "min server memory (MB) would be 4096, above max server memory (MB)'s 2048"
+    }
+
+    It 'refuses an option listed twice' {
+        $desired = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $desired['max degree of parallelism'] = 4
+        $desired['MAX DEGREE OF PARALLELISM'] = 8
+        (Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired $desired).Problems[0] |
+            Should -Be "sp_configure option 'max degree of parallelism' is listed twice"
+    }
+
+    It 'says a static option waits for a restart, set now or before' {
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'scan for startup procs' = 1 }
+        $plan.Changes[0].Description | Should -Be "set 'scan for startup procs' to 1 (was 0), which takes effect when the engine restarts"
+        $plan.Changes[0].Dynamic | Should -BeFalse
+        @($plan.Restart) | Should -Be @('scan for startup procs')
+        $rows = Get-ConfigRow -Change @(@{ name = 'scan for startup procs'; value = 1; value_in_use = 0 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'scan for startup procs' = 1 }
+        @($plan.Changes).Count | Should -Be 0
+        @($plan.Restart) | Should -Be @('scan for startup procs')
+        $rows = Get-ConfigRow -Change @(@{ name = 'scan for startup procs'; value = 1; value_in_use = 1 })
+        @((Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'scan for startup procs' = 1 }).Restart).Count | Should -Be 0
+    }
+
+    It 'puts a dynamic option set without RECONFIGURE in use' {
+        $rows = Get-ConfigRow -Change @(@{ name = 'backup compression default'; value = 1; value_in_use = 0 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'backup compression default' = 1 }
+        $plan.Changes[0].Description | Should -Be "put 'backup compression default' = 1 in use with RECONFIGURE (in use: 0)"
+        @($plan.Restart).Count | Should -Be 0
+    }
+
+    It 'turns show advanced options on for an advanced option, and off again' {
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'max degree of parallelism' = 4 }
+        $plan.AdvancedOn | Should -BeTrue
+        $plan.AdvancedOff | Should -BeTrue
+        $plan.ShowAdvancedWas | Should -Be 0
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'backup compression default' = 1 }
+        $plan.AdvancedOn | Should -BeFalse
+        $plan.AdvancedOff | Should -BeFalse
+    }
+
+    It 'leaves show advanced options on when it was on' {
+        $rows = Get-ConfigRow -Change @(@{ name = 'show advanced options'; value = 1; value_in_use = 1 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'max degree of parallelism' = 4 }
+        $plan.AdvancedOn | Should -BeFalse
+        $plan.AdvancedOff | Should -BeFalse
+        $plan.ShowAdvancedWas | Should -Be 1
+    }
+
+    It 'sets show advanced options as asked' {
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'show advanced options' = 1; 'max degree of parallelism' = 4 }
+        $plan.AdvancedOn | Should -BeTrue
+        $plan.AdvancedOff | Should -BeFalse
+        @($plan.Changes | ForEach-Object { $_.Name }) | Should -Be @('max degree of parallelism', 'show advanced options')
+        $rows = Get-ConfigRow -Change @(@{ name = 'show advanced options'; value = 1; value_in_use = 1 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'show advanced options' = 0; 'max degree of parallelism' = 4 }
+        $plan.AdvancedOn | Should -BeFalse
+        $plan.AdvancedOff | Should -BeTrue
+    }
+
+    It 'orders min and max server memory so min never exceeds max on the way' {
+        $rows = Get-ConfigRow -Change @(
+            @{ name = 'max server memory (MB)'; value = 4096; value_in_use = 4096 }
+            @{ name = 'min server memory (MB)'; value = 1024; value_in_use = 1024 }
+        )
+        $desired = @{ 'max server memory (MB)' = 2048; 'min server memory (MB)' = 512; 'backup compression default' = 1 }
+        $falling = Get-MssqlConfigurationPlan -Current $rows -Desired $desired
+        @($falling.Changes | ForEach-Object { $_.Name }) | Should -Be @('backup compression default', 'min server memory (MB)', 'max server memory (MB)')
+        $rising = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'max server memory (MB)' = 8192; 'min server memory (MB)' = 6144 }
+        @($rising.Changes | ForEach-Object { $_.Name }) | Should -Be @('max server memory (MB)', 'min server memory (MB)')
+    }
+
+    It 'lists the options it doesn''t manage whose value isn''t in use' {
+        $rows = Get-ConfigRow -Change @(@{ name = 'remote access'; value = 0; value_in_use = 1 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'backup compression default' = 1 }
+        @($plan.Pending).Count | Should -Be 1
+        $plan.Pending[0].Name | Should -Be 'remote access'
+        $plan.Pending[0].Value | Should -Be 0
+        $plan.Pending[0].InUse | Should -Be 1
+        $plan.Pending[0].Dynamic | Should -BeFalse
+    }
+
+    It 'takes the memory defaults SQL Server shows another value in use for as in use' {
+        # min server memory (MB) 0 in use as 16 (the rows' own), and max
+        # server memory (MB) 0 in use as 2147483647.
+        $rows = Get-ConfigRow -Change @(@{ name = 'max server memory (MB)'; value = 0; value_in_use = 2147483647 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'backup compression default' = 1 }
+        @($plan.Pending).Count | Should -Be 0
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'min server memory (MB)' = 0 }
+        @($plan.Changes).Count | Should -Be 0
+        @($plan.Restart).Count | Should -Be 0
+        Get-MssqlConfigurationBatch -Plan $plan | Should -BeNullOrEmpty
+        # Any other value in use is waiting, as for every other option.
+        $rows = Get-ConfigRow -Change @(@{ name = 'min server memory (MB)'; value = 1024; value_in_use = 16 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'min server memory (MB)' = 1024 }
+        $plan.Changes[0].Description | Should -Be "put 'min server memory (MB)' = 1024 in use with RECONFIGURE (in use: 16)"
+    }
+
+    It 'warns when max server memory reaches the host''s memory' {
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'max server memory (MB)' = 16384 } -PhysicalMemoryMb 16384
+        $plan.Notices[0] | Should -Be "max server memory (MB) is 16384, at least the host's 16384 MB of memory, so SQL Server may leave Windows none"
+        @((Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'max server memory (MB)' = 12288 } -PhysicalMemoryMb 16384).Notices).Count |
+            Should -Be 0
+    }
+}
+
+Describe 'Get-MssqlConfigurationBatch' {
+    BeforeAll {
+        $script:advancedRows = @(
+            @{ name = 'show advanced options'; value = 0; value_in_use = 0; minimum = 0; maximum = 1; is_dynamic = $true; is_advanced = $false }
+            @{ name = 'max degree of parallelism'; value = 0; value_in_use = 0; minimum = 0; maximum = 32767; is_dynamic = $true; is_advanced = $true }
+            @{ name = 'backup compression default'; value = 0; value_in_use = 0; minimum = 0; maximum = 1; is_dynamic = $true; is_advanced = $false }
+        )
+    }
+
+    It 'returns nothing for a plan that changes nothing' {
+        $plan = Get-MssqlConfigurationPlan -Current $script:advancedRows -Desired @{ 'backup compression default' = 0 }
+        Get-MssqlConfigurationBatch -Plan $plan | Should -BeNullOrEmpty
+    }
+
+    It 'sets each option through parameters, with show advanced options on before and off after' {
+        $plan = Get-MssqlConfigurationPlan -Current $script:advancedRows -Desired @{ 'max degree of parallelism' = 4; 'backup compression default' = 1 }
+        $batch = Get-MssqlConfigurationBatch -Plan $plan
+        $batch.Parameters.name0 | Should -Be 'backup compression default'
+        $batch.Parameters.value0 | Should -Be 1
+        $batch.Parameters.was0 | Should -Be 0
+        $batch.Parameters.name1 | Should -Be 'max degree of parallelism'
+        $batch.Parameters.value1 | Should -Be 4
+        $batch.Parameters.show_was | Should -Be 0
+        $text = $batch.Text
+        $text | Should -Not -Match 'max degree'
+        $on = $text.IndexOf("@configname = N'show advanced options', @configvalue = 1;")
+        $first = $text.IndexOf('@configname = @name0, @configvalue = @value0;')
+        $second = $text.IndexOf('@configname = @name1, @configvalue = @value1;')
+        $off = $text.IndexOf("@configname = N'show advanced options', @configvalue = 0;")
+        $on | Should -BeGreaterThan 0
+        $first | Should -BeGreaterThan $on
+        $second | Should -BeGreaterThan $first
+        $off | Should -BeGreaterThan $second
+        @([regex]::Matches($text, '(?m)^    RECONFIGURE;\r?$')).Count | Should -Be 4
+    }
+
+    It 'puts back the option that failed and show advanced options, then fails naming the option' {
+        $plan = Get-MssqlConfigurationPlan -Current $script:advancedRows -Desired @{ 'max degree of parallelism' = 4 }
+        $text = (Get-MssqlConfigurationBatch -Plan $plan).Text
+        $catch = $text.IndexOf('BEGIN CATCH')
+        $text.IndexOf('@configname = @name0, @configvalue = @was0;') | Should -BeGreaterThan $catch
+        $text.IndexOf("@configname = N'show advanced options', @configvalue = @show_was;") | Should -BeGreaterThan $catch
+        $text | Should -Match "SET @message = N'sp_configure option ''' \+ @failed"
+        $text | Should -Match '(?m)^    THROW 50000, @message, 1;\r?$'
+    }
+
+    It 'leaves show advanced options alone when no change needs it' {
+        $plan = Get-MssqlConfigurationPlan -Current $script:advancedRows -Desired @{ 'backup compression default' = 1 }
+        $batch = Get-MssqlConfigurationBatch -Plan $plan
+        $batch.Text | Should -Not -Match 'show advanced options'
+        $batch.Parameters.name0 | Should -Be 'backup compression default'
+    }
+
+    It 'sets show advanced options alone when it''s the only change' {
+        $plan = Get-MssqlConfigurationPlan -Current $script:advancedRows -Desired @{ 'show advanced options' = 1 }
+        $batch = Get-MssqlConfigurationBatch -Plan $plan
+        $batch.Text | Should -Match "@configname = N'show advanced options', @configvalue = 1;"
+        $batch.Text | Should -Not -Match '@name0'
+    }
+}
+
+Describe 'Get-MssqlTempdbProblem' {
+    It 'takes sizes from 1 MB, growth from 0, and at least one data file' {
+        Get-MssqlTempdbProblem @{ FileCount = 8; FileSizeMb = 1024; FileGrowthMb = 0; LogSizeMb = 1; LogGrowthMb = 512 } | Should -Be ''
+        Get-MssqlTempdbProblem @{ FileCount = $null; FileSizeMb = $null } | Should -Be ''
+        Get-MssqlTempdbProblem @{ FileCount = 0 } | Should -Be 'tempdb.file_count must be 1 or more, got 0'
+        Get-MssqlTempdbProblem @{ FileSizeMb = 0 } | Should -Be 'tempdb.file_size_mb must be 1 or more, got 0'
+        Get-MssqlTempdbProblem @{ LogGrowthMb = -1 } | Should -Be 'tempdb.log_growth_mb must be 0 or more, got -1'
+    }
+}
+
+Describe 'Get-MssqlTempdbPlan' {
+    BeforeAll {
+        # tempdb's files as the module reads them: sys.master_files' size
+        # (the size tempdb starts with) and tempdb.sys.database_files' size.
+        function script:New-TempdbFile {
+            param([int]$Id, [string]$Name, [string]$Type = 'ROWS', [string]$Path, [long]$Size = 64, [long]$Current = $Size, $Growth = 64, $Percent = $null)
+            @{
+                file_id = $Id; name = $Name; type = $Type; path = $Path; size_mb = $Size; current_size_mb = $Current
+                growth_mb = $Growth; growth_percent = $Percent
+            }
+        }
+        $script:dir = 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\'
+        function script:Get-TempdbFile {
+            @(
+                New-TempdbFile -Id 1 -Name 'tempdev' -Path ($script:dir + 'tempdb.mdf')
+                New-TempdbFile -Id 2 -Name 'templog' -Type 'LOG' -Path ($script:dir + 'templog.ldf')
+                New-TempdbFile -Id 3 -Name 'temp2' -Path ($script:dir + 'tempdb_mssql_2.ndf')
+            )
+        }
+        function script:New-TempdbDesired {
+            param($FileCount = $null, $FileSizeMb = $null, $FileGrowthMb = $null, $LogSizeMb = $null, $LogGrowthMb = $null)
+            @{ FileCount = $FileCount; FileSizeMb = $FileSizeMb; FileGrowthMb = $FileGrowthMb; LogSizeMb = $LogSizeMb; LogGrowthMb = $LogGrowthMb }
+        }
+    }
+
+    It 'changes nothing that matches' {
+        $desired = New-TempdbDesired -FileCount 2 -FileSizeMb 64 -FileGrowthMb 64 -LogSizeMb 64 -LogGrowthMb 64
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired $desired
+        @($plan.Changes).Count | Should -Be 0
+        @($plan.Notices).Count | Should -Be 0
+    }
+
+    It 'grows the files below the size asked for, and sets their growth' {
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired (New-TempdbDesired -FileSizeMb 96 -FileGrowthMb 32 -LogSizeMb 128 -LogGrowthMb 0)
+        @($plan.Changes | ForEach-Object { $_.Statement }) | Should -Be @(
+            "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'tempdev', SIZE = 96MB);"
+            "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'tempdev', FILEGROWTH = 32MB);"
+            "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'temp2', SIZE = 96MB);"
+            "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'temp2', FILEGROWTH = 32MB);"
+            "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'templog', SIZE = 128MB);"
+            "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'templog', FILEGROWTH = 0MB);"
+        )
+        $plan.Changes[0].Description | Should -Be "grow tempdb data file 'tempdev' to 96 MB (was 64 MB)"
+        $plan.Changes[1].Description | Should -Be "set the growth of tempdb data file 'tempdev' to 32 MB (was 64 MB)"
+    }
+
+    It 'sets growth in MB on a file that grows by a percentage' {
+        $files = @(New-TempdbFile -Id 1 -Name 'tempdev' -Path ($script:dir + 'tempdb.mdf') -Growth $null -Percent 10)
+        $plan = Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileGrowthMb 64)
+        $plan.Changes[0].Statement | Should -Be "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'tempdev', FILEGROWTH = 64MB);"
+        $plan.Changes[0].Description | Should -Be "set the growth of tempdb data file 'tempdev' to 64 MB (was 10%)"
+    }
+
+    It 'never shrinks a file, and says so' {
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired (New-TempdbDesired -FileSizeMb 32)
+        @($plan.Changes).Count | Should -Be 0
+        @($plan.Notices).Count | Should -Be 2
+        $plan.Notices[0] | Should -Be "tempdb data file 'tempdev' is set to 64 MB, more than file_size_mb's 32 MB: the module never shrinks tempdb"
+    }
+
+    It 'leaves a file that has grown past the size asked for, and says a restart brings it back' {
+        $files = @(New-TempdbFile -Id 1 -Name 'tempdev' -Path ($script:dir + 'tempdb.mdf') -Size 64 -Current 128)
+        $plan = Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileSizeMb 96)
+        @($plan.Changes).Count | Should -Be 0
+        $expected = "^tempdb data file 'tempdev' has grown to 128 MB, so SQL Server won't set its size to file_size_mb's 96 MB: it stays at 64 MB"
+        $plan.Notices[0] | Should -Match $expected
+    }
+
+    It 'adds data files beside the first, named as setup names them' {
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired (New-TempdbDesired -FileCount 4)
+        @($plan.Changes | ForEach-Object { $_.Statement }) | Should -Be @(
+            ("ALTER DATABASE [tempdb] ADD FILE (NAME = N'temp3', FILENAME = N'{0}tempdb_mssql_3.ndf', SIZE = 64MB, FILEGROWTH = 64MB);" -f $script:dir)
+            ("ALTER DATABASE [tempdb] ADD FILE (NAME = N'temp4', FILENAME = N'{0}tempdb_mssql_4.ndf', SIZE = 64MB, FILEGROWTH = 64MB);" -f $script:dir)
+        )
+        $plan.Changes[0].Description | Should -Be ("add tempdb data file 'temp3' ({0}tempdb_mssql_3.ndf, 64 MB)" -f $script:dir)
+    }
+
+    It 'gives an added file the size and growth asked for, or the first file''s percentage' {
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired (New-TempdbDesired -FileCount 3 -FileSizeMb 96 -FileGrowthMb 32)
+        $plan.Changes[-1].Statement | Should -Match 'SIZE = 96MB, FILEGROWTH = 32MB\);$'
+        $files = @(New-TempdbFile -Id 1 -Name 'tempdev' -Path ($script:dir + 'tempdb.mdf') -Growth $null -Percent 10)
+        (Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileCount 2)).Changes[0].Statement | Should -Match 'SIZE = 64MB, FILEGROWTH = 10%\);$'
+    }
+
+    It 'skips the names and paths already taken' {
+        $files = @(Get-TempdbFile) + @(New-TempdbFile -Id 4 -Name 'temp3' -Path ($script:dir + 'tempdb_mssql_5.ndf'))
+        $plan = Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileCount 4)
+        $plan.Changes[0].Statement | Should -Match "NAME = N'temp4', FILENAME = N'.*tempdb_mssql_4\.ndf'"
+        $files = @(Get-TempdbFile) + @(New-TempdbFile -Id 4 -Name 'extra' -Path ($script:dir + 'tempdb_mssql_3.ndf'))
+        $plan = Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileCount 4)
+        $plan.Changes[0].Statement | Should -Match "NAME = N'temp4', FILENAME = N'.*tempdb_mssql_4\.ndf'"
+    }
+
+    It 'never removes a data file, and says so' {
+        $plan = Get-MssqlTempdbPlan -Files (Get-TempdbFile) -Desired (New-TempdbDesired -FileCount 1)
+        @($plan.Changes).Count | Should -Be 0
+        $plan.Notices[0] | Should -Be "tempdb has 2 data files, more than file_count's 1: the module never removes one"
+    }
+
+    It 'quotes a file''s name' {
+        $files = @(New-TempdbFile -Id 1 -Name "it's" -Path ($script:dir + 'tempdb.mdf'))
+        (Get-MssqlTempdbPlan -Files $files -Desired (New-TempdbDesired -FileSizeMb 96)).Changes[0].Statement |
+            Should -Be "ALTER DATABASE [tempdb] MODIFY FILE (NAME = N'it''s', SIZE = 96MB);"
     }
 }

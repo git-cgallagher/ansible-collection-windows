@@ -2,21 +2,24 @@
 
 Installs a **standalone SQL Server 2022 or 2025 instance** from an ISO, on
 each host in the play in parallel, configures its network (a static TCP port,
-a certificate, an encryption mode, firewall rules) and reads it back. It's the
-second role of this collection's SQL Server area, after
+a certificate, an encryption mode, firewall rules), its `sp_configure` options
+and tempdb's files, and reads it back. It's the second role of this
+collection's SQL Server area, after
 [`mssql_prereqs`](../mssql_prereqs/README.md), which creates the service
 accounts and SPNs this role installs SQL Server under. The plan for the rest
-(`sp_configure`; failover cluster instances; `mssql_ag` for availability
-groups) is tracked in
+(failover cluster instances; `mssql_ag` for availability groups) is tracked in
 [issue #48](https://github.com/git-cgallagher/ansible-collection-windows/issues/48).
 
-The work happens in three modules, which you can use on their own:
+The work happens in four modules, which you can use on their own:
 
 - [`mssql_setup`](../../plugins/modules/mssql_setup.yml) stages and mounts the
   ISO, checks it's the version and edition asked for, and runs `setup.exe`;
 - [`mssql_network`](../../plugins/modules/mssql_network.yml) sets the port,
   the certificate, the encryption mode and the firewall rules, and restarts
   the engine when allowed;
+- [`mssql_configuration`](../../plugins/modules/mssql_configuration.yml) sets
+  `sp_configure` values and tempdb's files, and restarts the engine for a
+  static option when allowed;
 - [`mssql_info`](../../plugins/modules/mssql_info.yml) reads the instances
   back, from the registry and services and from SQL Server itself.
 
@@ -45,7 +48,17 @@ The work happens in three modules, which you can use on their own:
    it installed the instance in the same run, or with `mssql_allow_restart`;
    otherwise it warns that a restart is pending, and keeps warning on later
    runs until the engine has restarted.
-6. **Read the instance back** with `mssql_info`, publish it as the
+6. **Configure the instance** with `mssql_configuration`, connected as the
+   role's account: the `sp_configure` values in `mssql_configuration`, and
+   tempdb's files as `mssql_tempdb` describes them. It refuses an option the
+   instance doesn't have, or a value outside the option's range, before it
+   changes anything, and turns `show advanced options` on for an advanced
+   option and off again. A static option (one SQL Server applies only at
+   start) takes effect when the engine restarts, under the same rule as the
+   network: the role restarts it when it installed the instance in the same
+   run, or with `mssql_allow_restart`. Under strict encryption this step
+   doesn't run (see below).
+7. **Read the instance back** with `mssql_info`, publish it as the
    `mssql_instance` fact, and fail unless it runs and the role's account is a
    `sysadmin` there: the account later steps manage it as.
 
@@ -53,8 +66,12 @@ A second run changes nothing: an instance that matches never reads the media.
 Settings fixed at install that differ (the version, the edition, the server
 collation) and installed features that `mssql_features` doesn't list are
 reported as warnings, never changed: the role doesn't reinstall, upgrade or
-remove anything. `mssql_paths` and `mssql_tempdb` apply at install only and
-aren't compared afterwards.
+remove anything. `mssql_paths` applies at install only and isn't compared
+afterwards. `mssql_tempdb` is what setup creates tempdb with; afterwards the
+role grows a file below its size, sets each file's growth, and adds missing
+data files, but never shrinks or removes one (it warns instead). SQL Server
+only grows a file past its current size, so a file that has grown past the
+size asked for keeps the size tempdb starts with until a restart.
 
 **Secrets.** The service passwords and the product key reach setup on its
 command line, as setup requires; setup doesn't write them to the
@@ -117,12 +134,14 @@ as, and to that account.
 **Strict refuses every client without TDS 8.0**, over shared memory as well
 as TCP (the lab showed both). That includes .NET Framework's
 System.Data.SqlClient, which this collection's modules connect with. So under
-`strict` the role doesn't connect to the instance: it checks only that the
-instance runs, and `mssql_instance.server` is null. Later SQL Server steps
-that need a connection (`sp_configure`, availability groups) can't run under
-strict until the modules have a TDS 8.0 client. Clients need a current driver
-(Microsoft.Data.SqlClient 5.1, ODBC 18.1.2.1, OLE DB 19.2, JDBC 11.2 or
-later).
+`strict` the role doesn't connect to the instance: it doesn't apply
+`mssql_configuration`, or `mssql_tempdb` after install, it checks only that
+the instance runs, and `mssql_instance.server` is null. SQL Server steps that
+need a connection (`sp_configure`, tempdb, availability groups) can't run
+under strict until the modules have a TDS 8.0 client. To configure a strict
+instance, run the role with `mandatory` first, then switch to `strict`.
+Clients need a current driver (Microsoft.Data.SqlClient 5.1, ODBC 18.1.2.1,
+OLE DB 19.2, JDBC 11.2 or later).
 
 **Strict on SQL Server 2022.** 2022 supports strict on standalone instances
 only, and its SQL Server Agent has no TDS 8.0: under strict it retries for
@@ -157,13 +176,14 @@ Every variable is documented in `meta/argument_specs.yml`
 | `mssql_agent_account` / `_password` | `''` | the same for SQL Server Agent |
 | `mssql_agent_startup` | `automatic` | `automatic`, `manual` or `disabled` |
 | `mssql_instant_file_init` | `true` | instant file initialization for the engine's account |
-| `mssql_paths` | `{}` | `instance_dir`, `data_root`, `data`, `log`, `backup`, `tempdb_data`, `tempdb_log` |
-| `mssql_tempdb` | `{}` | `file_count`, `file_size_mb`, `file_growth_mb`, `log_size_mb`, `log_growth_mb` |
+| `mssql_paths` | `{}` | `instance_dir`, `data_root`, `data`, `log`, `backup`, `tempdb_data`, `tempdb_log` (at install only) |
+| `mssql_tempdb` | `{}` | `file_count`, `file_size_mb`, `file_growth_mb`, `log_size_mb`, `log_growth_mb`: at install, then grown and added to (never shrunk or removed) |
+| `mssql_configuration` | `{}` | `sp_configure` values, option name to whole number, such as `max server memory (MB): 28672` |
 | `mssql_tcp_port` | `1433` | the static TCP port; dynamic ports off |
 | `mssql_encryption` | `optional` | `optional`, `mandatory` or `strict` (see above) |
 | `mssql_certificate_thumbprint` | `''` | the certificate `mandatory` and `strict` need; `''` leaves the binding as it is |
 | `mssql_firewall` | `true` | inbound rules for the port (and SQL Server Browser for a named instance) |
-| `mssql_allow_restart` | `false` | restart an instance the role didn't install in the same run, for a network change |
+| `mssql_allow_restart` | `false` | restart an instance the role didn't install in the same run, for a network change or a static `sp_configure` option |
 | `mssql_become_user` / `_password` | `''` | the `runas` account setup and the reads run as |
 | `mssql_allow_reboot` | `false` | reboot before or after setup when needed |
 | `mssql_report_only` | `false` | plan only |
@@ -203,6 +223,10 @@ Every variable is documented in `meta/argument_specs.yml`
         mssql_sysadmins: [EXAMPLE\GG-SQL-Admins]
         mssql_paths: {data: 'D:\MSSQL\Data', log: 'L:\MSSQL\Log', backup: 'B:\MSSQL\Backup', tempdb_data: 'T:\MSSQL\TempDB'}
         mssql_tempdb: {file_count: 8, file_size_mb: 1024}
+        mssql_configuration:
+          max server memory (MB): 28672
+          max degree of parallelism: 4
+          cost threshold for parallelism: 50
         mssql_encryption: mandatory
         mssql_certificate_thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
         mssql_become_user: EXAMPLE\svc-ansible
@@ -215,7 +239,8 @@ Every variable is documented in `meta/argument_specs.yml`
 The Molecule scenario `molecule/default` (see its README) boots a domain
 controller and a SQL Server host, creates the accounts with `mssql_prereqs`,
 issues the host a certificate from a lab root CA, installs SQL Server 2022
-Developer from Microsoft's ISO with this role (encryption mandatory), checks
-from the domain controller that a connection uses Kerberos and trusts the
-certificate, and runs the modules' integration targets. CI runs it in the `domain-lab`
+Developer from Microsoft's ISO with this role (encryption mandatory, four
+dynamic `sp_configure` options, two tempdb data files), checks from the domain
+controller that a connection uses Kerberos and trusts the certificate, and
+runs the modules' integration targets. CI runs it in the `domain-lab`
 workflow. SQL Server 2025, Standard and Enterprise media aren't lab-tested yet.

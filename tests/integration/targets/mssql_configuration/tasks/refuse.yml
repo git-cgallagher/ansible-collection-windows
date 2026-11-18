@@ -1,0 +1,23 @@
+---
+# Included by main.yml once per case (cfg_case): runs mssql_configuration for
+# real with the case's options and expects a failure whose message matches the
+# case's expect. main.yml checks afterwards that the refusals changed nothing.
+# A case with become false runs as the connection's own account.
+- name: "Refuse {{ cfg_case.case }}"
+  git_cgallagher.windows.mssql_configuration:
+    instance_name: "{{ cfg_case.instance_name | default(cfg_instance) }}"
+    sp_configure: "{{ cfg_case.sp_configure | default(omit) }}"
+    tempdb: "{{ cfg_case.tempdb | default(omit) }}"
+    restart_timeout: "{{ cfg_case.restart_timeout | default(omit) }}"
+    restart: true
+  register: cfg_refusal
+  ignore_errors: true
+  become: "{{ cfg_case.become | default(true) }}"
+
+- name: "Check it refused {{ cfg_case.case }}"
+  ansible.builtin.assert:
+    that:
+      - cfg_refusal is failed
+      - cfg_refusal.msg is search(cfg_case.expect)
+      - cfg_refusal.actions | default([]) | length == 0
+    fail_msg: "{{ cfg_case.case }}: expected a failure matching '{{ cfg_case.expect }}', got {{ cfg_refusal | to_json }}"

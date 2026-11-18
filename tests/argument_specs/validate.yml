@@ -874,6 +874,7 @@
             tempdb_data: 'T:\TempDB'
             tempdb_log: 'T:\TempDB'
           mssql_tempdb: {file_count: 8, file_size_mb: 1024, file_growth_mb: 512, log_size_mb: 1024, log_growth_mb: 512}
+          mssql_configuration: {max server memory (MB): 28672, max degree of parallelism: 4, optimize for ad hoc workloads: true}
           mssql_tcp_port: 14331
           mssql_encryption: strict
           mssql_certificate_thumbprint: 5f1b7c0a9e3d4c2b1a0f9e8d7c6b5a4f3e2d1c0b
