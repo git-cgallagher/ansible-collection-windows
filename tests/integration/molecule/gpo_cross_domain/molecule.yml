@@ -48,6 +48,8 @@ provisioner:
           - {name: XD - Restricted Groups, kind: setting, markers: [S-1-5-32-544__Members]}
           - {name: XD - File ACL, kind: setting, markers: [XdLabFiles]}
           - {name: XD - Registry ACL, kind: setting, markers: [XdLabKey]}
+          - {name: XD - Local Admins Member Of, kind: setting, markers: [__Memberof, S-1-5-32-544]}
+          - {name: XD - Deny Logon, kind: setting, markers: [SeDenyInteractiveLogonRight, SeDenyRemoteInteractiveLogonRight]}
           - {name: XD - Startup Scripts, kind: setting, markers: [startup-local.cmd, startup-unc.cmd, 'Startup\startup-local.cmd']}
           - {name: XD - Folder Redirection, kind: setting, markers: [XdRedirect]}
           - {name: XD - GPP Registry, kind: setting, markers: [XdGppRegistry]}
@@ -62,8 +64,8 @@ provisioner:
         # Same-named groups in both domains: the migration table maps each src
         # group to its dst namesake.
         lab_xd_groups:
-          admins: GG-XD-Admins        # User Rights, Restricted Groups, file ACL, GPP local group, delegation
-          staff: GG-XD-Staff          # registry ACL, GPP item-level targeting
+          admins: GG-XD-Admins        # User Rights, Restricted Groups (both forms), file ACL, GPP local group, delegation
+          staff: GG-XD-Staff          # registry ACL, GPP item-level targeting, deny logon (keep it empty)
           servers: GG-XD-Servers      # security filtering
         lab_xd_wmi_filter: XD Server OS
         # Where the backup lives on each side and on the controller.
