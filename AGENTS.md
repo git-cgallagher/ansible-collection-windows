@@ -831,6 +831,16 @@ ansible-galaxy collection build --force
   dc01 a TDS 7.x PRELOGIN got no answer at all. A TLS-first handshake (what a
   TDS 8.0 client sends) succeeded under mandatory as well as strict, so a
   successful TLS handshake doesn't prove strict; the unanswered PRELOGIN does.
+- **`sys.configurations` shows two memory defaults with another value in
+  use, by design.** `min server memory (MB)` set to 0 shows 16 in use (8 on
+  32-bit), and `max server memory (MB)` set to 0 shows 2147483647
+  (Microsoft's "Server configuration options" page). PR #74's first
+  `molecule (mssql)` run (2026-11-17, 2022 RTM) showed 0 and 16 on a fresh
+  install: the module warned on every write that RECONFIGURE "also puts in
+  use" min server memory, and the integration target's "nothing waits"
+  check failed. Decide "in use" with `Test-MssqlConfigValueInUse`, never
+  `value -ne value_in_use`; a test script compares with the pair it started
+  from.
 - **`Set-NetFirewallRule -DisplayName` selects the rules to change; it
   doesn't rename.** With `-Name` as well it fails to resolve a parameter set.
   Rename with `-NewDisplayName` (`mssql_network`, 0.23.0).

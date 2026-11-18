@@ -805,6 +805,28 @@ Describe 'ConvertTo-MssqlConfigValue' {
     }
 }
 
+Describe 'Test-MssqlConfigValueInUse' {
+    It 'takes a value equal to the one in use as in use' {
+        Test-MssqlConfigValueInUse -Name 'cost threshold for parallelism' -Value 50 -InUse 50 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'cost threshold for parallelism' -Value 50 -InUse 5 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'scan for startup procs' -Value 1 -InUse 0 | Should -BeFalse
+    }
+
+    It 'takes the memory defaults Microsoft documents as in use, whatever the case' {
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 0 -InUse 16 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 0 -InUse 8 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'MIN SERVER MEMORY (MB)' -Value 0 -InUse 16 | Should -BeTrue
+        Test-MssqlConfigValueInUse -Name 'max server memory (MB)' -Value 0 -InUse 2147483647 | Should -BeTrue
+    }
+
+    It 'takes nothing else as in use' {
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 0 -InUse 32 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'min server memory (MB)' -Value 1024 -InUse 16 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'max server memory (MB)' -Value 0 -InUse 4096 | Should -BeFalse
+        Test-MssqlConfigValueInUse -Name 'max degree of parallelism' -Value 0 -InUse 16 | Should -BeFalse
+    }
+}
+
 Describe 'Get-MssqlConfigurationPlan' {
     BeforeAll {
         # sys.configurations' rows, as the module reads them.
@@ -813,12 +835,14 @@ Describe 'Get-MssqlConfigurationPlan' {
                 [bool]$Dynamic = $true, [bool]$Advanced = $false)
             @{ name = $Name; value = $Value; value_in_use = $InUse; minimum = $Minimum; maximum = $Maximum; is_dynamic = $Dynamic; is_advanced = $Advanced }
         }
+        # As SQL Server 2022 shows them: min server memory (MB)'s default of 0
+        # is in use as 16 (PR #74's lab; Microsoft documents 8 or 16).
         function script:Get-ConfigRow {
             param([hashtable[]]$Change = @())
             $rows = @(
                 New-ConfigRow -Name 'show advanced options' -Value 0 -Maximum 1
                 New-ConfigRow -Name 'max server memory (MB)' -Value 2147483647 -Minimum 128 -Advanced $true
-                New-ConfigRow -Name 'min server memory (MB)' -Value 0 -Advanced $true
+                New-ConfigRow -Name 'min server memory (MB)' -Value 0 -InUse 16 -Advanced $true
                 New-ConfigRow -Name 'max degree of parallelism' -Value 0 -Maximum 32767 -Advanced $true
                 New-ConfigRow -Name 'backup compression default' -Value 0 -Maximum 1
                 New-ConfigRow -Name 'scan for startup procs' -Value 0 -Maximum 1 -Dynamic $false -Advanced $true
@@ -945,6 +969,22 @@ Describe 'Get-MssqlConfigurationPlan' {
         $plan.Pending[0].Value | Should -Be 0
         $plan.Pending[0].InUse | Should -Be 1
         $plan.Pending[0].Dynamic | Should -BeFalse
+    }
+
+    It 'takes the memory defaults SQL Server shows another value in use for as in use' {
+        # min server memory (MB) 0 in use as 16 (the rows' own), and max
+        # server memory (MB) 0 in use as 2147483647.
+        $rows = Get-ConfigRow -Change @(@{ name = 'max server memory (MB)'; value = 0; value_in_use = 2147483647 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'backup compression default' = 1 }
+        @($plan.Pending).Count | Should -Be 0
+        $plan = Get-MssqlConfigurationPlan -Current (Get-ConfigRow) -Desired @{ 'min server memory (MB)' = 0 }
+        @($plan.Changes).Count | Should -Be 0
+        @($plan.Restart).Count | Should -Be 0
+        Get-MssqlConfigurationBatch -Plan $plan | Should -BeNullOrEmpty
+        # Any other value in use is waiting, as for every other option.
+        $rows = Get-ConfigRow -Change @(@{ name = 'min server memory (MB)'; value = 1024; value_in_use = 16 })
+        $plan = Get-MssqlConfigurationPlan -Current $rows -Desired @{ 'min server memory (MB)' = 1024 }
+        $plan.Changes[0].Description | Should -Be "put 'min server memory (MB)' = 1024 in use with RECONFIGURE (in use: 16)"
     }
 
     It 'warns when max server memory reaches the host''s memory' {

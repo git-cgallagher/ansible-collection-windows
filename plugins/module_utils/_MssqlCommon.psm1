@@ -1340,6 +1340,27 @@ Function ConvertTo-MssqlConfigValue {
     $null
 }
 
+Function Test-MssqlConfigValueInUse {
+    <#
+    .SYNOPSIS
+    Whether sys.configurations shows an option's value in use. Two options
+    show another value_in_use by design, as Microsoft's "Server configuration
+    options" page documents: min server memory (MB) set to 0 shows 8 (32-bit)
+    or 16 (64-bit), and max server memory (MB) set to 0 shows 2147483647.
+    Comparing value with value_in_use alone calls min server memory's default
+    waiting on every instance (the lab's SQL Server 2022 showed 0 and 16).
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ([string]$Name, [long]$Value, [long]$InUse)
+
+    if ($Value -eq $InUse) { return $true }
+    if ($Value -ne 0) { return $false }
+    if ($Name -eq 'min server memory (MB)') { return $InUse -eq 8 -or $InUse -eq 16 }
+    if ($Name -eq 'max server memory (MB)') { return $InUse -eq 2147483647 }
+    $false
+}
+
 Function Get-MssqlConfigurationPlan {
     <#
     .SYNOPSIS
@@ -1353,7 +1374,9 @@ Function Get-MssqlConfigurationPlan {
       range, min server memory above max server memory).
     - Changes: Name (as the instance spells it), Value, Was, Dynamic,
       Advanced and Description, for each option whose value differs, and
-      each dynamic one whose value in use differs (set without RECONFIGURE).
+      each dynamic one whose value isn't in use (set without RECONFIGURE;
+      Test-MssqlConfigValueInUse decides, since two options show another
+      value in use by design).
       By name, then max and min server memory in the order that never puts
       min above max on the way. 'show advanced options' is among them when
       it's asked for and differs, but the batch sets it through AdvancedOn
@@ -1366,8 +1389,8 @@ Function Get-MssqlConfigurationPlan {
     - Restart: the static options asked for whose value in use won't be the
       one asked for until the engine restarts (changed now, or before and
       still waiting).
-    - Pending: options not asked for whose value differs from the one in
-      use: Name, Value, InUse, Dynamic.
+    - Pending: options not asked for whose value isn't in use: Name, Value,
+      InUse, Dynamic.
     - Notices: max server memory at or above the host's memory.
     .PARAMETER Current
     sys.configurations' rows: name, value, value_in_use, minimum, maximum,
@@ -1445,12 +1468,13 @@ Function Get-MssqlConfigurationPlan {
         $configured = [long]$row.value
         $inUse = [long]$row.value_in_use
         $dynamic = [bool]$row.is_dynamic
+        $valueInUse = Test-MssqlConfigValueInUse -Name $row.name -Value $value -InUse $inUse
         $text = ''
         if ($configured -ne $value) {
             $text = "set '$($row.name)' to $value (was $configured)"
             if (-not $dynamic) { $text += ', which takes effect when the engine restarts' }
         }
-        elseif ($dynamic -and $inUse -ne $value) {
+        elseif ($dynamic -and -not $valueInUse) {
             $text = "put '$($row.name)' = $value in use with RECONFIGURE (in use: $inUse)"
         }
         if ($text) {
@@ -1459,7 +1483,7 @@ Function Get-MssqlConfigurationPlan {
                     Description = $text
                 })
         }
-        if (-not $dynamic -and $inUse -ne $value) { $restart.Add([string]$row.name) }
+        if (-not $dynamic -and -not $valueInUse) { $restart.Add([string]$row.name) }
     }
 
     # Max server memory first when it rises, min first when max falls.
@@ -1495,7 +1519,7 @@ Function Get-MssqlConfigurationPlan {
     foreach ($lower in @($rows.Keys | Sort-Object)) {
         if ($wanted.ContainsKey($lower)) { continue }
         $row = $rows[$lower]
-        if ([long]$row.value -ne [long]$row.value_in_use) {
+        if (-not (Test-MssqlConfigValueInUse -Name $row.name -Value $row.value -InUse $row.value_in_use)) {
             $pending.Add(@{ Name = [string]$row.name; Value = [long]$row.value; InUse = [long]$row.value_in_use; Dynamic = [bool]$row.is_dynamic })
         }
     }
@@ -1886,6 +1910,7 @@ $exportFunctions = @(
     'ConvertTo-MssqlSetupArgument'
     'Read-MssqlErrorLog'
     'Restart-MssqlEngine'
+    'Test-MssqlConfigValueInUse'
     'Test-MssqlReadRight'
     'Test-MssqlRestartPending'
 )

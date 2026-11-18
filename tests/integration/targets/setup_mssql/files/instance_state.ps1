@@ -208,14 +208,23 @@ FROM sys.configurations
 '@)
         foreach ($row in $rows) {
             if ($ConfigNames -notcontains [string]$row.name) { continue }
+            $value = [long]$row.value
+            $inUse = [long]$row.value_in_use
+            # Two options show another value in use by design (Microsoft's
+            # "Server configuration options" page): min server memory (MB)
+            # set to 0 shows 8 or 16, max server memory (MB) set to 0 shows
+            # 2147483647. Neither waits for anything.
+            $byDesign = $false
+            if ($value -eq 0 -and [string]$row.name -eq 'min server memory (MB)') { $byDesign = $inUse -in @(8, 16) }
+            if ($value -eq 0 -and [string]$row.name -eq 'max server memory (MB)') { $byDesign = $inUse -eq 2147483647 }
             $result.server.configuration[[string]$row.name] = @{
-                value = [long]$row.value
-                value_in_use = [long]$row.value_in_use
+                value = $value
+                value_in_use = $inUse
                 minimum = [long]$row.minimum
                 maximum = [long]$row.maximum
                 is_dynamic = [bool]$row.is_dynamic
                 is_advanced = [bool]$row.is_advanced
-                pending = [long]$row.value -ne [long]$row.value_in_use
+                pending = $value -ne $inUse -and -not $byDesign
             }
         }
     }

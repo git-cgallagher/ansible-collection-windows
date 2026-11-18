@@ -83,6 +83,9 @@ DOCUMENTATION:
       fails saying so.
     - The account needs C(ALTER SETTINGS) for C(sp_configure), which C(sysadmin) and C(serveradmin) have, and C(ALTER) on
       tempdb for its files, which C(sysadmin) has. The module checks both before it changes anything, in check mode too.
+    - Two options show another value in use than the one set, by design, as the Server configuration options page
+      documents. C(min server memory (MB\)) set to V(0) shows 8 or 16 in use, and C(max server memory (MB\)) set to
+      V(0) shows 2147483647. The module counts those as in use, so they never wait for C(RECONFIGURE) or a restart.
     - This module doesn't configure failover cluster instances yet.
   seealso:
     - module: git_cgallagher.windows.mssql_info

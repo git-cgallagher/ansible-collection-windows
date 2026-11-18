@@ -113,12 +113,15 @@ function Restart-Instance {
     $done.Add("restarted $engine")
 }
 
-# The options, with show advanced options on while they're set.
+# The options, with show advanced options on while they're set. Each is
+# compared with the pair the target started with (value and value in use),
+# never value with value_in_use: min server memory (MB) set to 0 shows 16
+# in use by design.
 $current = Get-Option
 $toSet = @($Options.Keys | Where-Object {
         $row = $current[[string]$_]
-        $start = [long]$Options[$_]['value']
-        $null -ne $row -and ([long]$row.value -ne $start -or [long]$row.value_in_use -ne $start)
+        $start = $Options[$_]
+        $null -ne $row -and ([long]$row.value -ne [long]$start['value'] -or [long]$row.value_in_use -ne [long]$start['value_in_use'])
     })
 if ($toSet.Count -gt 0) {
     Invoke-SqlWrite "EXEC sys.sp_configure N'show advanced options', 1; RECONFIGURE;"
@@ -131,22 +134,38 @@ if ($toSet.Count -gt 0) {
     Invoke-SqlWrite 'EXEC sys.sp_configure N''show advanced options'', @value; RECONFIGURE;' @{ value = $show }
 }
 
-# A restart for an option that waits for one, or before the added files go.
+# A restart for an option whose value in use isn't the start's (a static
+# one set back), or before the added files go.
 $startNames = @($Tempdb | ForEach-Object { [string]$_['name'] })
-$waiting = @((Get-Option).Values | Where-Object { [long]$_.value -ne [long]$_.value_in_use })
+$waiting = @((Get-Option).Values | Where-Object { [long]$_.value_in_use -ne [long]$Options[[string]$_.name]['value_in_use'] })
 $added = @(Get-TempdbFile | Where-Object { $startNames -notcontains [string]$_.name })
 if ($waiting.Count -gt 0 -or $added.Count -gt 0) { Restart-Instance }
 
+# Right after a restart an added file is empty and can go (Microsoft's
+# "Shrink the tempdb database"). tempdb's own use can still hold a page in it
+# for a moment, so each file gets a few tries.
 foreach ($file in $added) {
     $name = [string]$file.name
-    Invoke-SqlWrite "USE [tempdb]; DBCC SHRINKFILE ($(ConvertTo-Literal $name), EMPTYFILE) WITH NO_INFOMSGS;"
-    Invoke-SqlWrite "ALTER DATABASE [tempdb] REMOVE FILE [$($name.Replace(']', ']]'))];"
+    for ($try = 1; $try -le 3; $try++) {
+        try {
+            Invoke-SqlWrite "USE [tempdb]; DBCC SHRINKFILE ($(ConvertTo-Literal $name), EMPTYFILE) WITH NO_INFOMSGS;"
+            Invoke-SqlWrite "ALTER DATABASE [tempdb] REMOVE FILE [$($name.Replace(']', ']]'))];"
+            break
+        }
+        catch {
+            if ($try -ge 3) { throw }
+            Start-Sleep -Seconds 5
+        }
+    }
     $done.Add("removed tempdb file '$name'")
 }
 
 # The sizes and growth the target changed. DBCC SHRINKFILE also sets the size
-# tempdb starts with (Microsoft KB 307487); when it doesn't, ALTER DATABASE
-# is tried, and what happened goes in done.
+# tempdb starts with (Microsoft's "Shrink the tempdb database": the size
+# SQL Server resets tempdb to is the last one set by ALTER DATABASE or a
+# shrink). That page also says a shrink can fail with error 8909 and still
+# complete, so the size read afterwards decides; when it's still above the
+# start's, ALTER DATABASE is tried, and what happened goes in done.
 foreach ($start in $Tempdb) {
     $name = [string]$start['name']
     $now = @(Get-TempdbFile | Where-Object { [string]$_.name -eq $name }) | Select-Object -First 1
@@ -154,8 +173,13 @@ foreach ($start in $Tempdb) {
     $literal = ConvertTo-Literal $name
     $startSize = [long]$start['size_mb']
     if ([long]$now.size_mb -gt $startSize) {
-        Invoke-SqlWrite "USE [tempdb]; DBCC SHRINKFILE ($literal, $startSize) WITH NO_INFOMSGS;"
-        $done.Add("shrank tempdb file '$name' to $startSize MB")
+        try {
+            Invoke-SqlWrite "USE [tempdb]; DBCC SHRINKFILE ($literal, $startSize) WITH NO_INFOMSGS;"
+            $done.Add("shrank tempdb file '$name' to $startSize MB")
+        }
+        catch {
+            $done.Add("DBCC SHRINKFILE on tempdb file '$name' said: $($_.Exception.Message)")
+        }
         $after = @(Get-TempdbFile | Where-Object { [string]$_.name -eq $name }) | Select-Object -First 1
         if ([long]$after.size_mb -gt $startSize) {
             try {

@@ -18,7 +18,10 @@ completes the standalone `mssql` role.
   change as `sp_configure` then `RECONFIGURE` (never `WITH OVERRIDE`), and
   puts back an option SQL Server refuses. A static option takes effect when
   the engine restarts: with `restart` the module restarts it, otherwise it
-  reports `restart_required` on every run until the value is in use. For
+  reports `restart_required` on every run until the value is in use. Two
+  memory defaults show another value in use by design, as Microsoft
+  documents (`min server memory (MB)` 0 as 8 or 16, `max server memory
+  (MB)` 0 as 2147483647), and the module counts them as in use. For
   tempdb it grows files below the size asked for, sets their growth, and
   adds data files (`temp<N>` in `tempdb_mssql_<N>.ndf` beside the first, as
   setup names them); it never shrinks or removes a file, and warns instead.
