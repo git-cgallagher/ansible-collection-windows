@@ -72,19 +72,26 @@
           Path: "{{ lab_xd_migtable_src }}"
       register: lab_xd_migtable
 
-    - name: Show the migration table's entries
+    - name: Show the migration table's entries and XML
       ansible.builtin.debug:
-        var: lab_xd_migtable.result.entries
+        msg:
+          entries: "{{ lab_xd_migtable.result.entries }}"
+          xml: "{{ lab_xd_migtable.result.xml }}"
 
     # What GPMC finds to translate (run 42293538842): the src groups named in
     # security settings, the built-in Administrators, and the UNC paths of the
     # startup script and the folder redirection. Not the GPP drive map's path,
-    # GPP's principals, the hard-coded server, or the filtering group.
+    # GPP's principals, the hard-coded server, or the filtering group. The
+    # groups map by relative name, the paths to dst's server.
     - name: Require the entries GPMC found
       ansible.builtin.assert:
         that:
           - lab_xd_migtable.result.entries | map(attribute='source') | sort == lab_xd_want | sort
           - lab_xd_migtable.result.entries | selectattr('refused') | list == []
+          - >-
+            lab_xd_migtable.result.entries | selectattr('option', 'equalto', 'by_relative_name')
+            | map(attribute='source') | sort == lab_xd_want[:2] | sort
+          - lab_xd_migtable.result.xml is search('DestinationByRelativeName')
         fail_msg: "{{ lab_xd_migtable.result.entries | to_json }}"
       vars:
         lab_xd_want:
